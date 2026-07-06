@@ -17,7 +17,7 @@ import 'package:stratalog/stratalog.dart';
 final class LoggerAnalytics {
   /// Mirrors calls on [analytics] to [logger], typically
   /// `LogLayer.analytics`.
-  const LoggerAnalytics(this.analytics, {this.logger = LogLayer.analytics});
+  const LoggerAnalytics(this.analytics, {this.logger = .analytics});
 
   /// The wrapped instance — escape hatch for the unwrapped API surface.
   final FirebaseAnalytics analytics;

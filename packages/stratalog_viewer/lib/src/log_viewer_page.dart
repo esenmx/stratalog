@@ -26,16 +26,16 @@ class LogViewerPage extends StatefulWidget {
 }
 
 class _LogViewerPageState extends State<LogViewerPage> {
-  ChirpLogLevel _minLevel = ChirpLogLevel.trace;
+  ChirpLogLevel _minLevel = .trace;
   String _query = '';
 
-  static const _levels = [
-    ChirpLogLevel.trace,
-    ChirpLogLevel.debug,
-    ChirpLogLevel.info,
-    ChirpLogLevel.notice,
-    ChirpLogLevel.warning,
-    ChirpLogLevel.error,
+  static const _levels = <ChirpLogLevel>[
+    .trace,
+    .debug,
+    .info,
+    .notice,
+    .warning,
+    .error,
   ];
 
   List<LogRecord> _visible() {
@@ -57,7 +57,7 @@ class _LogViewerPageState extends State<LogViewerPage> {
         title: TextField(
           decoration: const InputDecoration(
             hintText: 'Search message or layer',
-            border: InputBorder.none,
+            border: .none,
           ),
           onChanged: (value) => setState(() => _query = value),
         ),
@@ -103,11 +103,13 @@ class _LogViewerPageState extends State<LogViewerPage> {
     );
   }
 
-  void _copy(String text) {
-    Clipboard.setData(ClipboardData(text: text));
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(const SnackBar(content: Text('Copied')));
+  Future<void> _copy(String text) async {
+    await Clipboard.setData(ClipboardData(text: text));
+    if (mounted) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(const SnackBar(content: Text('Copied')));
+    }
   }
 
   String _describe(LogRecord record) {
@@ -129,7 +131,7 @@ class _RecordTile extends StatelessWidget {
   final VoidCallback onCopy;
 
   static Color _toColor(ConsoleColor color) =>
-      Color.fromARGB(0xff, color.r, color.g, color.b);
+      .fromARGB(0xff, color.r, color.g, color.b);
 
   @override
   Widget build(BuildContext context) {
@@ -141,7 +143,8 @@ class _RecordTile extends StatelessWidget {
     final levelColor = levelConsoleColor == null
         ? Theme.of(context).colorScheme.onSurfaceVariant
         : _toColor(levelConsoleColor);
-    final hasBody = record.data.isNotEmpty ||
+    final hasBody =
+        record.data.isNotEmpty ||
         record.error != null ||
         record.stackTrace != null;
 
@@ -153,12 +156,12 @@ class _RecordTile extends StatelessWidget {
             style: TextStyle(
               backgroundColor: layerColor,
               color: _onBadge(layerColor),
-              fontWeight: FontWeight.bold,
+              fontWeight: .bold,
             ),
           ),
           TextSpan(
             text: ' [${record.level.name}]',
-            style: TextStyle(color: levelColor, fontWeight: FontWeight.bold),
+            style: TextStyle(color: levelColor, fontWeight: .bold),
           ),
           TextSpan(
             text: ' ${record.formattedTime}',
@@ -185,12 +188,11 @@ class _RecordTile extends StatelessWidget {
       title: title,
       subtitle: message,
       childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-      expandedCrossAxisAlignment: CrossAxisAlignment.start,
+      expandedCrossAxisAlignment: .start,
       children: [
         if (record.data.isNotEmpty)
           _MonoBlock(
-            const JsonEncoder.withIndent('  ', _stringify)
-                .convert(record.data),
+            const JsonEncoder.withIndent('  ', _stringify).convert(record.data),
           ),
         if (record.error case final error?) _MonoBlock('Error: $error'),
         if (record.stackTrace case final stack?) _MonoBlock('$stack'),
@@ -210,7 +212,8 @@ class _RecordTile extends StatelessWidget {
 
   /// Same luminance flip as the console badge text.
   static Color _onBadge(Color background) {
-    final luma = 0.299 * (background.r * 255) +
+    final luma =
+        0.299 * (background.r * 255) +
         0.587 * (background.g * 255) +
         0.114 * (background.b * 255);
     return luma > 140 ? Colors.black : Colors.white;

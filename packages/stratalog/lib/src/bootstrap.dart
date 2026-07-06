@@ -6,7 +6,7 @@ import 'package:stratalog/src/ide_writer.dart';
 
 // Mirrors Flutter's kReleaseMode without a Flutter dependency: dart2js/VM
 // AOT release builds define dart.vm.product.
-const bool _kReleaseMode = bool.fromEnvironment('dart.vm.product');
+const bool _kReleaseMode = .fromEnvironment('dart.vm.product');
 
 /// Configures the global chirp root. Call ONCE from bootstrap, before
 /// `runApp`. To reconfigure, call again — `LogLayer` re-resolves against the

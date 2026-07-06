@@ -28,7 +28,7 @@ import 'package:stratalog/stratalog.dart';
 /// catch them, e.g. `LogLayer.auth.warning(...)`.
 final class FirebaseAuthLogger {
   /// Logs [auth]'s streams to [logger] once [attach]ed.
-  FirebaseAuthLogger(this.auth, {this.logger = LogLayer.auth});
+  FirebaseAuthLogger(this.auth, {this.logger = .auth});
 
   /// The tapped FirebaseAuth instance.
   final FirebaseAuth auth;

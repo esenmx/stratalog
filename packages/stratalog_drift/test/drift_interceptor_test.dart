@@ -2,7 +2,6 @@ import 'package:checks/checks.dart';
 import 'package:chirp/chirp.dart';
 import 'package:drift/drift.dart';
 import 'package:drift/native.dart';
-import 'package:stratalog/stratalog.dart';
 import 'package:stratalog_drift/stratalog_drift.dart';
 import 'package:test/test.dart';
 
@@ -32,8 +31,7 @@ void main() {
     writer = _CapturingWriter();
     Chirp.root = ChirpLogger().addWriter(writer);
     db = _Db(
-      NativeDatabase.memory()
-          .interceptWith(LoggerQueryInterceptor(LogLayer.storage)),
+      NativeDatabase.memory().interceptWith(LoggerQueryInterceptor(.storage)),
     );
   });
 
@@ -48,30 +46,34 @@ void main() {
     await db.customStatement('CREATE TABLE t (id INTEGER PRIMARY KEY)');
     await db.customInsert(
       'INSERT INTO t (id) VALUES (?)',
-      variables: [Variable.withInt(7)],
+      variables: [.withInt(7)],
     );
     final rows = await db.customSelect('SELECT * FROM t').get();
 
     check(rows).length.equals(1);
     check(messages()).contains('▸ CREATE TABLE t (id INTEGER PRIMARY KEY)');
 
-    final insert = writer.records
-        .firstWhere((r) => '${r.message}'.startsWith('▸ INSERT'));
+    final insert = writer.records.firstWhere(
+      (r) => '${r.message}'.startsWith('▸ INSERT'),
+    );
     check(insert.data['args']).isA<List<Object?>>().deepEquals([7]);
     check(insert.data['duration_ms']).isA<int>();
 
-    final select = writer.records
-        .firstWhere((r) => '${r.message}'.startsWith('▸ SELECT'));
+    final select = writer.records.firstWhere(
+      (r) => '${r.message}'.startsWith('▸ SELECT'),
+    );
     check(select.data['rows']).equals(1);
   });
 
   test('failures log the statement at warning and rethrow', () async {
-    await check(db.customStatement('SELECT * FROM missing_table'))
-        .throws<Object>();
+    await check(
+      db.customStatement('SELECT * FROM missing_table'),
+    ).throws<Object>();
 
-    final failure = writer.records
-        .firstWhere((r) => '${r.message}'.startsWith('✗'));
-    check(failure.level).equals(ChirpLogLevel.warning);
+    final failure = writer.records.firstWhere(
+      (r) => '${r.message}'.startsWith('✗'),
+    );
+    check(failure.level).equals(.warning);
     check('${failure.message}').contains('missing_table');
   });
 
@@ -79,22 +81,22 @@ void main() {
     await db.close();
     db = _Db(
       NativeDatabase.memory().interceptWith(
-        LoggerQueryInterceptor(LogLayer.storage, logArgs: false),
+        LoggerQueryInterceptor(.storage, logArgs: false),
       ),
     );
     await db.customStatement('CREATE TABLE t (secret TEXT)');
     await db.customInsert(
       'INSERT INTO t (secret) VALUES (?)',
-      variables: [Variable.withString('hunter2')],
+      variables: [.withString('hunter2')],
     );
 
-    check('${writer.records.map((r) => r.data).toList()}')
-        .not((it) => it.contains('hunter2'));
+    check(
+      '${writer.records.map((r) => r.data).toList()}',
+    ).not((it) => it.contains('hunter2'));
   });
 
   test('long statements are ellipsized in the message', () async {
-    final interceptor =
-        LoggerQueryInterceptor(LogLayer.storage, maxStatementChars: 16);
+    final interceptor = LoggerQueryInterceptor(.storage, maxStatementChars: 16);
     await db.close();
     db = _Db(NativeDatabase.memory().interceptWith(interceptor));
 

@@ -26,8 +26,9 @@ void main() {
     expect(notifications, 4);
   });
 
-  testWidgets('renders records newest first and expands the body',
-      (tester) async {
+  testWidgets('renders records newest first and expands the body', (
+    tester,
+  ) async {
     LogLayer.network.warning('slow response', data: {'ms': 132});
     LogLayer.auth.info('signed in');
 

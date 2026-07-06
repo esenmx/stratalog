@@ -4,7 +4,6 @@ import 'package:firebase_analytics/firebase_analytics.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mockito/annotations.dart';
 import 'package:mockito/mockito.dart';
-import 'package:stratalog/stratalog.dart';
 import 'package:stratalog_firebase_analytics/stratalog_firebase_analytics.dart';
 
 import 'logger_analytics_test.mocks.dart';
@@ -60,7 +59,6 @@ void main() {
       firebase.logEvent(
         name: 'checkout_started',
         parameters: {'total': 42},
-        callOptions: null,
       ),
     ).called(1);
   });
@@ -71,8 +69,6 @@ void main() {
     verify(
       firebase.logScreenView(
         screenName: 'Home',
-        screenClass: null,
-        parameters: null,
       ),
     ).called(1);
   });
@@ -81,8 +77,9 @@ void main() {
     await analytics.setUserId('user-secret-42');
 
     check('${writer.records.single.message}').equals('user id set');
-    check('${writer.records.single.data}')
-        .not((it) => it.contains('user-secret-42'));
+    check(
+      '${writer.records.single.data}',
+    ).not((it) => it.contains('user-secret-42'));
     verify(firebase.setUserId(id: 'user-secret-42')).called(1);
   });
 }

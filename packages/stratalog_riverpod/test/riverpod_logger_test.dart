@@ -1,7 +1,6 @@
 import 'package:checks/checks.dart';
 import 'package:chirp/chirp.dart';
 import 'package:riverpod/riverpod.dart';
-import 'package:stratalog/stratalog.dart';
 import 'package:stratalog_riverpod/stratalog_riverpod.dart';
 import 'package:test/test.dart';
 
@@ -33,7 +32,7 @@ void main() {
 
   test('provider add and dispose are traced', () {
     final container = ProviderContainer(
-      observers: [const RiverpodLogger(LogLayer.state)],
+      observers: [const RiverpodLogger(.state)],
     );
     final provider = Provider((ref) => 'hello');
     container
@@ -46,7 +45,7 @@ void main() {
 
   test('update is traced with both values', () {
     final container = ProviderContainer(
-      observers: [const RiverpodLogger(LogLayer.state)],
+      observers: [const RiverpodLogger(.state)],
     );
     final provider = NotifierProvider<_Counter, int>(_Counter.new);
     container.read(provider.notifier).increment();
@@ -57,7 +56,7 @@ void main() {
 
   test('fat states are ellipsized', () {
     final container = ProviderContainer(
-      observers: [const RiverpodLogger(LogLayer.state, maxValueLength: 16)],
+      observers: [const RiverpodLogger(.state, maxValueLength: 16)],
     );
     final provider = Provider((ref) => 'x' * 100);
     container
@@ -70,16 +69,16 @@ void main() {
 
   test('Exception failure -> warning, Error failure -> error', () {
     final container = ProviderContainer(
-      observers: [const RiverpodLogger(LogLayer.state)],
+      observers: [const RiverpodLogger(.state)],
     );
 
     final throwsException = Provider<int>((ref) => throw Exception('x'));
     check(() => container.read(throwsException)).throws<Object>();
-    check(writer.records.last.level).equals(ChirpLogLevel.warning);
+    check(writer.records.last.level).equals(.warning);
 
     final throwsError = Provider<int>((ref) => throw StateError('y'));
     check(() => container.read(throwsError)).throws<Object>();
-    check(writer.records.last.level).equals(ChirpLogLevel.error);
+    check(writer.records.last.level).equals(.error);
 
     container.dispose();
   });

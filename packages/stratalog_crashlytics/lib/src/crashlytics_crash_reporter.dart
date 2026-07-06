@@ -21,8 +21,7 @@ final class CrashlyticsCrashReporter implements CrashReporter {
 
   final FirebaseCrashlytics? _crashlytics;
 
-  FirebaseCrashlytics get _instance =>
-      _crashlytics ?? FirebaseCrashlytics.instance;
+  FirebaseCrashlytics get _instance => _crashlytics ?? .instance;
 
   @override
   void recordError(

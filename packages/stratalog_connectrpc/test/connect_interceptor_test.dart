@@ -1,7 +1,6 @@
 import 'package:checks/checks.dart';
 import 'package:chirp/chirp.dart';
 import 'package:connectrpc/connect.dart';
-import 'package:stratalog/stratalog.dart';
 import 'package:stratalog_connectrpc/stratalog_connectrpc.dart';
 import 'package:test/test.dart';
 
@@ -19,7 +18,7 @@ final class _NeverAborts implements AbortSignal {
   DateTime? get deadline => null;
 
   @override
-  Future<ConnectException> get future => Future.any(const []);
+  Future<ConnectException> get future => .any(const []);
 }
 
 Spec<String, String> _spec(StreamType type) => Spec(
@@ -30,7 +29,7 @@ Spec<String, String> _spec(StreamType type) => Spec(
 );
 
 UnaryRequest<String, String> _request({Headers? headers}) => UnaryRequest(
-  _spec(StreamType.unary),
+  _spec(.unary),
   'https://api.example.com/acme.foo.v1.FooService/Bar',
   headers ?? Headers(),
   'ping',
@@ -51,7 +50,7 @@ void main() {
       UnaryResponse(request.spec, Headers(), 'pong', Headers());
 
   test('success logs procedure with duration at trace', () async {
-    final interceptor = loggerConnectInterceptor(LogLayer.network);
+    final interceptor = loggerConnectInterceptor(.network);
     final wrapped = interceptor<String, String>(ok);
 
     final response = await wrapped(_request());
@@ -68,7 +67,7 @@ void main() {
     final headers = Headers()
       ..add('authorization', 'Bearer secret-token')
       ..add('x-request-id', 'r1');
-    final wrapped = loggerConnectInterceptor(LogLayer.network)<String, String>(
+    final wrapped = loggerConnectInterceptor(.network)<String, String>(
       ok,
     );
 
@@ -85,17 +84,19 @@ void main() {
 
   test('ConnectException logs code at warning and rethrows', () async {
     Future<Response<String, String>> fails(Request<String, String> _) async {
-      throw ConnectException(Code.notFound, 'missing');
+      throw ConnectException(.notFound, 'missing');
     }
 
-    final wrapped = loggerConnectInterceptor(LogLayer.network)<String, String>(
+    final wrapped = loggerConnectInterceptor(.network)<String, String>(
       fails,
     );
 
     await check(wrapped(_request())).throws<ConnectException>();
     final record = writer.records.last;
-    check(record.level).equals(ChirpLogLevel.warning);
-    check('${record.message}').equals('✗ not_found /acme.foo.v1.FooService/Bar');
+    check(record.level).equals(.warning);
+    check(
+      '${record.message}',
+    ).equals('✗ not_found /acme.foo.v1.FooService/Bar');
   });
 
   test('streaming spec logs with the stream arrow', () async {
@@ -104,19 +105,19 @@ void main() {
     ) async => StreamResponse(
       request.spec,
       Headers(),
-      const Stream.empty(),
+      const .empty(),
       Headers(),
     );
 
-    final wrapped = loggerConnectInterceptor(LogLayer.network)<String, String>(
+    final wrapped = loggerConnectInterceptor(.network)<String, String>(
       okStream,
     );
     await wrapped(
       StreamRequest(
-        _spec(StreamType.bidi),
+        _spec(.bidi),
         'https://api.example.com/acme.foo.v1.FooService/Bar',
         Headers(),
-        const Stream.empty(),
+        const .empty(),
         const _NeverAborts(),
       ),
     );
