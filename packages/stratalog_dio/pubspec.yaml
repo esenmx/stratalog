@@ -1,0 +1,25 @@
+name: stratalog_dio
+description: Dio interceptor for stratalog — redacted headers, truncated bodies, request timing into the Network log layer.
+version: 0.1.0
+homepage: https://mehmetesen.com
+repository: https://github.com/esenmx/stratalog
+issue_tracker: https://github.com/esenmx/stratalog/issues
+resolution: workspace
+
+topics:
+  - logging
+  - dio
+  - observability
+
+environment:
+  sdk: ^3.11.0
+
+dependencies:
+  dio: ^5.10.0
+  stratalog: ^0.1.0
+
+dev_dependencies:
+  checks: ^0.3.1
+  chirp: ^0.9.0
+  test: ">=1.25.0 <2.0.0"
+  very_good_analysis: ^10.2.0

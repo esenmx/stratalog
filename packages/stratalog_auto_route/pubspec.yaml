@@ -1,0 +1,25 @@
+name: stratalog_auto_route
+description: auto_route navigator observer for stratalog — pushes, pops, tab changes into the Route log layer.
+version: 0.1.0
+homepage: https://mehmetesen.com
+repository: https://github.com/esenmx/stratalog
+issue_tracker: https://github.com/esenmx/stratalog/issues
+resolution: workspace
+
+topics:
+  - logging
+  - navigation
+  - observability
+
+environment:
+  sdk: ^3.11.0
+  flutter: ">=3.38.0"
+
+dependencies:
+  auto_route: ^11.1.0
+  flutter:
+    sdk: flutter
+  stratalog: ^0.1.0
+
+dev_dependencies:
+  very_good_analysis: ^10.2.0
