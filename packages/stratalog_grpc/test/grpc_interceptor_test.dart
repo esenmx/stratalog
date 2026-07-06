@@ -1,7 +1,6 @@
 import 'package:checks/checks.dart';
 import 'package:chirp/chirp.dart';
 import 'package:grpc/grpc.dart';
-import 'package:stratalog/stratalog.dart';
 import 'package:stratalog_grpc/stratalog_grpc.dart';
 import 'package:test/test.dart';
 
@@ -81,18 +80,18 @@ void main() {
     writer = _CapturingWriter();
     Chirp.root = ChirpLogger().addWriter(writer);
 
-    server = Server.create(services: [_EchoService()]);
+    server = .create(services: [_EchoService()]);
     await server.serve(address: 'localhost', port: 0);
     channel = ClientChannel(
       'localhost',
       port: server.port!,
       options: const ChannelOptions(
-        credentials: ChannelCredentials.insecure(),
+        credentials: .insecure(),
       ),
     );
     client = _EchoClient(
       channel,
-      interceptors: [LoggerGrpcInterceptor(LogLayer.network)],
+      interceptors: [LoggerGrpcInterceptor(.network)],
     );
   });
 
@@ -102,7 +101,7 @@ void main() {
     Chirp.root = null;
   });
 
-  Future<void> settle() => Future<void>.delayed(Duration.zero);
+  Future<void> settle() => Future<void>.delayed(.zero);
 
   test('unary success logs request and OK with duration', () async {
     final reply = await client.echo([1, 2, 3]);
@@ -121,7 +120,7 @@ void main() {
     await settle();
 
     final record = writer.records.last;
-    check(record.level).equals(ChirpLogLevel.warning);
+    check(record.level).equals(.warning);
     check('${record.message}').equals('✗ NOT_FOUND /test.Echo/Boom');
     check(record.error).isA<GrpcError>();
   });

@@ -12,7 +12,7 @@ void main() {
     formatter: StructuredLogFormatter(),
     output: print,
     capabilities: const TerminalCapabilities(
-      colorSupport: TerminalColorSupport.ansi256,
+      colorSupport: .ansi256,
     ),
   );
 

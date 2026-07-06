@@ -1,7 +1,6 @@
 import 'package:bloc/bloc.dart';
 import 'package:checks/checks.dart';
 import 'package:chirp/chirp.dart';
-import 'package:stratalog/stratalog.dart';
 import 'package:stratalog_bloc/stratalog_bloc.dart';
 import 'package:test/test.dart';
 
@@ -25,7 +24,7 @@ final class _CounterCubit extends Cubit<int> {
 
   void increment() => emit(state + 1);
 
-  void fail(Object error) => addError(error, StackTrace.current);
+  void fail(Object error) => addError(error, .current);
 }
 
 final class _CounterBloc extends Bloc<String, int> {
@@ -40,7 +39,7 @@ void main() {
   setUp(() {
     writer = _CapturingWriter();
     Chirp.root = ChirpLogger().addWriter(writer);
-    Bloc.observer = const BlocLogger(LogLayer.state);
+    Bloc.observer = const BlocLogger(.state);
   });
 
   tearDown(() {
@@ -61,30 +60,33 @@ void main() {
     ]);
   });
 
-  test('bloc logs event + transition without a duplicate change line',
-      () async {
-    final bloc = _CounterBloc()..add('inc');
-    await Future<void>.delayed(Duration.zero);
-    await bloc.close();
+  test(
+    'bloc logs event + transition without a duplicate change line',
+    () async {
+      final bloc = _CounterBloc()..add('inc');
+      await Future<void>.delayed(.zero);
+      await bloc.close();
 
-    check(messages()).contains('⚡ _CounterBloc | event: inc');
-    check(messages()).contains('~ _CounterBloc | inc: 0 ➔ 1');
-    check(messages().where((m) => m.startsWith('~'))).length.equals(1);
-  });
+      check(messages()).contains('⚡ _CounterBloc | event: inc');
+      check(messages()).contains('~ _CounterBloc | inc: 0 ➔ 1');
+      check(messages().where((m) => m.startsWith('~'))).length.equals(1);
+    },
+  );
 
   test('Exception -> warning, Error -> error', () {
     _CounterCubit()
       ..fail(Exception('x'))
       ..fail(StateError('y'));
 
-    final failures =
-        writer.records.where((r) => '${r.message}'.startsWith('✗')).toList();
-    check(failures[0].level).equals(ChirpLogLevel.warning);
-    check(failures[1].level).equals(ChirpLogLevel.error);
+    final failures = writer.records
+        .where((r) => '${r.message}'.startsWith('✗'))
+        .toList();
+    check(failures[0].level).equals(.warning);
+    check(failures[1].level).equals(.error);
   });
 
   test('fat states are ellipsized', () async {
-    Bloc.observer = const BlocLogger(LogLayer.state, maxValueLength: 8);
+    Bloc.observer = const BlocLogger(.state, maxValueLength: 8);
 
     final cubit = _FatCubit();
     await cubit.close();

@@ -28,13 +28,13 @@ void main() {
       uid: 'u1',
       email: 'jane.doe@example.com',
       providerData: [
-        UserInfo.fromJson(const {
+        .fromJson(const {
           'providerId': 'google.com',
           'uid': 'g1',
           'isAnonymous': false,
           'isEmailVerified': true,
         }),
-        UserInfo.fromJson(const {
+        .fromJson(const {
           'providerId': 'apple.com',
           'uid': 'a1',
           'isAnonymous': false,
@@ -48,7 +48,7 @@ void main() {
     await auth.signInWithCredential(
       GoogleAuthProvider.credential(idToken: 't', accessToken: 'a'),
     );
-    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(.zero);
 
     final signIn = writer.records.firstWhere(
       (r) => '${r.message}' == 'Signed in',
@@ -58,7 +58,7 @@ void main() {
     expect(signIn.data['providers'], ['google.com', 'apple.com']);
 
     await auth.signOut();
-    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(.zero);
     expect(messages().where((m) => m == 'Signed out').length, 1);
   });
 
@@ -72,7 +72,7 @@ void main() {
       email: 'jane.doe@example.com',
       password: 'x',
     );
-    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(.zero);
 
     final signIn = writer.records.firstWhere(
       (r) => '${r.message}' == 'Signed in',
@@ -84,7 +84,7 @@ void main() {
   test('cold start while signed out logs nothing', () async {
     final auth = MockFirebaseAuth();
     FirebaseAuthLogger(auth).attach();
-    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(.zero);
 
     expect(messages().where((m) => m == 'Signed out'), isEmpty);
   });

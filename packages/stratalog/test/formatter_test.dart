@@ -14,11 +14,11 @@ List<String> render(
     formatter: formatter ?? StructuredLogFormatter(),
     output: lines.add,
     capabilities: const TerminalCapabilities(
-      colorSupport: TerminalColorSupport.ansi256,
+      colorSupport: .ansi256,
     ),
   );
   Chirp.root = root;
-  log(LogLayer.network);
+  log(.network);
   Chirp.root = null;
   return lines;
 }
@@ -42,7 +42,7 @@ void main() {
           'line1\nline2',
           data: {'k': 'v'},
           error: Exception('boom'),
-          stackTrace: StackTrace.current,
+          stackTrace: .current,
         ),
       ).single,
     );

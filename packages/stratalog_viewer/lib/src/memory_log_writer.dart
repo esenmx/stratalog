@@ -21,7 +21,7 @@ final class MemoryLogWriter extends ChirpWriter with ChangeNotifier {
   final ListQueue<LogRecord> _records = ListQueue();
 
   /// Snapshot of the buffered records, oldest first.
-  List<LogRecord> get records => List.unmodifiable(_records);
+  List<LogRecord> get records => .unmodifiable(_records);
 
   @override
   void write(LogRecord record) {

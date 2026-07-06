@@ -28,7 +28,7 @@ Interceptor loggerConnectInterceptor(
     return (Request<I, O> request) async {
       final watch = Stopwatch()..start();
       final procedure = request.spec.procedure;
-      final arrow = request.spec.streamType == StreamType.unary ? '→' : '⇄';
+      final arrow = request.spec.streamType == .unary ? '→' : '⇄';
       logger.trace(
         '$arrow $procedure',
         data: {'headers': _safeHeaders(request.headers, sensitiveHeaders)},

@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:checks/checks.dart';
 import 'package:chirp/chirp.dart';
 import 'package:dio/dio.dart';
-import 'package:stratalog/stratalog.dart';
 import 'package:stratalog_dio/stratalog_dio.dart';
 import 'package:test/test.dart';
 
@@ -37,7 +36,7 @@ void main() {
 
   test('sensitive headers masked, unlisted dropped, allowlisted kept', () {
     LoggerDioInterceptor(
-      LogLayer.network,
+      .network,
     ).onRequest(request(), RequestInterceptorHandler());
 
     final headers =
@@ -53,7 +52,7 @@ void main() {
 
   test('oversized bodies are ellipsized, small ones kept structured', () {
     final interceptor = LoggerDioInterceptor(
-      LogLayer.network,
+      .network,
       maxBodyChars: 32,
     );
     final response = Response<Object?>(
@@ -81,7 +80,7 @@ void main() {
   });
 
   test('failures log at warning with status and duration', () {
-    final interceptor = LoggerDioInterceptor(LogLayer.network);
+    final interceptor = LoggerDioInterceptor(.network);
     final options = request();
     interceptor.onRequest(options, RequestInterceptorHandler());
     writer.records.clear();
@@ -100,7 +99,7 @@ void main() {
     );
 
     final record = writer.records.single;
-    check(record.level).equals(ChirpLogLevel.warning);
+    check(record.level).equals(.warning);
     check(
       '${record.message}',
     ).equals('✗ 404 GET https://api.example.com/users');

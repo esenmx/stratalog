@@ -46,3 +46,8 @@ melos:
         concurrency: 1
       packageFilters:
         dirExists: test
+    shorthand:
+      description: Rewrite Type.member to dot-shorthand via `dotsan` across every workspace member. Pair with `melos format`.
+      exec:
+        command: dotsan .
+        concurrency: 4
