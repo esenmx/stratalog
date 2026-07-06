@@ -1,0 +1,30 @@
+name: stratalog
+description: Opinionated structured logging on chirp — colored layer loggers readable on light & dark themes, Dio/Riverpod/AutoRoute taps, pluggable crash reporting.
+version: 0.1.0
+homepage: https://mehmetesen.com
+repository: https://github.com/esenmx/stratalog
+issue_tracker: https://github.com/esenmx/stratalog/issues
+
+topics:
+  - logging
+  - observability
+  - ansi
+  - structured-data
+
+environment:
+  sdk: ^3.11.0
+  flutter: ">=3.38.0"
+
+dependencies:
+  auto_route: ^11.1.0
+  chirp: ^0.9.0
+  dio: ^5.10.0
+  flutter:
+    sdk: flutter
+  riverpod: ^3.2.1
+
+dev_dependencies:
+  checks: ^0.3.1
+  flutter_test:
+    sdk: flutter
+  very_good_analysis: ^10.2.0
