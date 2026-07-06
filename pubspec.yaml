@@ -1,30 +1,42 @@
-name: stratalog
-description: Opinionated structured logging on chirp — colored layer loggers readable on light & dark themes, Dio/Riverpod/AutoRoute taps, pluggable crash reporting.
-version: 0.1.0
-homepage: https://mehmetesen.com
-repository: https://github.com/esenmx/stratalog
-issue_tracker: https://github.com/esenmx/stratalog/issues
-
-topics:
-  - logging
-  - observability
-  - ansi
-  - structured-data
+name: stratalog_workspace
+publish_to: "none"
 
 environment:
   sdk: ^3.11.0
-  flutter: ">=3.38.0"
 
-dependencies:
-  auto_route: ^11.1.0
-  chirp: ^0.9.0
-  dio: ^5.10.0
-  flutter:
-    sdk: flutter
-  riverpod: ^3.2.1
+workspace:
+  - packages/stratalog
+  - packages/stratalog_auto_route
+  - packages/stratalog_connectrpc
+  - packages/stratalog_dio
+  - packages/stratalog_firebase_auth
+  - packages/stratalog_grpc
+  - packages/stratalog_riverpod
 
 dev_dependencies:
-  checks: ^0.3.1
-  flutter_test:
-    sdk: flutter
-  very_good_analysis: ^10.2.0
+  melos: 8.0.0
+
+melos:
+  ide:
+    intellij: false
+
+  scripts:
+    analyze:
+      description: Run `dart analyze` across every workspace member.
+      exec:
+        command: dart analyze .
+        concurrency: 4
+
+    format:
+      description: Run `dart format` across every workspace member.
+      exec:
+        command: dart format .
+        concurrency: 4
+
+    test:
+      description: Run tests in every package with a `test/` directory.
+      exec:
+        command: flutter test
+        concurrency: 1
+      packageFilters:
+        dirExists: test
