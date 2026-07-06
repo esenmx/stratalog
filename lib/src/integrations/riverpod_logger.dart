@@ -1,6 +1,6 @@
-import 'package:chirp/chirp.dart';
 import 'package:riverpod/experimental/mutation.dart';
 import 'package:riverpod/riverpod.dart';
+import 'package:stratalog/src/layers.dart';
 
 /// Central Riverpod observability.
 /// Implements all observer hooks, printing clear transitions and full
@@ -13,8 +13,8 @@ final class RiverpodLogger extends ProviderObserver {
   /// Logs observer events to [logger], typically `LogLayer.state`.
   const RiverpodLogger(this.logger, {this.maxValueLength = 200});
 
-  /// Destination layer logger.
-  final ChirpLogger logger;
+  /// Destination layer.
+  final LogLayer logger;
 
   /// State `toString()`s beyond this length are ellipsized — a fat entity
   /// list rebuilding every frame must not drown the console. Set `null` to

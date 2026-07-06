@@ -103,8 +103,7 @@ final class CrashReporterWriter extends ChirpWriter {
           '${record.message}',
         );
       }
-      // ignore: avoid_catches_without_on_clauses -- Error included on purpose
-    } catch (_) {
+    } on Object catch (_) {
       // Crash backend unavailable — drop the forward, never the app.
     }
   }

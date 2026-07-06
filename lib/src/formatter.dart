@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:chirp/chirp.dart';
 import 'package:chirp/chirp_spans.dart';
 
+import 'package:stratalog/src/layers.dart';
 import 'package:stratalog/src/palette.dart';
 
 /// Draws a colored left border along every line of [child] — one visual
@@ -218,6 +219,7 @@ class StructuredLogFormatter extends SpanBasedFormatter {
   ConsoleColor _colorForLogger(String? name) {
     if (name == null) return LogPalette.app;
     return domainColors[name] ??
+        LogLayer.declaredColorOf(name) ?? // color declared on the LogLayer
         LogPalette.colorFor(name); // stable hash for unlisted layers
   }
 }

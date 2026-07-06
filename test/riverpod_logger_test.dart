@@ -3,6 +3,7 @@ import 'package:chirp/chirp.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:stratalog/riverpod.dart';
+import 'package:stratalog/stratalog.dart';
 
 final class _Counter extends Notifier<int> {
   @override
@@ -20,17 +21,19 @@ final class _CapturingWriter extends ChirpWriter {
 
 void main() {
   late _CapturingWriter writer;
-  late ChirpLogger logger;
 
   setUp(() {
     writer = _CapturingWriter();
-    logger = ChirpLogger().addWriter(writer);
+    Chirp.root = ChirpLogger().addWriter(writer);
   });
+
+  tearDown(() => Chirp.root = null);
 
   Iterable<String> messages() => writer.records.map((r) => '${r.message}');
 
   test('provider add and dispose are traced', () {
-    final container = ProviderContainer(observers: [RiverpodLogger(logger)]);
+    final container =
+        ProviderContainer(observers: [const RiverpodLogger(LogLayer.state)]);
     final provider = Provider((ref) => 'hello');
     container
       ..read(provider)
@@ -41,7 +44,8 @@ void main() {
   });
 
   test('update is traced with both values', () {
-    final container = ProviderContainer(observers: [RiverpodLogger(logger)]);
+    final container =
+        ProviderContainer(observers: [const RiverpodLogger(LogLayer.state)]);
     final provider = NotifierProvider<_Counter, int>(_Counter.new);
     container.read(provider.notifier).increment();
 
@@ -51,7 +55,7 @@ void main() {
 
   test('fat states are ellipsized', () {
     final container = ProviderContainer(
-      observers: [RiverpodLogger(logger, maxValueLength: 16)],
+      observers: [const RiverpodLogger(LogLayer.state, maxValueLength: 16)],
     );
     final provider = Provider((ref) => 'x' * 100);
     container
@@ -63,7 +67,8 @@ void main() {
   });
 
   test('Exception failure -> warning, Error failure -> error', () {
-    final container = ProviderContainer(observers: [RiverpodLogger(logger)]);
+    final container =
+        ProviderContainer(observers: [const RiverpodLogger(LogLayer.state)]);
 
     final throwsException = Provider<int>((ref) => throw Exception('x'));
     check(() => container.read(throwsException)).throws<Object>();

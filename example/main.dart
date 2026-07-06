@@ -38,7 +38,7 @@ class ExampleApp extends StatelessWidget {
           child: FilledButton(
             onPressed: () {
               LogLayer.auth.success('Signed in', data: {'method': 'apple'});
-              LogLayer.layer('Payments').warning('Card near expiry');
+              const LogLayer('Payments').warning('Card near expiry');
               try {
                 throw StateError('demo failure');
               } on Object catch (e, s) {

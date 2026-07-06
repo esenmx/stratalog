@@ -6,15 +6,16 @@ import 'package:stratalog/stratalog.dart';
 /// Renders through the real pipeline (logger -> console writer -> formatter)
 /// with ANSI-256 forced on, capturing the final string.
 List<String> render(
-  void Function(ChirpLogger logger) log, {
+  void Function(LogLayer logger) log, {
   StructuredLogFormatter? formatter,
 }) {
   final lines = <String>[];
   final root = ChirpLogger().addConsoleWriter(
     formatter: formatter ?? StructuredLogFormatter(),
     output: lines.add,
-    capabilities:
-        const TerminalCapabilities(colorSupport: TerminalColorSupport.ansi256),
+    capabilities: const TerminalCapabilities(
+      colorSupport: TerminalColorSupport.ansi256,
+    ),
   );
   Chirp.root = root;
   log(LogLayer.network);
@@ -67,23 +68,32 @@ void main() {
     check(out).contains("Instance of 'Object'");
   });
 
-  test('showTimestamp/showLocation strip header segments and caller cost',
-      () {
-    final formatter =
-        StructuredLogFormatter(showTimestamp: false, showLocation: false);
+  test('showTimestamp/showLocation strip header segments and caller cost', () {
+    final formatter = StructuredLogFormatter(
+      showTimestamp: false,
+      showLocation: false,
+    );
     check(formatter.requiresCallerInfo).isFalse();
 
-    final out =
-        stripAnsi(render((l) => l.info('x'), formatter: formatter).single);
+    final out = stripAnsi(
+      render((l) => l.info('x'), formatter: formatter).single,
+    );
     check(out.split('\n').first).not((it) => it.contains(' • '));
+  });
+
+  test('caller info points at the call site, not the delegation frames', () {
+    final out = stripAnsi(render((l) => l.info('x')).single);
+    final header = out.split('\n').first;
+
+    check(header).contains('formatter_test');
+    check(header).not((it) => it.contains('layers'));
   });
 
   test('custom domain colors overlay, palette fills the rest', () {
     final formatter = StructuredLogFormatter(
       domainColors: const {'Payments': Ansi256.springGreen4_29},
     );
-    check(formatter.domainColors['Payments'])
-        .equals(Ansi256.springGreen4_29);
+    check(formatter.domainColors['Payments']).equals(Ansi256.springGreen4_29);
     check(formatter.domainColors['Network']).equals(LogPalette.network);
   });
 }

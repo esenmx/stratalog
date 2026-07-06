@@ -28,10 +28,11 @@ void main() {
     check(writerB.records.map((r) => '${r.message}')).deepEquals(['to B']);
   });
 
-  test('same layer instance is cached under a stable root', () {
+  test('backing logger is cached under a stable root', () {
     Chirp.root = ChirpLogger();
-    check(LogLayer.auth).identicalTo(LogLayer.auth);
-    check(LogLayer.layer('Payments')).identicalTo(LogLayer.layer('Payments'));
+    check(LogLayer.auth.logger).identicalTo(LogLayer.auth.logger);
+    const payments = LogLayer('Payments');
+    check(payments.logger).identicalTo(const LogLayer('Payments').logger);
   });
 
   test('layer names carry into records', () {
@@ -39,22 +40,36 @@ void main() {
     Chirp.root = ChirpLogger().addWriter(writer);
 
     LogLayer.storage.info('x');
-    LogLayer.layer('Payments').info('y');
+    const LogLayer('Payments').info('y');
 
-    check(writer.records.map((r) => r.loggerName))
-        .deepEquals(['Storage', 'Payments']);
+    check(
+      writer.records.map((r) => r.loggerName),
+    ).deepEquals(['Storage', 'Payments']);
   });
 
-  test('accessing a layer before configureLogging throws a package hint', () {
-    check(() => LogLayer.app).throws<StateError>()
-        .has((e) => e.message, 'message')
-        .contains('configureLogging');
+  test(
+    'logging through a layer before configureLogging throws a package hint',
+    () {
+      check(() => LogLayer.app.info('x'))
+          .throws<StateError>()
+          .has((e) => e.message, 'message')
+          .contains('configureLogging');
+    },
+  );
+
+  test('declared layer color registers on first log', () {
+    Chirp.root = ChirpLogger();
+    const payments = LogLayer('Payments', color: Ansi256.springGreen4_29);
+
+    check(LogLayer.declaredColorOf('Payments')).isNull(); // not logged yet
+    payments.info('x');
+    check(LogLayer.declaredColorOf('Payments')).equals(Ansi256.springGreen4_29);
   });
 
-  test('custom layers get a stable contrast-verified color', () {
-    final color = LogPalette.colorFor('Payments');
+  test('colorless custom layers get a stable contrast-verified hash color', () {
+    final color = LogPalette.colorFor('Shipping');
     check(LogPalette.hashPool).contains(color);
-    check(LogPalette.colorFor('Payments')).equals(color); // stable
+    check(LogPalette.colorFor('Shipping')).equals(color); // stable
     check(LogPalette.colorFor('Auth')).equals(LogPalette.auth); // listed
   });
 }

@@ -34,7 +34,7 @@ void main() {
   LogLayer.auth.notice('Session refreshed', data: {'expires_in': 3600});
   LogLayer.analytics.trace('event: checkout_started');
   LogLayer.platform.info('AppLifecycleState.resumed');
-  LogLayer.layer('Payments').success('Order #8123 captured');
+  const LogLayer('Payments').success('Order #8123 captured');
 
   try {
     throw StateError('emulated failure');

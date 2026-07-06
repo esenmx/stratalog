@@ -10,7 +10,7 @@ Opinionated structured logging for Flutter, built on [chirp](https://pub.dev/pac
  │  }
 ```
 
-- **Layer loggers** — nine pre-defined, non-overlapping domains (`LogLayer.network`, `LogLayer.auth`, …) plus `LogLayer.layer('Payments')` for your own. Each renders as a colored badge with a matching left gutter.
+- **Layer loggers** — nine pre-defined, non-overlapping domains (`LogLayer.network`, `LogLayer.auth`, …), each a `const` value rendering as a colored badge with a matching left gutter. Declare your own the same way: `const payments = LogLayer('Payments', color: Ansi256.springGreen4_29)` — omit `color` for a stable contrast-verified hash pick.
 - **Theme-adaptive colors** — every hue passes WCAG ≥ 3.0 contrast on solarized light/dark *and* soft-gray light/dark backgrounds, enforced by a test. Red/orange/hot-pink are reserved for severity, so hue always separates *where* from *how bad*.
 - **Pluggable crash reporting** — implement the 2-method `CrashReporter` against Crashlytics, Sentry, or anything else; stratalog carries no vendor dependency.
 - **Stack taps** — `LoggerDioInterceptor` (redacted headers, truncated bodies), `RiverpodLogger` (all observer + mutation hooks), `AppRouterObserver` (auto_route), each behind its own entrypoint so unused ones stay out of your import graph.
@@ -28,7 +28,8 @@ void main() {
 ```dart
 LogLayer.auth.info('Session refreshed', data: {'expires_in': 3600});
 LogLayer.storage.error('Migration failed', error: e, stackTrace: s);
-LogLayer.layer('Payments').success('Order captured');
+const payments = LogLayer('Payments'); // declare custom layers once
+payments.success('Order captured');
 ```
 
 ## Layers
@@ -88,4 +89,4 @@ router.config(navigatorObservers: () => [AppRouterObserver(LogLayer.route)]);
 
 ## Changing colors
 
-`configureLogging(domainColors: {'Payments': Ansi256.springGreen4_29})` overlays the defaults. Before picking a color, sweep candidates with `dart run tool/contrast_report.dart` — `flutter test` fails if a palette color drops below 3.0 contrast on any target background.
+Custom layers carry their color at the declaration (`LogLayer('Payments', color: …)`); `configureLogging(domainColors: {'Auth': …})` overlays the pre-defined ones. Before picking a color, sweep candidates with `dart run tool/contrast_report.dart` — `flutter test` fails if a palette color drops below 3.0 contrast on any target background.

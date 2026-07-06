@@ -1,6 +1,6 @@
 import 'package:auto_route/auto_route.dart';
-import 'package:chirp/chirp.dart';
 import 'package:flutter/widgets.dart';
+import 'package:stratalog/src/layers.dart';
 
 /// Central `auto_route` observability.
 ///
@@ -15,8 +15,8 @@ final class AppRouterObserver extends AutoRouterObserver {
   /// Logs every navigation event to [logger], typically `LogLayer.route`.
   AppRouterObserver(this.logger);
 
-  /// Destination layer logger.
-  final ChirpLogger logger;
+  /// Destination layer.
+  final LogLayer logger;
 
   @override
   void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) {
