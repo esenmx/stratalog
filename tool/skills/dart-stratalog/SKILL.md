@@ -61,4 +61,4 @@ Adapter throws are swallowed by design — a log call must never crash the app (
 - `stratalog_firebase_auth` logs streams only — sign-in *failures* throw at the call site; catch and `LogLayer.auth.warning(...)` there. OAuth providers surface as `google.com`/`apple.com`/`oidc.*` in `providers`.
 - `stratalog_drift`: `logArgs: false` when tables hold PII — bound args are row data.
 - Constraint traps: `stratalog_grpc` needs `grpc >=4.2.0 <6.0.0` (protobuf overlap with connectrpc); `stratalog_drift` floors drift at 2.31.
-- Until published on pub.dev: path deps + `dependency_overrides: stratalog: {path: ...}` at the consumer workspace root (integrations declare stratalog hosted).
+- Never published to pub.dev by design (opinionated, single-org package) — every consumer wires it via path deps + `dependency_overrides: stratalog: {path: ...}` at the consumer's resolution root (workspace root for a melos/pub workspace, the app's own `pubspec.yaml` otherwise); integrations declare stratalog hosted `^0.1.0`, which is what forces the override. This is permanent, not a stopgap.
