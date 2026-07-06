@@ -8,10 +8,12 @@ workspace:
   - packages/stratalog
   - packages/stratalog_auto_route
   - packages/stratalog_connectrpc
+  - packages/stratalog_crashlytics
   - packages/stratalog_dio
   - packages/stratalog_firebase_auth
   - packages/stratalog_grpc
   - packages/stratalog_riverpod
+  - packages/stratalog_sentry
 
 dev_dependencies:
   melos: 8.0.0

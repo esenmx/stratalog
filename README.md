@@ -11,6 +11,8 @@ Opinionated structured logging for Dart & Flutter, built on [chirp](https://pub.
 | [`stratalog_riverpod`](packages/stratalog_riverpod) | Riverpod providers & mutations |
 | [`stratalog_auto_route`](packages/stratalog_auto_route) | auto_route navigation |
 | [`stratalog_firebase_auth`](packages/stratalog_firebase_auth) | FirebaseAuth incl. OAuth2 providers |
+| [`stratalog_crashlytics`](packages/stratalog_crashlytics) | Firebase Crashlytics crash reporting |
+| [`stratalog_sentry`](packages/stratalog_sentry) | Sentry crash reporting |
 
 Start with the [core package README](packages/stratalog/README.md).
 
