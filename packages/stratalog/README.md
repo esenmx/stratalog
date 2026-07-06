@@ -52,19 +52,14 @@ There is deliberately no `lifecycle` or `background` layer: an `AppLifecycleStat
 
 ## Crash reporting
 
-```dart
-final class CrashlyticsReporter implements CrashReporter {
-  @override
-  void recordError(Object error, StackTrace? stackTrace,
-          {String? reason, bool fatal = false}) =>
-      FirebaseCrashlytics.instance
-          .recordError(error, stackTrace, reason: reason, fatal: fatal);
+Ready-made adapters: [`stratalog_crashlytics`](https://pub.dev/packages/stratalog_crashlytics) and [`stratalog_sentry`](https://pub.dev/packages/stratalog_sentry).
 
-  @override
-  void addBreadcrumb(String message) =>
-      FirebaseCrashlytics.instance.log(message);
-}
+```dart
+configureLogging(crashReporter: const CrashlyticsCrashReporter());
+// or: configureLogging(crashReporter: const SentryCrashReporter());
 ```
+
+Any other backend is a 2-method `CrashReporter` implementation away.
 
 `error`+ records become reports (`critical`/`wtf` → `fatal: true`), `info`+ records become breadcrumbs. Tune thresholds or veto expected failures by constructing the writer yourself:
 
