@@ -7,13 +7,17 @@ environment:
 workspace:
   - packages/stratalog
   - packages/stratalog_auto_route
+  - packages/stratalog_bloc
   - packages/stratalog_connectrpc
   - packages/stratalog_crashlytics
   - packages/stratalog_dio
+  - packages/stratalog_drift
+  - packages/stratalog_firebase_analytics
   - packages/stratalog_firebase_auth
   - packages/stratalog_grpc
   - packages/stratalog_riverpod
   - packages/stratalog_sentry
+  - packages/stratalog_viewer
 
 dev_dependencies:
   melos: 8.0.0
