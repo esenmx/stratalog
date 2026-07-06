@@ -5,6 +5,7 @@ import 'package:chirp/chirp.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:stratalog/dio.dart';
+import 'package:stratalog/stratalog.dart';
 
 final class _CapturingWriter extends ChirpWriter {
   final records = <LogRecord>[];
@@ -15,12 +16,13 @@ final class _CapturingWriter extends ChirpWriter {
 
 void main() {
   late _CapturingWriter writer;
-  late ChirpLogger logger;
 
   setUp(() {
     writer = _CapturingWriter();
-    logger = ChirpLogger().addWriter(writer);
+    Chirp.root = ChirpLogger().addWriter(writer);
   });
+
+  tearDown(() => Chirp.root = null);
 
   RequestOptions request() => RequestOptions(
     path: 'https://api.example.com/users',
@@ -35,7 +37,7 @@ void main() {
 
   test('sensitive headers masked, unlisted dropped, allowlisted kept', () {
     LoggerDioInterceptor(
-      logger,
+      LogLayer.network,
     ).onRequest(request(), RequestInterceptorHandler());
 
     final headers =
@@ -50,7 +52,8 @@ void main() {
   });
 
   test('oversized bodies are ellipsized, small ones kept structured', () {
-    final interceptor = LoggerDioInterceptor(logger, maxBodyChars: 32);
+    final interceptor =
+        LoggerDioInterceptor(LogLayer.network, maxBodyChars: 32);
     final response = Response<Object?>(
       requestOptions: request(),
       statusCode: 200,
@@ -76,7 +79,7 @@ void main() {
   });
 
   test('failures log at warning with status and duration', () {
-    final interceptor = LoggerDioInterceptor(logger);
+    final interceptor = LoggerDioInterceptor(LogLayer.network);
     final options = request();
     interceptor.onRequest(options, RequestInterceptorHandler());
     writer.records.clear();

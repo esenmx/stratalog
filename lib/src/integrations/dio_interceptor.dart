@@ -1,5 +1,5 @@
-import 'package:chirp/chirp.dart';
 import 'package:dio/dio.dart';
+import 'package:stratalog/src/layers.dart';
 
 /// Observability-only Dio interceptor — add it LAST in the chain, so
 /// `onRequest` sees the fully-prepared request with every auth/envelope
@@ -15,8 +15,8 @@ final class LoggerDioInterceptor extends Interceptor {
     this.maxBodyChars = 2048,
   });
 
-  /// Destination layer logger.
-  final ChirpLogger logger;
+  /// Destination layer.
+  final LogLayer logger;
 
   /// Only these header values are ever logged verbatim — a full header dump
   /// drowns the log and leaks anything a downstream interceptor attaches.
