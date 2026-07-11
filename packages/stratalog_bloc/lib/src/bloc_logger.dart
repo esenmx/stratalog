@@ -8,7 +8,7 @@ import 'package:stratalog/stratalog.dart';
 /// ```
 final class BlocLogger extends BlocObserver {
   /// Logs observer events to [logger], typically `LogLayer.state`.
-  const BlocLogger(this.logger, {this.maxValueLength = 200});
+  const BlocLogger(this.logger, {this.maxValueLength = 800});
 
   /// Destination layer.
   final LogLayer logger;
@@ -81,9 +81,8 @@ final class BlocLogger extends BlocObserver {
   }
 
   String _short(Object? value) {
-    final s = '$value';
     final max = maxValueLength;
-    if (max == null || s.length <= max) return s;
-    return '${s.substring(0, max)}…(+${s.length - max} chars)';
+    final s = '$value';
+    return max == null ? s : clipString(s, max);
   }
 }

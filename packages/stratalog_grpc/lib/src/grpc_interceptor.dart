@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:grpc/grpc.dart';
+import 'package:protobuf/protobuf.dart';
 import 'package:stratalog/stratalog.dart';
 
 /// Observability-only gRPC [ClientInterceptor] — pass it in your channel's
@@ -21,10 +22,15 @@ final class LoggerGrpcInterceptor extends ClientInterceptor {
   LoggerGrpcInterceptor(
     this.logger, {
     this.sensitiveMetadata = defaultSensitiveMetadata,
+    this.maskSensitiveValues = false,
   });
 
   /// Destination layer.
   final LogLayer logger;
+
+  /// Whether to redact [sensitiveMetadata] values. Defaults to `false` (shows
+  /// bearer tokens for local debugging).
+  final bool maskSensitiveValues;
 
   /// Metadata keys logged presence-only as '***': tokens must never land in
   /// a sink — even the debug console.
@@ -45,21 +51,27 @@ final class LoggerGrpcInterceptor extends ClientInterceptor {
     ClientUnaryInvoker<Q, R> invoker,
   ) {
     final watch = Stopwatch()..start();
-    logger.trace(
-      '→ ${method.path}',
-      data: {'metadata': _safeMetadata(options.metadata)},
-    );
+    final logData = <String, Object?>{
+      'metadata': _safeMetadata(options.metadata),
+    };
+    if (request != null) {
+      logData['request_body'] = _formatMessage(request);
+    }
+    logger.trace('→ ${method.path}', data: logData);
 
     final call = invoker(method, request, options);
     // Side listener only — the caller's own await still receives the result
     // or error untouched.
     unawaited(
       call.then(
-        (_) {
-          logger.trace(
-            '← OK ${method.path}',
-            data: {'duration_ms': watch.elapsedMilliseconds},
-          );
+        (response) {
+          final resData = <String, Object?>{
+            'duration_ms': watch.elapsedMilliseconds,
+          };
+          if (response != null) {
+            resData['response_body'] = _formatMessage(response);
+          }
+          logger.trace('← OK ${method.path}', data: resData);
         },
         onError: (Object error, StackTrace stackTrace) {
           _logFailure(method.path, error, stackTrace, watch);
@@ -121,8 +133,17 @@ final class LoggerGrpcInterceptor extends ClientInterceptor {
     return {
       for (final MapEntry(:key, :value) in metadata.entries)
         key.toLowerCase(): sensitiveMetadata.contains(key.toLowerCase())
-            ? '***'
+            ? (maskSensitiveValues ? '***' : value)
             : value,
     };
+  }
+
+  // A best-effort mapping to structure so ElidingFormatter can clip the leaves.
+  Object? _formatMessage(Object? message) {
+    if (message == null) return null;
+    if (message is GeneratedMessage) {
+      return message.toProto3Json();
+    }
+    return message.toString();
   }
 }

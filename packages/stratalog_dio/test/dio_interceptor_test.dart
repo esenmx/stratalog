@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:checks/checks.dart';
 import 'package:chirp/chirp.dart';
@@ -11,6 +12,44 @@ final class _CapturingWriter extends ChirpWriter {
 
   @override
   void write(LogRecord record) => records.add(record);
+}
+
+final class _StubAdapter implements HttpClientAdapter {
+  _StubAdapter(this.statusCode, this.body);
+
+  final int statusCode;
+  final String body;
+
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelFuture,
+  ) async => ResponseBody.fromString(
+    body,
+    statusCode,
+    headers: {
+      Headers.contentTypeHeader: [Headers.jsonContentType],
+    },
+  );
+
+  @override
+  void close({bool force = false}) {}
+}
+
+final class _RefusingAdapter implements HttpClientAdapter {
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelFuture,
+  ) => throw DioException.connectionError(
+    requestOptions: options,
+    reason: 'connection refused',
+  );
+
+  @override
+  void close({bool force = false}) {}
 }
 
 void main() {
@@ -50,33 +89,20 @@ void main() {
     ).not((it) => it.contains('secret-token'));
   });
 
-  test('oversized bodies are ellipsized, small ones kept structured', () {
-    final interceptor = LoggerDioInterceptor(
-      .network,
-      maxBodyChars: 32,
-    );
-    final response = Response<Object?>(
-      requestOptions: request(),
-      statusCode: 200,
-      data: {'blob': 'x' * 200},
-    );
-    interceptor.onResponse(response, ResponseInterceptorHandler());
-
-    final body = writer.records.single.data['body']! as String;
-    // '{blob: ' + 200 x's + '}' = 208 chars, minus the 32 kept.
-    check(body).endsWith('…(+176 chars)');
-    check(body.length).equals(32 + '…(+176 chars)'.length);
-
-    writer.records.clear();
-    interceptor.onResponse(
+  test('body is logged as full structured data, not truncated here', () {
+    // Elision is the sink's job (ElidingFormatter). The interceptor keeps the
+    // JSON shape and the full payload so no downstream sink is forced to.
+    LoggerDioInterceptor(.network).onResponse(
       Response<Object?>(
         requestOptions: request(),
         statusCode: 200,
-        data: {'ok': true},
+        data: {'blob': 'x' * 200},
       ),
       ResponseInterceptorHandler(),
     );
-    check(writer.records.single.data['body']).isA<Map<String, Object?>>();
+
+    final body = writer.records.single.data['body']! as Map<String, Object?>;
+    check(body['blob']).equals('x' * 200);
   });
 
   test('failures log at warning with status and duration', () {
@@ -92,6 +118,7 @@ void main() {
         DioException(
           requestOptions: options,
           response: Response<Object?>(requestOptions: options, statusCode: 404),
+          type: .badResponse,
         ),
         ErrorInterceptorHandler(),
       ),
@@ -104,5 +131,93 @@ void main() {
       '${record.message}',
     ).equals('✗ 404 GET https://api.example.com/users');
     check(record.data['duration_ms']).isA<int>();
+    check(record.data['type']).equals('badResponse');
+  });
+
+  test('first position keeps the raw response visible when a later '
+      'interceptor throws over it', () async {
+    final dio = Dio(BaseOptions(baseUrl: 'https://api.example.com'))
+      ..httpClientAdapter = _StubAdapter(200, '{"data":{"id":1}}');
+    dio.interceptors
+      ..add(LoggerDioInterceptor(.network))
+      ..add(
+        InterceptorsWrapper(
+          onResponse: (response, handler) =>
+              throw StateError('unexpected envelope'),
+        ),
+      );
+
+    Object? caught;
+    try {
+      await dio.get<Object?>('/users');
+    } on DioException catch (e) {
+      caught = e;
+    }
+    check(caught).isNotNull();
+
+    final trace = writer.records.singleWhere(
+      (r) => '${r.message}'.startsWith('←'),
+    );
+    check('${trace.message}').equals('← 200 GET https://api.example.com/users');
+    check(trace.data['body']).isA<Map<String, Object?>>();
+
+    // Dio dropped the response from the wrapped exception; the raw body sits
+    // on the `←` trace line above, the warning names the pipeline failure.
+    final warning = writer.records.singleWhere((r) => r.level == .warning);
+    check(
+      '${warning.message}',
+    ).equals('✗ unknown GET https://api.example.com/users');
+    check(warning.data['type']).equals('unknown');
+  });
+
+  test('network errors carry the dio type in the message', () async {
+    final dio = Dio(BaseOptions(baseUrl: 'https://api.example.com'))
+      ..httpClientAdapter = _RefusingAdapter();
+    dio.interceptors.add(LoggerDioInterceptor(.network));
+
+    Object? caught;
+    try {
+      await dio.get<Object?>('/users');
+    } on DioException catch (e) {
+      caught = e;
+    }
+    check(caught).isNotNull();
+
+    final warning = writer.records.singleWhere((r) => r.level == .warning);
+    check(
+      '${warning.message}',
+    ).equals('✗ connectionError GET https://api.example.com/users');
+    check(warning.data['type']).equals('connectionError');
+    check(warning.data['duration_ms']).isA<int>();
+  });
+
+  test('first position logs the raw server error before a later onError '
+      'swallows it', () async {
+    final dio = Dio(BaseOptions(baseUrl: 'https://api.example.com'))
+      ..httpClientAdapter = _StubAdapter(500, '{"data":{"message":"boom"}}');
+    dio.interceptors
+      ..add(LoggerDioInterceptor(.network))
+      ..add(
+        InterceptorsWrapper(
+          onError: (err, handler) => handler.resolve(
+            Response<Object?>(
+              requestOptions: err.requestOptions,
+              statusCode: 200,
+              data: 'recovered',
+            ),
+          ),
+        ),
+      );
+
+    final response = await dio.get<Object?>('/users');
+    check(response.data).equals('recovered');
+
+    final warning = writer.records.singleWhere((r) => r.level == .warning);
+    check(
+      '${warning.message}',
+    ).equals('✗ 500 GET https://api.example.com/users');
+    check('${warning.data['response_body']}').contains('boom');
+    check(warning.data['type']).equals('badResponse');
+    check(warning.data['duration_ms']).isA<int>();
   });
 }

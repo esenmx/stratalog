@@ -1,6 +1,7 @@
 import 'package:chirp/chirp.dart';
 
 import 'package:stratalog/src/crash_reporter.dart';
+import 'package:stratalog/src/elide.dart';
 import 'package:stratalog/src/formatter.dart';
 import 'package:stratalog/src/ide_writer.dart';
 
@@ -22,6 +23,12 @@ const bool _kReleaseMode = .fromEnvironment('dart.vm.product');
 ///   builds usually construct a no-op adapter). For custom report/breadcrumb
 ///   thresholds or a [CrashReporterWriter.new] `shouldReport` filter, build
 ///   the writer yourself and pass it via [writers] instead.
+/// - [elision] wraps the console/release formatter in an [ElidingFormatter]
+///   so oversized `data` leaves (big JSON bodies, base64 blobs, long arrays)
+///   are structure-elided at the sink — producers log full payloads. Pass
+///   `null` to disable, or a tuned [ElisionConfig]. Extra [writers] you pass
+///   are left untouched; wrap them in [ElidingFormatter] yourself if wanted
+///   (an in-app viewer typically keeps the full body — two-tier logging).
 void configureLogging({
   List<ChirpWriter> writers = const [],
   Map<String, ConsoleColor> domainColors = const {},
@@ -29,20 +36,24 @@ void configureLogging({
   ChirpLogLevel? minLevel,
   ChirpFormatter? debugFormatter,
   ChirpFormatter? releaseFormatter,
+  ElisionConfig? elision = const ElisionConfig(),
 }) {
   final logger = ChirpLogger();
   if (minLevel != null) logger.setMinLogLevel(minLevel);
 
+  ChirpFormatter wrap(ChirpFormatter formatter) =>
+      elision == null ? formatter : ElidingFormatter.of(formatter, elision);
+
   if (_kReleaseMode) {
     logger.addConsoleWriter(
-      formatter: releaseFormatter ?? const JsonLogFormatter(),
+      formatter: wrap(releaseFormatter ?? const JsonLogFormatter()),
     );
   } else {
     logger.addWriter(
       IdeDebugConsoleWriter(
-        formatter:
-            debugFormatter ??
-            StructuredLogFormatter(domainColors: domainColors),
+        formatter: wrap(
+          debugFormatter ?? StructuredLogFormatter(domainColors: domainColors),
+        ),
       ),
     );
   }

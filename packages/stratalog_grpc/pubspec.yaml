@@ -16,6 +16,7 @@ environment:
 
 dependencies:
   grpc: '>=4.2.0 <6.0.0'
+  protobuf: ^4.2.0
   stratalog: ^0.1.0
 
 dev_dependencies:

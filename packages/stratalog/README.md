@@ -75,7 +75,7 @@ Each lives in its own package, so its dependency stays out of your graph:
 
 ```dart
 // stratalog_dio
-dio.interceptors.add(LoggerDioInterceptor(LogLayer.network)); // add LAST
+dio.interceptors.add(LoggerDioInterceptor(LogLayer.network)); // add FIRST
 
 // stratalog_grpc
 FooServiceClient(channel, interceptors: [LoggerGrpcInterceptor(LogLayer.network)]);
