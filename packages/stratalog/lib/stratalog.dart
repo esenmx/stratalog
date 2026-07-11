@@ -8,6 +8,7 @@ library;
 
 export 'src/bootstrap.dart';
 export 'src/crash_reporter.dart';
+export 'src/elide.dart';
 export 'src/formatter.dart';
 export 'src/ide_writer.dart';
 export 'src/layers.dart';

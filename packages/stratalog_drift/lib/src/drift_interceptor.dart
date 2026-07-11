@@ -19,7 +19,7 @@ final class LoggerQueryInterceptor extends QueryInterceptor {
   LoggerQueryInterceptor(
     this.logger, {
     this.logArgs = true,
-    this.maxStatementChars = 256,
+    this.maxStatementChars = 1024,
   });
 
   /// Destination layer.
@@ -161,9 +161,6 @@ final class LoggerQueryInterceptor extends QueryInterceptor {
     }
   }
 
-  String _ellipsize(String statement) {
-    if (statement.length <= maxStatementChars) return statement;
-    return '${statement.substring(0, maxStatementChars)}'
-        '…(+${statement.length - maxStatementChars} chars)';
-  }
+  String _ellipsize(String statement) =>
+      clipString(statement, maxStatementChars);
 }

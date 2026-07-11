@@ -11,7 +11,7 @@ import 'package:stratalog/stratalog.dart';
 /// ```
 final class RiverpodLogger extends ProviderObserver {
   /// Logs observer events to [logger], typically `LogLayer.state`.
-  const RiverpodLogger(this.logger, {this.maxValueLength = 200});
+  const RiverpodLogger(this.logger, {this.maxValueLength = 800});
 
   /// Destination layer.
   final LogLayer logger;
@@ -106,10 +106,9 @@ final class RiverpodLogger extends ProviderObserver {
   }
 
   String _short(Object? value) {
-    final s = '$value';
     final max = maxValueLength;
-    if (max == null || s.length <= max) return s;
-    return '${s.substring(0, max)}…(+${s.length - max} chars)';
+    final s = '$value';
+    return max == null ? s : clipString(s, max);
   }
 }
 
