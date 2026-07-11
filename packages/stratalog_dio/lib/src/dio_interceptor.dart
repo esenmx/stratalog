@@ -1,22 +1,31 @@
 import 'package:dio/dio.dart';
 import 'package:stratalog/stratalog.dart';
 
-/// Observability-only Dio interceptor — add it LAST in the chain, so
-/// `onRequest` sees the fully-prepared request with every auth/envelope
-/// header attached. Request/response trace at `trace` (release-gated);
-/// failures log at `warning`, never `error`: a non-2xx is expected control
-/// flow that the repository boundary maps to a typed failure, not a crash.
+/// Pure HTTP-wire logger — add it FIRST in the chain. Dio runs all hooks in
+/// list order AND attaches every onError hook after every onResponse hook,
+/// so first position sees the raw server response before any other
+/// interceptor can mutate, throw over, or swallow it, and still catches
+/// errors those interceptors raise. Deserialized results and their failures
+/// are the provider layer's story, not this interceptor's.
+///
+/// Request/response trace at `trace` (release-gated); failures log at
+/// `warning`, never `error`: a non-2xx is expected control flow that the
+/// repository boundary maps to a typed failure, not a crash.
 final class LoggerDioInterceptor extends Interceptor {
   /// Logs traffic to [logger], typically `LogLayer.network`.
   LoggerDioInterceptor(
     this.logger, {
     this.headerAllowlist = defaultHeaderAllowlist,
     this.sensitiveHeaders = defaultSensitiveHeaders,
-    this.maxBodyChars = 2048,
+    this.maskSensitiveValues = false,
   });
 
   /// Destination layer.
   final LogLayer logger;
+
+  /// Whether to redact [sensitiveHeaders] values. Defaults to `false` (shows
+  /// bearer tokens for local debugging).
+  final bool maskSensitiveValues;
 
   /// Only these header values are ever logged verbatim — a full header dump
   /// drowns the log and leaks anything a downstream interceptor attaches.
@@ -25,9 +34,6 @@ final class LoggerDioInterceptor extends Interceptor {
   /// Logged presence-only as '***': the value (a bearer token, cookie,
   /// app-check token) must never land in a sink — even the debug console.
   final Set<String> sensitiveHeaders;
-
-  /// Bodies whose `toString()` exceeds this are ellipsized; `null` disables.
-  final int? maxBodyChars;
 
   /// Default for [headerAllowlist].
   static const Set<String> defaultHeaderAllowlist = {
@@ -86,14 +92,19 @@ final class LoggerDioInterceptor extends Interceptor {
   void onError(DioException err, ErrorInterceptorHandler handler) {
     final request = err.requestOptions;
 
-    final logData = <String, Object?>{};
+    // No status ⇒ the dio type names the cause instead: `✗ connectionError`,
+    // `✗ receiveTimeout` — or `✗ unknown` for an exception another
+    // interceptor threw over a response dio already dropped (its raw body is
+    // on the `←` trace line above).
+    final logData = <String, Object?>{'type': err.type.name};
     if (_elapsed(request) case final ms?) logData['duration_ms'] = ms;
     if (err.response?.data != null) {
       logData['response_body'] = _formatData(err.response?.data);
     }
 
     logger.warning(
-      '✗ ${err.response?.statusCode ?? '-'} ${request.method} ${request.uri}',
+      '✗ ${err.response?.statusCode ?? err.type.name} '
+      '${request.method} ${request.uri}',
       data: logData,
       error: err,
       stackTrace: err.stackTrace,
@@ -106,7 +117,7 @@ final class LoggerDioInterceptor extends Interceptor {
     headers.forEach((key, value) {
       final k = key.toLowerCase();
       if (sensitiveHeaders.contains(k)) {
-        safe[k] = '***';
+        safe[k] = maskSensitiveValues ? '***' : value;
       } else if (headerAllowlist.contains(k)) {
         safe[k] = value;
       }
@@ -120,17 +131,13 @@ final class LoggerDioInterceptor extends Interceptor {
     return DateTime.now().difference(start).inMilliseconds;
   }
 
+  // Passes the body through verbatim as structured data; the sink's
+  // ElidingFormatter clips oversized leaves without collapsing the JSON
+  // shape. FormData never carries a readable body, so it stays a summary.
   Object? _formatData(Object? data) {
     if (data is FormData) {
       return 'FormData(${data.fields.length} fields, '
           '${data.files.length} files)';
-    }
-    final max = maxBodyChars;
-    if (max != null) {
-      final s = '$data';
-      if (s.length > max) {
-        return '${s.substring(0, max)}…(+${s.length - max} chars)';
-      }
     }
     return data;
   }

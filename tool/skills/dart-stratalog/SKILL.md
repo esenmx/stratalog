@@ -9,7 +9,7 @@ Core (`stratalog`) is pure Dart; every integration is a sibling package — add 
 
 |Package|Entry point|
 |---|---|
-|`stratalog_dio`|`dio.interceptors.add(LoggerDioInterceptor(LogLayer.network))` — add **LAST**, after auth interceptors|
+|`stratalog_dio`|`dio.interceptors.add(LoggerDioInterceptor(LogLayer.network))` — add **FIRST**: dio runs hooks FIFO, so first position logs the raw wire (response before any interceptor can mutate/throw/swallow it, and the errors they raise — last position goes blind to both). Failure lines name their cause: `✗ 500` server, `✗ connectionError` wire, `✗ unknown` client pipeline (raw body on the `←` trace line above). Deserialized failures log via `stratalog_riverpod`|
 |`stratalog_grpc`|`Client(channel, interceptors: [LoggerGrpcInterceptor(LogLayer.network)])`|
 |`stratalog_connectrpc`|`Transport(..., interceptors: [loggerConnectInterceptor(LogLayer.network)])`|
 |`stratalog_riverpod`|`ProviderScope(observers: [const RiverpodLogger(LogLayer.state)])`|
