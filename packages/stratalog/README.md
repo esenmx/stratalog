@@ -20,7 +20,20 @@ Opinionated structured logging for Dart & Flutter, built on [chirp](https://pub.
 
 ```dart
 void main() {
-  configureLogging(crashReporter: CrashlyticsReporter()); // before runApp
+  configureLogging(crashReporter: const CrashlyticsCrashReporter()); // before runApp
+  runApp(const App());
+}
+```
+
+To completely disable logging in release mode (e.g. if you don't use log pipelines):
+
+```dart
+import 'package:chirp/chirp.dart';
+import 'package:flutter/foundation.dart';
+
+void main() {
+  // A high minLevel drops all records before they're created.
+  configureLogging(minLevel: kReleaseMode ? const ChirpLogLevel('off', 9999) : null);
   runApp(const App());
 }
 ```
