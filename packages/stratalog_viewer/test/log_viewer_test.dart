@@ -1,5 +1,8 @@
+import 'dart:convert';
+
 import 'package:chirp/chirp.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:stratalog/stratalog.dart';
 import 'package:stratalog_viewer/stratalog_viewer.dart';
@@ -13,6 +16,29 @@ void main() {
   });
 
   tearDown(() => Chirp.root = null);
+
+  /// Captures every `Clipboard.setData` text until the test ends.
+  List<String> mockClipboard(WidgetTester tester) {
+    final copied = <String>[];
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.setData') {
+          copied.add(
+            (call.arguments as Map<Object?, Object?>)['text']! as String,
+          );
+        }
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      ),
+    );
+    return copied;
+  }
 
   test('ring buffer evicts the oldest beyond capacity and notifies', () {
     var notifications = 0;
@@ -185,5 +211,73 @@ void main() {
     await tester.pump();
 
     expect(find.text('late arrival'), findsOneWidget);
+  });
+
+  testWidgets('Copy JSON puts valid JSON on the clipboard', (tester) async {
+    final copied = mockClipboard(tester);
+    LogLayer.network.info('payload', data: {'id': 42, 'ok': true});
+
+    await tester.pumpWidget(
+      MaterialApp(home: LogViewerPage(writer: writer)),
+    );
+    await tester.tap(find.text('payload'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Copy JSON'));
+    await tester.pump();
+
+    expect(copied, hasLength(1));
+    expect(jsonDecode(copied.single), {'id': 42, 'ok': true});
+  });
+
+  testWidgets('copy-all embeds JSON-encoded data, not Dart toString', (
+    tester,
+  ) async {
+    final copied = mockClipboard(tester);
+    LogLayer.network.info('payload', data: {'id': 42});
+
+    await tester.pumpWidget(
+      MaterialApp(home: LogViewerPage(writer: writer)),
+    );
+    await tester.tap(find.byIcon(Icons.copy_all));
+    await tester.pump();
+
+    expect(copied.single, contains('"id": 42'));
+    expect(copied.single, isNot(contains('{id: 42}')));
+  });
+
+  testWidgets('copy paths survive unencodable (cyclic) data', (tester) async {
+    final copied = mockClipboard(tester);
+    final cyclic = <String, Object?>{'id': 1};
+    cyclic['self'] = cyclic;
+    LogLayer.app.info('loop', data: cyclic);
+
+    await tester.pumpWidget(
+      MaterialApp(home: LogViewerPage(writer: writer)),
+    );
+    await tester.tap(find.text('loop'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Copy JSON'));
+    await tester.pump();
+    await tester.tap(find.byIcon(Icons.copy_all));
+    await tester.pump();
+
+    expect(tester.takeException(), isNull);
+    expect(copied, hasLength(2));
+    expect(copied.first, contains('self')); // toString fallback, not a crash
+  });
+
+  testWidgets('Copy JSON button is absent for records without data', (
+    tester,
+  ) async {
+    LogLayer.app.error('boom', error: StateError('bad'));
+
+    await tester.pumpWidget(
+      MaterialApp(home: LogViewerPage(writer: writer)),
+    );
+    await tester.tap(find.text('boom'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Copy record'), findsOneWidget);
+    expect(find.text('Copy JSON'), findsNothing);
   });
 }
