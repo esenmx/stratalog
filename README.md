@@ -18,7 +18,7 @@ Opinionated structured logging for Dart & Flutter, built on [chirp](https://pub.
 | [`stratalog_firebase_analytics`](packages/stratalog_firebase_analytics) | FirebaseAnalytics event mirroring |
 | [`stratalog_viewer`](packages/stratalog_viewer) | in-app log browser (ring buffer + page) |
 
-Start with the [core package README](packages/stratalog/README.md).
+Start with the [core package README](packages/stratalog/README.md). `Network`/`Storage` payloads print as gutter-free copyable JSON by default — see [Copyable payloads](packages/stratalog/README.md#copyable-payloads).
 
 ## Development
 
