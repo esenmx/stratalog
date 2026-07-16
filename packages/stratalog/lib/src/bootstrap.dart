@@ -29,6 +29,14 @@ const bool _kReleaseMode = .fromEnvironment('dart.vm.product');
 ///   `null` to disable, or a tuned [ElisionConfig]. Extra [writers] you pass
 ///   are left untouched; wrap them in [ElidingFormatter] yourself if wanted
 ///   (an in-app viewer typically keeps the full body — two-tier logging).
+/// - [layerElision] overrides the budget per `loggerName` on the *debug*
+///   console only — by default Network/Storage payloads print verbatim
+///   (their JSON is a copy-out artifact) while State clips to vital fields.
+///   Release output keeps the single [elision] budget everywhere: full
+///   network bodies in prod log pipelines would be a volume regression.
+///   `elision: null` removes the wrapper entirely, so it also drops
+///   [layerElision]; to keep per-layer budgets with no global one, pass
+///   `elision: ElisionConfig.none` instead.
 void configureLogging({
   List<ChirpWriter> writers = const [],
   Map<String, ConsoleColor> domainColors = const {},
@@ -37,12 +45,17 @@ void configureLogging({
   ChirpFormatter? debugFormatter,
   ChirpFormatter? releaseFormatter,
   ElisionConfig? elision = const ElisionConfig(),
+  Map<String, ElisionConfig> layerElision = defaultLayerElision,
 }) {
   final logger = ChirpLogger();
   if (minLevel != null) logger.setMinLogLevel(minLevel);
 
-  ChirpFormatter wrap(ChirpFormatter formatter) =>
-      elision == null ? formatter : ElidingFormatter.of(formatter, elision);
+  ChirpFormatter wrap(
+    ChirpFormatter formatter, {
+    Map<String, ElisionConfig> layerElision = const {},
+  }) => elision == null
+      ? formatter
+      : ElidingFormatter.of(formatter, elision, layerElision: layerElision);
 
   if (_kReleaseMode) {
     logger.addConsoleWriter(
@@ -53,6 +66,7 @@ void configureLogging({
       IdeDebugConsoleWriter(
         formatter: wrap(
           debugFormatter ?? StructuredLogFormatter(domainColors: domainColors),
+          layerElision: layerElision,
         ),
       ),
     );

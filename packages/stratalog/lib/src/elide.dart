@@ -46,8 +46,8 @@ String clipString(String s, int max) {
 /// siblings, and the field you opened the log for is always present.
 Object? elideJson(
   Object? value, {
-  int maxStringChars = 1024,
-  int maxArrayItems = 32,
+  int maxStringChars = _defaultMaxStringChars,
+  int maxArrayItems = _defaultMaxArrayItems,
   Set<String> keepKeys = defaultKeepKeys,
 }) {
   switch (value) {
@@ -91,8 +91,8 @@ Object? elideJson(
 /// path. Top-level [keepKeys] apply here too.
 Map<String, Object?> elideData(
   Map<String, Object?> data, {
-  int maxStringChars = 1024,
-  int maxArrayItems = 32,
+  int maxStringChars = _defaultMaxStringChars,
+  int maxArrayItems = _defaultMaxArrayItems,
   Set<String> keepKeys = defaultKeepKeys,
 }) {
   return {
@@ -135,14 +135,42 @@ bool _looksBinary(String s) {
 
 const int _blobMinChars = 512;
 
+// Single home for the default budget, shared by every ctor/signature above
+// and below — the literals must never fork between entry points.
+const int _defaultMaxStringChars = 1024;
+const int _defaultMaxArrayItems = 32;
+
 /// Elision budget shared by [ElidingFormatter] and `configureLogging`.
 final class ElisionConfig {
   /// A budget; see [ElidingFormatter] for what each field caps.
   const ElisionConfig({
-    this.maxStringChars = 1024,
-    this.maxArrayItems = 32,
+    this.maxStringChars = _defaultMaxStringChars,
+    this.maxArrayItems = _defaultMaxArrayItems,
     this.keepKeys = defaultKeepKeys,
-  });
+  }) : enabled = true;
+
+  // Budget fields are never read when disabled — format() short-circuits on
+  // `enabled` before touching them.
+  const ElisionConfig._disabled()
+    : enabled = false,
+      maxStringChars = _defaultMaxStringChars,
+      maxArrayItems = _defaultMaxArrayItems,
+      keepKeys = defaultKeepKeys;
+
+  /// Elision switched off entirely — the payload passes verbatim. For layers
+  /// whose JSON is a copy-out artifact (network bodies, storage rows) where
+  /// any `…(+N chars)` marker would corrupt the paste.
+  static const ElisionConfig none = ._disabled();
+
+  /// Tight budget for chatty layers: payloads clip hard to their vital
+  /// fields — [defaultKeepKeys] stay verbatim, everything else shrinks.
+  static const ElisionConfig vital = ElisionConfig(
+    maxStringChars: 200,
+    maxArrayItems: 8,
+  );
+
+  /// Whether elision runs at all; `false` forwards records untouched.
+  final bool enabled;
 
   /// Per-leaf string cap passed to [clipString].
   final int maxStringChars;
@@ -153,6 +181,16 @@ final class ElisionConfig {
   /// Keys kept verbatim, exempt from every cap.
   final Set<String> keepKeys;
 }
+
+/// Per-layer elision defaults for `configureLogging`, keyed by
+/// `record.loggerName` (precedent: `LogPalette.domains`): Network and Storage
+/// payloads are copy-out artifacts — JSON you paste into tools — so they pass
+/// verbatim; State is chatty, so it clips to vital fields.
+const Map<String, ElisionConfig> defaultLayerElision = {
+  'Network': .none,
+  'Storage': .none,
+  'State': .vital,
+};
 
 /// Wraps any [ChirpFormatter] to elide `record.data` before it renders — the
 /// single place structure-aware truncation lives, composable over the
@@ -165,19 +203,35 @@ final class ElidingFormatter extends ChirpFormatter {
   /// Elides `record.data` for [inner] using the given budget.
   ElidingFormatter(
     this.inner, {
-    this.maxStringChars = 1024,
-    this.maxArrayItems = 32,
+    this.maxStringChars = _defaultMaxStringChars,
+    this.maxArrayItems = _defaultMaxArrayItems,
     this.keepKeys = defaultKeepKeys,
-  });
+    this.layerElision = const {},
+  }) : enabled = true;
 
-  /// Wraps [inner] with the budget carried by [config].
-  ElidingFormatter.of(this.inner, ElisionConfig config)
-    : maxStringChars = config.maxStringChars,
-      maxArrayItems = config.maxArrayItems,
-      keepKeys = config.keepKeys;
+  /// Wraps [inner] with the budget carried by [config] — including its
+  /// [ElisionConfig.enabled] flag, so `.of(inner, ElisionConfig.none)`
+  /// passes every unlisted layer verbatim.
+  ElidingFormatter.of(
+    this.inner,
+    ElisionConfig config, {
+    this.layerElision = const {},
+  }) : enabled = config.enabled,
+       maxStringChars = config.maxStringChars,
+       maxArrayItems = config.maxArrayItems,
+       keepKeys = config.keepKeys;
 
   /// The formatter that renders the elided record.
   final ChirpFormatter inner;
+
+  /// Whether the instance budget elides at all; a [layerElision] entry
+  /// overrides this per layer in either direction.
+  final bool enabled;
+
+  /// Budget overrides keyed by `record.loggerName`. A listed layer uses its
+  /// own budget — or, with [ElisionConfig.none], passes verbatim; unlisted
+  /// layers fall back to the instance budget. See [defaultLayerElision].
+  final Map<String, ElisionConfig> layerElision;
 
   /// Per-leaf string cap passed to [clipString].
   final int maxStringChars;
@@ -200,13 +254,18 @@ final class ElidingFormatter extends ChirpFormatter {
       inner.format(record, buffer);
       return;
     }
+    final config = layerElision[record.loggerName];
+    if (!(config?.enabled ?? enabled)) {
+      inner.format(record, buffer);
+      return;
+    }
     inner.format(
       record.copyWith(
         data: elideData(
           record.data,
-          maxStringChars: maxStringChars,
-          maxArrayItems: maxArrayItems,
-          keepKeys: keepKeys,
+          maxStringChars: config?.maxStringChars ?? maxStringChars,
+          maxArrayItems: config?.maxArrayItems ?? maxArrayItems,
+          keepKeys: config?.keepKeys ?? keepKeys,
         ),
       ),
       buffer,
