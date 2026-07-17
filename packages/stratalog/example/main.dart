@@ -6,9 +6,10 @@ import 'package:stratalog/stratalog.dart';
 /// packages for Dio/gRPC/Riverpod/auto_route/FirebaseAuth taps.
 void main() {
   configureLogging(
-    // The default debug writer targets the IDE console (`dart:developer`),
-    // which a bare terminal never shows — add a stdout writer for this demo,
-    // wrapped in the same per-layer elision the debug console gets.
+    // Terminal `dart run` drops `dart:developer log()` output — mirror to
+    // stdout so the demo prints outside an IDE debug console, wrapped in the
+    // same per-layer elision the debug console gets. An app needs only
+    // `configureLogging()`.
     writers: [
       PrintConsoleWriter(
         formatter: ElidingFormatter.of(
@@ -16,6 +17,7 @@ void main() {
           const ElisionConfig(),
           layerElision: defaultLayerElision,
         ),
+        capabilities: const TerminalCapabilities(colorSupport: .ansi256),
       ),
     ],
   );
@@ -29,6 +31,25 @@ void main() {
   payments
     ..info('Charging card', data: {'orderId': 8123})
     ..warning('Card near expiry');
+
+  // Network/Storage bodies render flush-left — SQL and JSON copy-pastable
+  // as-is.
+  LogLayer.network.info(
+    '← 200 GET https://api.example.com/users/42',
+    data: {
+      'status': 200,
+      'body': {'id': 42, 'name': 'Jane'},
+    },
+  );
+  LogLayer.storage.trace(
+    '''
+SELECT * FROM users
+WHERE id = ?''',
+    data: {
+      'args': [42],
+      'duration_ms': 3,
+    },
+  );
 
   try {
     throw StateError('demo failure');
