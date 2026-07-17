@@ -76,6 +76,7 @@ void main() {
   test('sensitive headers masked, unlisted dropped, allowlisted kept', () {
     LoggerDioInterceptor(
       .network,
+      maskSensitiveValues: true,
     ).onRequest(request(), RequestInterceptorHandler());
 
     final headers =
@@ -87,6 +88,19 @@ void main() {
     check(
       '${writer.records.single.data}',
     ).not((it) => it.contains('secret-token'));
+  });
+
+  test('sensitive header values pass through verbatim by default', () {
+    // maskSensitiveValues defaults to false on purpose: local debugging wants
+    // the bearer token copyable from the console.
+    LoggerDioInterceptor(
+      .network,
+    ).onRequest(request(), RequestInterceptorHandler());
+
+    final headers =
+        writer.records.single.data['headers']! as Map<String, Object?>;
+    check(headers['authorization']).equals('Bearer secret-token');
+    check(headers['cookie']).equals('session=abc');
   });
 
   test('body is logged as full structured data, not truncated here', () {
@@ -103,6 +117,51 @@ void main() {
 
     final body = writer.records.single.data['body']! as Map<String, Object?>;
     check(body['blob']).equals('x' * 200);
+  });
+
+  // The console guarantee — full copyable JSON payloads — rests on the
+  // producer passing bodies verbatim into `record.data`. Elision, when any,
+  // is the sink's call (ElidingFormatter); a clip here would silently cap
+  // every downstream sink.
+  group('full-payload contract', () {
+    Map<String, Object?> largeBody() => {
+      'blob': 'x' * 5000,
+      'items': [for (var i = 0; i < 150; i++) 'item-$i'],
+      'nested': {
+        'inner': ['y' * 4200],
+      },
+    };
+
+    // The producer hands the same map through by reference, so comparing
+    // against the instance it was given would be vacuous (object vs itself).
+    // A fresh largeBody() is the independent oracle: it fails on in-place
+    // clipping, clipped copies, and deep-leaf truncation alike.
+    test('large request body reaches record.data unclipped', () {
+      final options = request()
+        ..method = 'POST'
+        ..data = largeBody();
+
+      LoggerDioInterceptor(
+        .network,
+      ).onRequest(options, RequestInterceptorHandler());
+
+      final body = writer.records.single.data['body']! as Map<String, Object?>;
+      check(body).deepEquals(largeBody());
+    });
+
+    test('large response body reaches record.data unclipped', () {
+      LoggerDioInterceptor(.network).onResponse(
+        Response<Object?>(
+          requestOptions: request(),
+          statusCode: 200,
+          data: largeBody(),
+        ),
+        ResponseInterceptorHandler(),
+      );
+
+      final body = writer.records.single.data['body']! as Map<String, Object?>;
+      check(body).deepEquals(largeBody());
+    });
   });
 
   test('failures log at warning with status and duration', () {
