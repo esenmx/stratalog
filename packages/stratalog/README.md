@@ -3,12 +3,9 @@
 Opinionated structured logging for Dart & Flutter, built on [chirp](https://pub.dev/packages/chirp).
 
 ```text
-▐ Network ▌ [warning] 14:03:22.114 • api_client.dart:87 • fetchUser
- ├─ ✗ 404 GET https://api.example.com/users/42
- │  Data ▼
-{
-  "duration_ms": 132
-}
+▐ Auth ▌ [warning] 14:03:22.114 • auth_repository.dart:87 • refresh
+ ├─ Token refresh slow
+ │  Data: {"duration_ms": 132}
 ```
 
 - **Layer loggers** — nine pre-defined, non-overlapping domains (`LogLayer.network`, `LogLayer.auth`, …), each a `const` value rendering as a colored badge with a matching left gutter. Declare your own the same way: `const payments = LogLayer('Payments', color: Ansi256.springGreen4_29)` — omit `color` for a stable contrast-verified hash pick.
@@ -48,12 +45,12 @@ payments.success('Order captured');
 
 ## Copyable payloads
 
-`Network` and `Storage` records render their `Data` JSON flush-left at column 0 under a dim `Data ▼` label — no `│` gutter — so an object copies straight out of the console:
+`Network` and `Storage` records render their entire body flush-left at column 0 — message (multi-line SQL included), `Data ▼` JSON, errors, and stack traces all skip the `│` gutter — so a payload or statement copies straight out of the console:
 
 ```text
 ▐ Network ▌ [info] 14:03:22.114 • api_client.dart:87 • fetchUser
- ├─ ← 200 GET https://api.example.com/users/42
- │  Data ▼
+← 200 GET https://api.example.com/users/42
+Data ▼
 {
   "status": 200,
   "body": { "id": 42, "name": "Jane" }
