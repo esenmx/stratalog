@@ -10,6 +10,10 @@
   to `toString`.
 - Copy-all and long-press copies now embed `data` as JSON (`{"id": 42}`), not
   Dart-map `toString()` (`{id: 42}`).
+- Layer filter chips under the app bar — one per layer present in the buffer,
+  colored with the layer's badge color; a selection whose layer leaves the
+  buffer is ignored while absent instead of stranding an empty view, and
+  re-applies if the layer returns.
 
 # 0.1.0
 

@@ -201,6 +201,61 @@ void main() {
     expect(find.textContaining('"ms": 132'), findsNothing);
   });
 
+  testWidgets('chips list distinct layers present in the buffer', (
+    tester,
+  ) async {
+    LogLayer.network.info('token refreshed');
+    LogLayer.network.info('profile fetched');
+    LogLayer.storage.info('migration applied');
+
+    await tester.pumpWidget(
+      MaterialApp(home: LogViewerPage(writer: writer)),
+    );
+
+    expect(find.byType(FilterChip), findsNWidgets(2));
+    expect(find.widgetWithText(FilterChip, 'Network'), findsOneWidget);
+    expect(find.widgetWithText(FilterChip, 'Storage'), findsOneWidget);
+  });
+
+  testWidgets('chip toggles the layer filter on and off', (tester) async {
+    LogLayer.network.info('token refreshed');
+    LogLayer.storage.info('migration applied');
+
+    await tester.pumpWidget(
+      MaterialApp(home: LogViewerPage(writer: writer)),
+    );
+    await tester.tap(find.widgetWithText(FilterChip, 'Storage'));
+    await tester.pump();
+
+    expect(find.text('migration applied'), findsOneWidget);
+    expect(find.text('token refreshed'), findsNothing);
+
+    await tester.tap(find.widgetWithText(FilterChip, 'Storage'));
+    await tester.pump();
+
+    expect(find.text('migration applied'), findsOneWidget);
+    expect(find.text('token refreshed'), findsOneWidget);
+  });
+
+  testWidgets('stale selection self-deactivates once its layer is evicted', (
+    tester,
+  ) async {
+    LogLayer.network.info('token refreshed');
+
+    await tester.pumpWidget(
+      MaterialApp(home: LogViewerPage(writer: writer)),
+    );
+    await tester.tap(find.widgetWithText(FilterChip, 'Network'));
+    await tester.pump();
+
+    writer.clear();
+    LogLayer.storage.info('migration applied');
+    await tester.pump();
+
+    expect(find.text('migration applied'), findsOneWidget);
+    expect(find.text('No records'), findsNothing);
+  });
+
   testWidgets('live updates arrive without rebuild plumbing', (tester) async {
     await tester.pumpWidget(
       MaterialApp(home: LogViewerPage(writer: writer)),
