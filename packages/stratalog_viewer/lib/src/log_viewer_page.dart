@@ -135,6 +135,10 @@ class _LogViewerPageState extends State<LogViewerPage> {
               onCopy: () => _copy(_describe(records[index])),
               query: query,
               expandAll: _expandAll,
+              onCopyJson: () => _copy(
+                _prettyJson(records[index]),
+                notice: 'JSON copied',
+              ),
             ),
           );
         },
@@ -142,12 +146,12 @@ class _LogViewerPageState extends State<LogViewerPage> {
     );
   }
 
-  Future<void> _copy(String text) async {
+  Future<void> _copy(String text, {String notice = 'Copied'}) async {
     await Clipboard.setData(ClipboardData(text: text));
     if (mounted) {
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
-        ..showSnackBar(const SnackBar(content: Text('Copied')));
+        ..showSnackBar(SnackBar(content: Text(notice)));
     }
   }
 
@@ -156,7 +160,9 @@ class _LogViewerPageState extends State<LogViewerPage> {
       '${record.formattedTime} [${record.loggerName ?? 'App'}]'
       ' ${record.level.name}: ${record.message}',
     );
-    if (record.data.isNotEmpty) buffer.write('\n  data: ${record.data}');
+    if (record.data.isNotEmpty) {
+      buffer.write('\n  data: ${_prettyJson(record)}');
+    }
     if (record.error != null) buffer.write('\n  error: ${record.error}');
     if (record.stackTrace case final stack?) buffer.write('\n$stack');
     return buffer.toString();
@@ -169,10 +175,12 @@ class _RecordTile extends StatelessWidget {
     required this.onCopy,
     required this.query,
     required this.expandAll,
+    required this.onCopyJson,
   });
 
   final LogRecord record;
   final VoidCallback onCopy;
+  final VoidCallback onCopyJson;
 
   /// Active search query, lowercased; empty when idle.
   final String query;
@@ -191,10 +199,9 @@ class _RecordTile extends StatelessWidget {
     final levelColor = levelConsoleColor == null
         ? ColorScheme.of(context).onSurfaceVariant
         : _toColor(levelConsoleColor);
+    final hasData = record.data.isNotEmpty;
     final hasBody =
-        record.data.isNotEmpty ||
-        record.error != null ||
-        record.stackTrace != null;
+        hasData || record.error != null || record.stackTrace != null;
 
     final title = Text.rich(
       TextSpan(
@@ -253,13 +260,22 @@ class _RecordTile extends StatelessWidget {
           _MonoBlock('Error: $error', query: query),
         if (record.stackTrace case final stack?)
           _MonoBlock('$stack', query: query),
-        Align(
-          alignment: Alignment.centerRight,
-          child: TextButton.icon(
-            onPressed: onCopy,
-            icon: const Icon(Icons.copy, size: 16),
-            label: const Text('Copy'),
-          ),
+        OverflowBar(
+          alignment: .end,
+          overflowAlignment: .end,
+          children: [
+            if (record.data.isNotEmpty)
+              TextButton.icon(
+                onPressed: onCopyJson,
+                icon: const Icon(Icons.data_object, size: 16),
+                label: const Text('Copy JSON'),
+              ),
+            TextButton.icon(
+              onPressed: onCopy,
+              icon: const Icon(Icons.copy, size: 16),
+              label: const Text('Copy record'),
+            ),
+          ],
         ),
       ],
     );
