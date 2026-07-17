@@ -48,10 +48,18 @@ String _haystack(LogRecord r) {
 /// ```
 class LogViewerPage extends StatefulWidget {
   /// Browses [writer]'s buffer; updates live as records arrive.
-  const LogViewerPage({required this.writer, super.key});
+  const LogViewerPage({
+    required this.writer,
+    this.keepKeys = defaultKeepKeys,
+    super.key,
+  });
 
   /// The buffer to browse.
   final MemoryLogWriter writer;
+
+  /// Keys previewed on collapsed tiles. Defaults to [defaultKeepKeys]; pass
+  /// your [ElisionConfig.keepKeys] so the scan line matches console elision.
+  final Set<String> keepKeys;
 
   @override
   State<LogViewerPage> createState() => _LogViewerPageState();
@@ -142,6 +150,7 @@ class _LogViewerPageState extends State<LogViewerPage> {
                   itemCount: records.length,
                   itemBuilder: (context, index) => _RecordTile(
                     record: records[index],
+                    keepKeys: widget.keepKeys,
                     onCopy: () => _copy(_describe(records[index])),
                     query: query,
                     expandAll: _expandAll,
@@ -233,6 +242,7 @@ Color _onBadge(Color background) {
 class _RecordTile extends StatelessWidget {
   const _RecordTile({
     required this.record,
+    required this.keepKeys,
     required this.onCopy,
     required this.query,
     required this.expandAll,
@@ -240,6 +250,7 @@ class _RecordTile extends StatelessWidget {
   });
 
   final LogRecord record;
+  final Set<String> keepKeys;
   final VoidCallback onCopy;
   final VoidCallback onCopyJson;
 
@@ -259,6 +270,8 @@ class _RecordTile extends StatelessWidget {
     final hasBody =
         hasData || record.error != null || record.stackTrace != null;
 
+    final bodySmall = TextTheme.of(context).bodySmall;
+
     final title = Text.rich(
       TextSpan(
         children: [
@@ -274,23 +287,37 @@ class _RecordTile extends StatelessWidget {
             text: ' [${record.level.name}]',
             style: TextStyle(color: levelColor, fontWeight: .bold),
           ),
-          TextSpan(
-            text: ' ${record.formattedTime}',
-            style: TextTheme.of(context).bodySmall,
-          ),
+          TextSpan(text: ' ${record.formattedTime}', style: bodySmall),
         ],
       ),
     );
-    final message = Text(
+    Widget subtitle = Text(
       '${record.message}',
       style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
     );
+    if (record.data.isNotEmpty) {
+      subtitle = Column(
+        mainAxisSize: .min,
+        crossAxisAlignment: .start,
+        children: [
+          subtitle,
+          Text(
+            _vitalPreview(record.data),
+            maxLines: 1,
+            overflow: .ellipsis,
+            style: (bodySmall ?? const TextStyle(fontSize: 12)).copyWith(
+              fontFamily: 'monospace',
+            ),
+          ),
+        ],
+      );
+    }
 
     if (!hasBody) {
       return ListTile(
         dense: true,
         title: title,
-        subtitle: message,
+        subtitle: subtitle,
         onLongPress: onCopy,
       );
     }
@@ -306,7 +333,7 @@ class _RecordTile extends StatelessWidget {
       initiallyExpanded: expanded,
       dense: true,
       title: title,
-      subtitle: message,
+      subtitle: subtitle,
       childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
       expandedCrossAxisAlignment: .start,
       children: [
@@ -336,6 +363,35 @@ class _RecordTile extends StatelessWidget {
       ],
     );
   }
+
+  /// Collapsed-tile scan line: [keepKeys] hits found top-level or one map
+  /// level down, capped at [_maxHits] entries with values clipped, plus an
+  /// `N fields` tail counting top-level entries.
+  String _vitalPreview(Map<String, Object?> data) {
+    final hits = <String>[];
+    void collect(Object? key, Object? value) {
+      if (hits.length < _maxHits && keepKeys.contains(key)) {
+        hits.add('$key: ${clipString('$value', _maxHitChars)}');
+      }
+    }
+
+    outer:
+    for (final MapEntry(:key, :value) in data.entries) {
+      collect(key, value);
+      if (value case final Map<Object?, Object?> nested) {
+        for (final MapEntry(:key, :value) in nested.entries) {
+          collect(key, value);
+          if (hits.length == _maxHits) break outer;
+        }
+      }
+      if (hits.length == _maxHits) break;
+    }
+    final tail = data.length == 1 ? '1 field' : '${data.length} fields';
+    return [...hits, tail].join(' · ');
+  }
+
+  static const _maxHits = 3;
+  static const _maxHitChars = 32;
 }
 
 class _MonoBlock extends StatelessWidget {

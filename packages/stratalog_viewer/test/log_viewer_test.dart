@@ -256,6 +256,61 @@ void main() {
     expect(find.text('No records'), findsNothing);
   });
 
+  testWidgets('collapsed tile previews keep-key fields with a count tail', (
+    tester,
+  ) async {
+    LogLayer.network.info(
+      'user loaded',
+      data: {
+        'user': {'id': 'usr_42'},
+        'status': 'ok',
+        'payload': List.generate(20, (i) => 'row$i'),
+      },
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(home: LogViewerPage(writer: writer)),
+    );
+
+    // Visible on the collapsed tile — no tap/expand before these asserts.
+    expect(find.textContaining('id: usr_42'), findsOneWidget);
+    expect(find.textContaining('status: ok'), findsOneWidget);
+    expect(find.textContaining('3 fields'), findsOneWidget);
+  });
+
+  testWidgets('single-entry data pluralizes as 1 field', (tester) async {
+    LogLayer.network.info('ping', data: {'ms': 132});
+
+    await tester.pumpWidget(
+      MaterialApp(home: LogViewerPage(writer: writer)),
+    );
+
+    expect(find.textContaining('1 field'), findsOneWidget);
+    expect(find.textContaining('1 fields'), findsNothing);
+  });
+
+  testWidgets('keepKeys override drives the preview', (tester) async {
+    LogLayer.network.info('order placed', data: {'orderId': 'ord_7'});
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LogViewerPage(writer: writer, keepKeys: const {'orderId'}),
+      ),
+    );
+
+    expect(find.textContaining('orderId: ord_7'), findsOneWidget);
+  });
+
+  testWidgets('no preview line for records without data', (tester) async {
+    LogLayer.app.info('plain message');
+
+    await tester.pumpWidget(
+      MaterialApp(home: LogViewerPage(writer: writer)),
+    );
+
+    expect(find.textContaining('fields'), findsNothing);
+  });
+
   testWidgets('live updates arrive without rebuild plumbing', (tester) async {
     await tester.pumpWidget(
       MaterialApp(home: LogViewerPage(writer: writer)),
