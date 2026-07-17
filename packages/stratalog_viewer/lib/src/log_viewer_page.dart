@@ -38,9 +38,9 @@ String _haystack(LogRecord r) {
 }
 
 /// In-app log browser over a [MemoryLogWriter] — newest first, layer badges
-/// in stratalog's palette colors, minimum-level filter, substring search
-/// over message/layer/payload with hit highlight, tap to expand
-/// data/error/stack, long-press to copy a record.
+/// in stratalog's palette colors, layer filter chips, minimum-level filter,
+/// substring search over message/layer/payload with hit highlight, tap to
+/// expand data/error/stack, long-press to copy a record.
 ///
 /// ```dart
 /// Navigator.push(context,
@@ -61,6 +61,7 @@ class _LogViewerPageState extends State<LogViewerPage> {
   ChirpLogLevel _minLevel = .trace;
   String _query = '';
   bool _expandAll = false;
+  final Set<String> _layers = {};
 
   static const _levels = <ChirpLogLevel>[
     .trace,
@@ -71,11 +72,19 @@ class _LogViewerPageState extends State<LogViewerPage> {
     .error,
   ];
 
-  List<LogRecord> _visible() {
+  Set<String> _layersPresent() => {
+    for (final record in widget.writer.records) _layerName(record),
+  };
+
+  List<LogRecord> _visible(Set<String> present) {
     final query = _query.toLowerCase();
+    // Intersect with the layers still in the buffer so a selection whose
+    // records were evicted or cleared can't strand the user on an empty view.
+    final active = _layers.intersection(present);
     return [
       for (final record in widget.writer.records.reversed)
         if (record.level >= _minLevel &&
+            (active.isEmpty || active.contains(_layerName(record))) &&
             (query.isEmpty || _haystack(record).contains(query)))
           record,
     ];
@@ -83,65 +92,100 @@ class _LogViewerPageState extends State<LogViewerPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: TextField(
-          decoration: const InputDecoration(
-            hintText: 'Search message, layer, or payload',
-            border: .none,
-          ),
-          onChanged: (value) => setState(() => _query = value),
-        ),
-        actions: [
-          IconButton(
-            icon: Icon(_expandAll ? Icons.unfold_less : Icons.unfold_more),
-            tooltip: _expandAll ? 'Collapse all' : 'Expand all',
-            onPressed: () => setState(() => _expandAll = !_expandAll),
-          ),
-          PopupMenuButton<ChirpLogLevel>(
-            icon: const Icon(Icons.filter_list),
-            tooltip: 'Minimum level',
-            initialValue: _minLevel,
-            onSelected: (level) => setState(() => _minLevel = level),
-            itemBuilder: (context) => [
-              for (final level in _levels)
-                PopupMenuItem(value: level, child: Text(level.name)),
-            ],
-          ),
-          IconButton(
-            icon: const Icon(Icons.copy_all),
-            tooltip: 'Copy visible records',
-            onPressed: () => _copy(_visible().map(_describe).join('\n\n')),
-          ),
-          IconButton(
-            icon: const Icon(Icons.delete_outline),
-            tooltip: 'Clear',
-            onPressed: widget.writer.clear,
-          ),
-        ],
-      ),
-      body: ListenableBuilder(
-        listenable: widget.writer,
-        builder: (context, _) {
-          final records = _visible();
-          if (records.isEmpty) {
-            return const Center(child: Text('No records'));
-          }
-          final query = _query.toLowerCase();
-          return ListView.builder(
-            itemCount: records.length,
-            itemBuilder: (context, index) => _RecordTile(
-              record: records[index],
-              onCopy: () => _copy(_describe(records[index])),
-              query: query,
-              expandAll: _expandAll,
-              onCopyJson: () => _copy(
-                _prettyJson(records[index]),
-                notice: 'JSON copied',
+    return ListenableBuilder(
+      listenable: widget.writer,
+      builder: (context, _) {
+        final present = _layersPresent();
+        final records = _visible(present);
+        final query = _query.toLowerCase();
+        return Scaffold(
+          appBar: AppBar(
+            title: TextField(
+              decoration: const InputDecoration(
+                hintText: 'Search message, layer, or payload',
+                border: .none,
               ),
+              onChanged: (value) => setState(() => _query = value),
             ),
-          );
-        },
+            actions: [
+              IconButton(
+                icon: Icon(_expandAll ? Icons.unfold_less : Icons.unfold_more),
+                tooltip: _expandAll ? 'Collapse all' : 'Expand all',
+                onPressed: () => setState(() => _expandAll = !_expandAll),
+              ),
+              PopupMenuButton<ChirpLogLevel>(
+                icon: const Icon(Icons.filter_list),
+                tooltip: 'Minimum level',
+                initialValue: _minLevel,
+                onSelected: (level) => setState(() => _minLevel = level),
+                itemBuilder: (context) => [
+                  for (final level in _levels)
+                    PopupMenuItem(value: level, child: Text(level.name)),
+                ],
+              ),
+              IconButton(
+                icon: const Icon(Icons.copy_all),
+                tooltip: 'Copy visible records',
+                onPressed: () => _copy(records.map(_describe).join('\n\n')),
+              ),
+              IconButton(
+                icon: const Icon(Icons.delete_outline),
+                tooltip: 'Clear',
+                onPressed: widget.writer.clear,
+              ),
+            ],
+            bottom: _layerChips(present),
+          ),
+          body: records.isEmpty
+              ? const Center(child: Text('No records'))
+              : ListView.builder(
+                  itemCount: records.length,
+                  itemBuilder: (context, index) => _RecordTile(
+                    record: records[index],
+                    onCopy: () => _copy(_describe(records[index])),
+                    query: query,
+                    expandAll: _expandAll,
+                    onCopyJson: () => _copy(
+                      _prettyJson(records[index]),
+                      notice: 'JSON copied',
+                    ),
+                  ),
+                ),
+        );
+      },
+    );
+  }
+
+  static const _chipBarHeight = 48.0;
+
+  PreferredSizeWidget? _layerChips(Set<String> present) {
+    if (present.isEmpty) return null;
+    final names = present.toList()..sort();
+    return PreferredSize(
+      preferredSize: const .fromHeight(_chipBarHeight),
+      child: SizedBox(
+        height: _chipBarHeight,
+        child: ListView(
+          scrollDirection: .horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          children: [
+            for (final name in names)
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: FilterChip(
+                  avatar: CircleAvatar(
+                    radius: 6,
+                    backgroundColor: _layerColor(name),
+                  ),
+                  label: Text(name),
+                  selected: _layers.contains(name),
+                  onSelected: (selected) => setState(
+                    () => selected ? _layers.add(name) : _layers.remove(name),
+                  ),
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -157,7 +201,7 @@ class _LogViewerPageState extends State<LogViewerPage> {
 
   String _describe(LogRecord record) {
     final buffer = StringBuffer(
-      '${record.formattedTime} [${record.loggerName ?? 'App'}]'
+      '${record.formattedTime} [${_layerName(record)}]'
       ' ${record.level.name}: ${record.message}',
     );
     if (record.data.isNotEmpty) {
@@ -167,6 +211,23 @@ class _LogViewerPageState extends State<LogViewerPage> {
     if (record.stackTrace case final stack?) buffer.write('\n$stack');
     return buffer.toString();
   }
+}
+
+String _layerName(LogRecord record) => record.loggerName ?? 'App';
+
+Color _toColor(ConsoleColor color) =>
+    .fromARGB(0xff, color.r, color.g, color.b);
+
+Color _layerColor(String name) =>
+    _toColor(LogLayer.declaredColorOf(name) ?? LogPalette.colorFor(name));
+
+/// Same luminance flip as the console badge text.
+Color _onBadge(Color background) {
+  final luma =
+      0.299 * (background.r * 255) +
+      0.587 * (background.g * 255) +
+      0.114 * (background.b * 255);
+  return luma > 140 ? Colors.black : Colors.white;
 }
 
 class _RecordTile extends StatelessWidget {
@@ -186,15 +247,10 @@ class _RecordTile extends StatelessWidget {
   final String query;
   final bool expandAll;
 
-  static Color _toColor(ConsoleColor color) =>
-      .fromARGB(0xff, color.r, color.g, color.b);
-
   @override
   Widget build(BuildContext context) {
-    final name = record.loggerName ?? 'App';
-    final layerColor = _toColor(
-      LogLayer.declaredColorOf(name) ?? LogPalette.colorFor(name),
-    );
+    final name = _layerName(record);
+    final layerColor = _layerColor(name);
     final levelConsoleColor = LogPalette.levelColor(record.level);
     final levelColor = levelConsoleColor == null
         ? ColorScheme.of(context).onSurfaceVariant
@@ -279,15 +335,6 @@ class _RecordTile extends StatelessWidget {
         ),
       ],
     );
-  }
-
-  /// Same luminance flip as the console badge text.
-  static Color _onBadge(Color background) {
-    final luma =
-        0.299 * (background.r * 255) +
-        0.587 * (background.g * 255) +
-        0.114 * (background.b * 255);
-    return luma > 140 ? Colors.black : Colors.white;
   }
 }
 
