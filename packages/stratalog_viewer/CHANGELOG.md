@@ -14,6 +14,7 @@
   colored with the layer's badge color; a selection whose layer leaves the
   buffer is ignored while absent instead of stranding an empty view, and
   re-applies if the layer returns.
+- Collapsed tiles preview vital `data` fields — keep-key hits found top-level or one map level down, capped at 3 with clipped values — plus an `N fields` tail (e.g. `id: usr_42 · status: ok · 14 fields`), so records are scannable without expanding. Keys default to `defaultKeepKeys`; override via `LogViewerPage(keepKeys: …)` to match your `ElisionConfig`.
 
 # 0.1.0
 
