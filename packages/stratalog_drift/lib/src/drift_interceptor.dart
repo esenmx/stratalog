@@ -19,7 +19,7 @@ final class LoggerQueryInterceptor extends QueryInterceptor {
   LoggerQueryInterceptor(
     this.logger, {
     this.logArgs = true,
-    this.maxStatementChars = 1024,
+    this.maxStatementChars,
   });
 
   /// Destination layer.
@@ -29,8 +29,10 @@ final class LoggerQueryInterceptor extends QueryInterceptor {
   /// sensitive values that must not reach any sink.
   final bool logArgs;
 
-  /// Statements beyond this length are ellipsized in the message.
-  final int maxStatementChars;
+  /// Statements beyond this length are ellipsized in the message — an
+  /// opt-in clip for pathological schemas. Defaults to `null`: the full
+  /// SQL stays copyable from the log.
+  final int? maxStatementChars;
 
   @override
   TransactionExecutor beginTransaction(QueryExecutor parent) {
@@ -161,6 +163,8 @@ final class LoggerQueryInterceptor extends QueryInterceptor {
     }
   }
 
-  String _ellipsize(String statement) =>
-      clipString(statement, maxStatementChars);
+  String _ellipsize(String statement) {
+    final max = maxStatementChars;
+    return max == null ? statement : clipString(statement, max);
+  }
 }

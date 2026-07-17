@@ -95,6 +95,18 @@ void main() {
     ).not((it) => it.contains('hunter2'));
   });
 
+  test('long statements log in full by default', () async {
+    final columns = List.generate(80, (i) => 'column_with_a_long_name_$i INT');
+    final statement = 'CREATE TABLE wide (${columns.join(', ')})';
+    check(statement.length).isGreaterThan(1024);
+
+    await db.customStatement(statement);
+
+    final created = messages().firstWhere((m) => m.contains('CREATE TABLE w'));
+    check(created).contains('column_with_a_long_name_79 INT)');
+    check(created).not((it) => it.contains('…(+'));
+  });
+
   test('long statements are ellipsized in the message', () async {
     final interceptor = LoggerQueryInterceptor(.storage, maxStatementChars: 16);
     await db.close();
