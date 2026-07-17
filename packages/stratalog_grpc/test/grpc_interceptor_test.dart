@@ -1,6 +1,7 @@
 import 'package:checks/checks.dart';
 import 'package:chirp/chirp.dart';
 import 'package:grpc/grpc.dart';
+import 'package:protobuf/protobuf.dart';
 import 'package:stratalog_grpc/stratalog_grpc.dart';
 import 'package:test/test.dart';
 
@@ -9,6 +10,35 @@ final class _CapturingWriter extends ChirpWriter {
 
   @override
   void write(LogRecord record) => records.add(record);
+}
+
+/// Hand-rolled proto — no protoc: a string field plus a repeated field, big
+/// enough to expose any producer-side clipping.
+final class _BigMessage extends GeneratedMessage {
+  _BigMessage();
+
+  factory _BigMessage.fromBuffer(List<int> bytes) =>
+      _BigMessage()..mergeFromBuffer(bytes);
+
+  static final BuilderInfo _info =
+      BuilderInfo('test.Big', createEmptyInstance: _BigMessage.new)
+        ..aOS(1, 'text')
+        ..pPS(2, 'items')
+        ..hasRequiredFields = false;
+
+  @override
+  BuilderInfo get info_ => _info;
+
+  @override
+  _BigMessage createEmptyInstance() => _BigMessage();
+
+  @override
+  _BigMessage clone() => _BigMessage()..mergeFromMessage(this);
+
+  String get text => $_getSZ(0);
+  set text(String value) => $_setString(0, value);
+
+  List<String> get items => $_getList(1);
 }
 
 /// Hand-rolled echo service — no protoc: payloads are raw bytes.
@@ -34,6 +64,16 @@ final class _EchoService extends Service {
         (value) => value,
       ),
     );
+    $addMethod(
+      ServiceMethod<_BigMessage, _BigMessage>(
+        'EchoBig',
+        _echoBig,
+        false,
+        false,
+        _BigMessage.fromBuffer,
+        (value) => value.writeToBuffer(),
+      ),
+    );
   }
 
   @override
@@ -46,6 +86,11 @@ final class _EchoService extends Service {
     await request;
     throw const GrpcError.notFound('missing');
   }
+
+  Future<_BigMessage> _echoBig(
+    ServiceCall call,
+    Future<_BigMessage> request,
+  ) => request;
 }
 
 final class _EchoClient extends Client {
@@ -62,12 +107,20 @@ final class _EchoClient extends Client {
     (value) => value,
     (bytes) => bytes,
   );
+  static final _echoBig = ClientMethod<_BigMessage, _BigMessage>(
+    '/test.Echo/EchoBig',
+    (value) => value.writeToBuffer(),
+    _BigMessage.fromBuffer,
+  );
 
   ResponseFuture<List<int>> echo(List<int> request, {CallOptions? options}) =>
       $createUnaryCall(_echo, request, options: options);
 
   ResponseFuture<List<int>> boom(List<int> request, {CallOptions? options}) =>
       $createUnaryCall(_boom, request, options: options);
+
+  ResponseFuture<_BigMessage> echoBig(_BigMessage request) =>
+      $createUnaryCall(_echoBig, request);
 }
 
 void main() {
@@ -125,8 +178,50 @@ void main() {
     check(record.error).isA<GrpcError>();
   });
 
-  test('sensitive metadata masked, others verbatim', () async {
+  test('large message lands in record data verbatim — no clipping', () async {
+    final message = _BigMessage()
+      ..text = 'a' * 5000
+      ..items.addAll(List.generate(150, (i) => 'item_$i'));
+    // Fresh expected copy per assertion — comparing the logged body against
+    // the instance handed to the client would pass even if the producer
+    // clipped it in place.
+    Map<String, Object?> expectedBody() => {
+      'text': 'a' * 5000,
+      'items': List.generate(150, (i) => 'item_$i'),
+    };
+
+    final reply = await client.echoBig(message);
+    await settle();
+
+    check(reply.text).length.equals(5000);
+    check(
+      writer.records.first.data['request_body']! as Map<String, Object?>,
+    ).deepEquals(expectedBody());
+    check(
+      writer.records.last.data['response_body']! as Map<String, Object?>,
+    ).deepEquals(expectedBody());
+  });
+
+  test('sensitive metadata verbatim by default', () async {
     await client.echo(
+      [0],
+      options: CallOptions(metadata: {'authorization': 'Bearer secret-token'}),
+    );
+    await settle();
+
+    final metadata =
+        writer.records.first.data['metadata']! as Map<String, Object?>;
+    check(metadata['authorization']).equals('Bearer secret-token');
+  });
+
+  test('sensitive metadata masked, others verbatim', () async {
+    final maskedClient = _EchoClient(
+      channel,
+      interceptors: [
+        LoggerGrpcInterceptor(.network, maskSensitiveValues: true),
+      ],
+    );
+    await maskedClient.echo(
       [0],
       options: CallOptions(
         metadata: {
