@@ -202,4 +202,97 @@ void main() {
       check(inner.seen!.loggerName).equals('Network');
     });
   });
+
+  group('ElisionConfig', () {
+    test('none disables elision', () {
+      check(ElisionConfig.none.enabled).isFalse();
+    });
+
+    test('vital carries the tight budget with elision enabled', () {
+      check(ElisionConfig.vital.enabled).isTrue();
+      check(ElisionConfig.vital.maxStringChars).equals(200);
+      check(ElisionConfig.vital.maxArrayItems).equals(8);
+      check(ElisionConfig.vital.keepKeys).deepEquals(defaultKeepKeys);
+    });
+  });
+
+  group('layerElision', () {
+    LogRecord layerRecord(String layer, Map<String, Object?> data) => LogRecord(
+      message: 'm',
+      timestamp: DateTime(2020),
+      wallClock: DateTime(2020),
+      loggerName: layer,
+      data: data,
+    );
+
+    test('a Network record passes to inner verbatim — the identical '
+        'instance, no copy', () {
+      final inner = _CaptureFormatter();
+      final record = layerRecord('Network', {'body': 'x' * 5000});
+      ElidingFormatter(
+        inner,
+        layerElision: defaultLayerElision,
+      ).format(record, MessageBuffer.file());
+      check(inner.seen).identicalTo(record);
+    });
+
+    test('a State record clips at the vital budget, keepKeys verbatim', () {
+      final inner = _CaptureFormatter();
+      final id = 'A' * 600; // long + base64-ish → would normally blob-elide
+      ElidingFormatter(inner, layerElision: defaultLayerElision).format(
+        layerRecord('State', {'id': id, 'note': 'x' * 500}),
+        MessageBuffer.file(),
+      );
+      check(inner.seen!.data['id']).equals(id);
+      check(
+        inner.seen!.data['note'],
+      ).equals('${'x' * 200}…(+300 chars)');
+    });
+
+    test('an unlisted layer uses the instance budget', () {
+      final inner = _CaptureFormatter();
+      ElidingFormatter(
+        inner,
+        maxStringChars: 8,
+        layerElision: defaultLayerElision,
+      ).format(
+        layerRecord('Payments', {'note': 'x' * 100}),
+        MessageBuffer.file(),
+      );
+      check(inner.seen!.data['note']).equals('${'x' * 8}…(+92 chars)');
+    });
+
+    test('of(none) disables the instance budget — unlisted layers pass '
+        'verbatim while a per-layer enabled config still elides', () {
+      final inner = _CaptureFormatter();
+      final formatter = ElidingFormatter.of(
+        inner,
+        ElisionConfig.none,
+        layerElision: const {'State': .vital},
+      );
+
+      final untouched = layerRecord('App', {'body': 'x' * 5000});
+      formatter.format(untouched, MessageBuffer.file());
+      check(inner.seen).identicalTo(untouched);
+
+      formatter.format(
+        layerRecord('State', {'note': 'x' * 500}),
+        MessageBuffer.file(),
+      );
+      check(inner.seen!.data['note']).equals('${'x' * 200}…(+300 chars)');
+    });
+
+    test('a per-layer enabled config overrides the instance budget', () {
+      final inner = _CaptureFormatter();
+      ElidingFormatter(
+        inner,
+        maxStringChars: 8,
+        layerElision: const {'Auth': ElisionConfig(maxStringChars: 16)},
+      ).format(
+        layerRecord('Auth', {'note': 'x' * 100}),
+        MessageBuffer.file(),
+      );
+      check(inner.seen!.data['note']).equals('${'x' * 16}…(+84 chars)');
+    });
+  });
 }
