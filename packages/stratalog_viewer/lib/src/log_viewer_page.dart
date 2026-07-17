@@ -6,9 +6,41 @@ import 'package:flutter/services.dart';
 import 'package:stratalog/stratalog.dart';
 import 'package:stratalog_viewer/src/memory_log_writer.dart';
 
+const JsonEncoder _pretty = JsonEncoder.withIndent('  ', _stringify);
+
+Object? _stringify(Object? o) => o.toString();
+
+final Expando<String> _jsonOf = Expando();
+final Expando<String> _lowerJsonOf = Expando();
+final Expando<String> _haystackOf = Expando();
+
+String _prettyJson(LogRecord r) {
+  return _jsonOf[r] ??= () {
+    try {
+      return _pretty.convert(r.data);
+    } on Object {
+      return '${r.data}'; // Non-encodable payload must not kill the list.
+    }
+  }();
+}
+
+String _lowerJson(LogRecord r) {
+  return _lowerJsonOf[r] ??= _prettyJson(r).toLowerCase();
+}
+
+String _haystack(LogRecord r) {
+  return _haystackOf[r] ??= [
+    '${r.message}',
+    r.loggerName ?? 'App',
+    '${r.error ?? ''}',
+    if (r.data.isNotEmpty) _prettyJson(r),
+  ].join('\n').toLowerCase();
+}
+
 /// In-app log browser over a [MemoryLogWriter] — newest first, layer badges
-/// in stratalog's palette colors, minimum-level filter, substring search,
-/// tap to expand data/error/stack, long-press to copy a record.
+/// in stratalog's palette colors, minimum-level filter, substring search
+/// over message/layer/payload with hit highlight, tap to expand
+/// data/error/stack, long-press to copy a record.
 ///
 /// ```dart
 /// Navigator.push(context,
@@ -28,6 +60,7 @@ class LogViewerPage extends StatefulWidget {
 class _LogViewerPageState extends State<LogViewerPage> {
   ChirpLogLevel _minLevel = .trace;
   String _query = '';
+  bool _expandAll = false;
 
   static const _levels = <ChirpLogLevel>[
     .trace,
@@ -43,9 +76,7 @@ class _LogViewerPageState extends State<LogViewerPage> {
     return [
       for (final record in widget.writer.records.reversed)
         if (record.level >= _minLevel &&
-            (query.isEmpty ||
-                '${record.message}'.toLowerCase().contains(query) ||
-                (record.loggerName ?? '').toLowerCase().contains(query)))
+            (query.isEmpty || _haystack(record).contains(query)))
           record,
     ];
   }
@@ -56,12 +87,17 @@ class _LogViewerPageState extends State<LogViewerPage> {
       appBar: AppBar(
         title: TextField(
           decoration: const InputDecoration(
-            hintText: 'Search message or layer',
+            hintText: 'Search message, layer, or payload',
             border: .none,
           ),
           onChanged: (value) => setState(() => _query = value),
         ),
         actions: [
+          IconButton(
+            icon: Icon(_expandAll ? Icons.unfold_less : Icons.unfold_more),
+            tooltip: _expandAll ? 'Collapse all' : 'Expand all',
+            onPressed: () => setState(() => _expandAll = !_expandAll),
+          ),
           PopupMenuButton<ChirpLogLevel>(
             icon: const Icon(Icons.filter_list),
             tooltip: 'Minimum level',
@@ -91,11 +127,14 @@ class _LogViewerPageState extends State<LogViewerPage> {
           if (records.isEmpty) {
             return const Center(child: Text('No records'));
           }
+          final query = _query.toLowerCase();
           return ListView.builder(
             itemCount: records.length,
             itemBuilder: (context, index) => _RecordTile(
               record: records[index],
               onCopy: () => _copy(_describe(records[index])),
+              query: query,
+              expandAll: _expandAll,
             ),
           );
         },
@@ -125,10 +164,19 @@ class _LogViewerPageState extends State<LogViewerPage> {
 }
 
 class _RecordTile extends StatelessWidget {
-  const _RecordTile({required this.record, required this.onCopy});
+  const _RecordTile({
+    required this.record,
+    required this.onCopy,
+    required this.query,
+    required this.expandAll,
+  });
 
   final LogRecord record;
   final VoidCallback onCopy;
+
+  /// Active search query, lowercased; empty when idle.
+  final String query;
+  final bool expandAll;
 
   static Color _toColor(ConsoleColor color) =>
       .fromARGB(0xff, color.r, color.g, color.b);
@@ -141,7 +189,7 @@ class _RecordTile extends StatelessWidget {
     );
     final levelConsoleColor = LogPalette.levelColor(record.level);
     final levelColor = levelConsoleColor == null
-        ? Theme.of(context).colorScheme.onSurfaceVariant
+        ? ColorScheme.of(context).onSurfaceVariant
         : _toColor(levelConsoleColor);
     final hasBody =
         record.data.isNotEmpty ||
@@ -165,7 +213,7 @@ class _RecordTile extends StatelessWidget {
           ),
           TextSpan(
             text: ' ${record.formattedTime}',
-            style: Theme.of(context).textTheme.bodySmall,
+            style: TextTheme.of(context).bodySmall,
           ),
         ],
       ),
@@ -183,7 +231,16 @@ class _RecordTile extends StatelessWidget {
         onLongPress: onCopy,
       );
     }
+    final hitInBody =
+        query.isNotEmpty &&
+        ((record.data.isNotEmpty && _lowerJson(record).contains(query)) ||
+            (record.error?.toString().toLowerCase().contains(query) ?? false));
+    final expanded = hitInBody || expandAll;
     return ExpansionTile(
+      // Keying on the record + desired state re-applies initiallyExpanded
+      // exactly when it changes; manual toggles survive otherwise.
+      key: ValueKey((record, expanded)),
+      initiallyExpanded: expanded,
       dense: true,
       title: title,
       subtitle: message,
@@ -191,11 +248,11 @@ class _RecordTile extends StatelessWidget {
       expandedCrossAxisAlignment: .start,
       children: [
         if (record.data.isNotEmpty)
-          _MonoBlock(
-            const JsonEncoder.withIndent('  ', _stringify).convert(record.data),
-          ),
-        if (record.error case final error?) _MonoBlock('Error: $error'),
-        if (record.stackTrace case final stack?) _MonoBlock('$stack'),
+          _MonoBlock(_prettyJson(record), query: query),
+        if (record.error case final error?)
+          _MonoBlock('Error: $error', query: query),
+        if (record.stackTrace case final stack?)
+          _MonoBlock('$stack', query: query),
         Align(
           alignment: Alignment.centerRight,
           child: TextButton.icon(
@@ -208,8 +265,6 @@ class _RecordTile extends StatelessWidget {
     );
   }
 
-  static Object? _stringify(Object? o) => o.toString();
-
   /// Same luminance flip as the console badge text.
   static Color _onBadge(Color background) {
     final luma =
@@ -221,18 +276,45 @@ class _RecordTile extends StatelessWidget {
 }
 
 class _MonoBlock extends StatelessWidget {
-  const _MonoBlock(this.text);
+  const _MonoBlock(this.text, {this.query = ''});
 
   final String text;
+
+  /// Lowercased search query; hits get a highlight when non-empty.
+  final String query;
+
+  static const _style = TextStyle(fontFamily: 'monospace', fontSize: 12);
 
   @override
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
-      child: SelectableText(
-        text,
-        style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
-      ),
+      child: query.isEmpty
+          ? SelectableText(text, style: _style)
+          : SelectableText.rich(
+              TextSpan(style: _style, children: _highlit(context)),
+            ),
     );
+  }
+
+  List<TextSpan> _highlit(BuildContext context) {
+    final hit = TextStyle(
+      backgroundColor: ColorScheme.of(context).tertiaryContainer,
+    );
+    final lower = text.toLowerCase();
+    final spans = <TextSpan>[];
+    var start = 0;
+    for (
+      var i = lower.indexOf(query);
+      i >= 0;
+      i = lower.indexOf(query, start)
+    ) {
+      if (i > start) spans.add(TextSpan(text: text.substring(start, i)));
+      final end = i + query.length;
+      spans.add(TextSpan(text: text.substring(i, end), style: hit));
+      start = end;
+    }
+    if (start < text.length) spans.add(TextSpan(text: text.substring(start)));
+    return spans;
   }
 }
