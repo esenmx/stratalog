@@ -116,7 +116,7 @@ WHERE id = ?''',
 
     check(out).not((it) => it.contains('├─'));
     check(out).not((it) => it.contains('│'));
-    check(lines[1]).equals('▸ SELECT * FROM users');
+    check(lines[1]).equals('SELECT * FROM users');
     check(lines[2]).equals('WHERE id = ?'); // continuation at column 0
     check(lines.singleWhere((l) => l.contains('Data ▼'))).equals('Data ▼');
     check(lines.singleWhere((l) => l.contains('Error:'))).startsWith('Error:');
@@ -139,7 +139,7 @@ WHERE id = ?''',
     );
     final lines = out.split('\n');
 
-    check(lines[1]).equals('▸ ← 200 GET https://api.example.com/users/42');
+    check(lines[1]).equals('← 200 GET https://api.example.com/users/42');
     final labelIdx = lines.indexOf('Data ▼');
     check(labelIdx).isGreaterThan(1);
 

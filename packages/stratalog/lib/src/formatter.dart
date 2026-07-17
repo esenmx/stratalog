@@ -52,7 +52,8 @@ class LeftBordered extends SingleChildSpan {
 /// ```
 ///
 /// Layers in [rawDataLayers] drop the gutter — the entire body renders
-/// flush-left at column 0 for copy-pastable SQL and JSON:
+/// flush-left at column 0 for copy-pastable SQL and JSON (the `▸` below is
+/// the producer's own message prefix, not a formatter addition):
 ///
 /// ```text
 /// ▐ Storage ▌ [trace] 14:03:22.114 • dao.dart:42
@@ -108,28 +109,21 @@ class StructuredLogFormatter extends SpanBasedFormatter {
     final themeColor = _colorForLogger(record.loggerName);
     final levelColor = LogPalette.levelColor(record.level);
     // Raw layers drop the gutter entirely — every body line at column 0 so
-    // multi-line SQL messages and JSON payloads copy-paste clean. A `▸ `
-    // marker keeps the message start scannable; the next record's colored
-    // badge header separates records.
+    // multi-line SQL messages and JSON payloads copy-paste clean. No
+    // formatter-added marker: producers carry their own (drift's `▸ `/`✗ `,
+    // dio's `←`/`→`); the next record's colored badge header separates.
     final isRaw = rawDataLayers.contains(record.loggerName);
     LogSpan bordered(LogSpan child) =>
         isRaw ? child : LeftBordered(color: themeColor, child: child);
 
-    final message = AnsiStyled(
-      foreground: record.level >= .warning ? levelColor : null,
-      child: LogMessage(record.message),
-    );
     final bodySpans = <LogSpan>[
       // MESSAGE
-      if (isRaw)
-        SpanSequence(
-          children: [
-            AnsiStyled(foreground: themeColor, child: PlainText('▸ ')),
-            message,
-          ],
-        )
-      else
-        LeftBordered(color: themeColor, child: message),
+      bordered(
+        AnsiStyled(
+          foreground: record.level >= .warning ? levelColor : null,
+          child: LogMessage(record.message),
+        ),
+      ),
     ];
 
     // DATA
