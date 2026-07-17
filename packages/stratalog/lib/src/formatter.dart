@@ -46,9 +46,23 @@ class LeftBordered extends SingleChildSpan {
 /// Header + left-bordered body sections (message / data / error / stack).
 ///
 /// ```text
-/// ▐ Network ▌ [warning] 14:03:22.114 • api_client.dart:87 • fetchUser
-///  ├─ ✗ 404 GET https://api.example.com/users/42
+/// ▐ Auth ▌ [warning] 14:03:22.114 • auth_repository.dart:87 • refresh
+///  ├─ Token refresh slow
 ///  │  Data: {"duration_ms": 132}
+/// ```
+///
+/// Layers in [rawDataLayers] drop the gutter — the entire body renders
+/// flush-left at column 0 for copy-pastable SQL and JSON:
+///
+/// ```text
+/// ▐ Storage ▌ [trace] 14:03:22.114 • dao.dart:42
+/// ▸ SELECT * FROM users
+/// WHERE id = ?
+/// Data ▼
+/// {
+///   "args": [42],
+///   "duration_ms": 3
+/// }
 /// ```
 ///
 /// Theme adaptivity: every hue comes from [LogPalette]'s contrast-verified
@@ -61,12 +75,22 @@ class StructuredLogFormatter extends SpanBasedFormatter {
     Map<String, ConsoleColor>? domainColors,
     this.showTimestamp = true,
     this.showLocation = true,
+    this.rawDataLayers = defaultRawDataLayers,
   }) : domainColors = domainColors == null
            ? LogPalette.domains
            : {...LogPalette.domains, ...domainColors};
 
   /// Badge/gutter color per layer name, overlaid on [LogPalette.domains].
   final Map<String, ConsoleColor> domainColors;
+
+  /// Layers whose entire body renders flush-left with no gutter — copyable
+  /// multi-line SQL in messages and valid, selectable JSON straight off the
+  /// console. Pass `const {}` to restore the gutter everywhere.
+  final Set<String> rawDataLayers;
+
+  /// String literals, not `LogLayer` field accesses — a const field access
+  /// isn't a const expression (precedent: [LogPalette.domains]).
+  static const Set<String> defaultRawDataLayers = {'Network', 'Storage'};
 
   /// Renders the wall-clock time in the header.
   final bool showTimestamp;
@@ -83,16 +107,29 @@ class StructuredLogFormatter extends SpanBasedFormatter {
   LogSpan buildSpan(LogRecord record) {
     final themeColor = _colorForLogger(record.loggerName);
     final levelColor = LogPalette.levelColor(record.level);
+    // Raw layers drop the gutter entirely — every body line at column 0 so
+    // multi-line SQL messages and JSON payloads copy-paste clean. A `▸ `
+    // marker keeps the message start scannable; the next record's colored
+    // badge header separates records.
+    final isRaw = rawDataLayers.contains(record.loggerName);
+    LogSpan bordered(LogSpan child) =>
+        isRaw ? child : LeftBordered(color: themeColor, child: child);
 
+    final message = AnsiStyled(
+      foreground: record.level >= .warning ? levelColor : null,
+      child: LogMessage(record.message),
+    );
     final bodySpans = <LogSpan>[
       // MESSAGE
-      LeftBordered(
-        color: themeColor,
-        child: AnsiStyled(
-          foreground: record.level >= .warning ? levelColor : null,
-          child: LogMessage(record.message),
-        ),
-      ),
+      if (isRaw)
+        SpanSequence(
+          children: [
+            AnsiStyled(foreground: themeColor, child: PlainText('▸ ')),
+            message,
+          ],
+        )
+      else
+        LeftBordered(color: themeColor, child: message),
     ];
 
     // DATA
@@ -103,15 +140,20 @@ class StructuredLogFormatter extends SpanBasedFormatter {
       ).convert(record.data);
       bodySpans.addAll([
         NewLine(),
-        LeftBordered(
-          color: themeColor,
-          child: SpanSequence(
-            children: [
-              AnsiStyled(dim: true, child: PlainText('Data: ')),
-              PlainText(jsonStr),
-            ],
+        if (isRaw) ...[
+          AnsiStyled(dim: true, child: PlainText('Data ▼')),
+          NewLine(),
+          PlainText(jsonStr),
+        ] else
+          LeftBordered(
+            color: themeColor,
+            child: SpanSequence(
+              children: [
+                AnsiStyled(dim: true, child: PlainText('Data: ')),
+                PlainText(jsonStr),
+              ],
+            ),
           ),
-        ),
       ]);
     }
 
@@ -119,9 +161,8 @@ class StructuredLogFormatter extends SpanBasedFormatter {
     if (record.error != null) {
       bodySpans.addAll([
         NewLine(),
-        LeftBordered(
-          color: themeColor,
-          child: SpanSequence(
+        bordered(
+          SpanSequence(
             children: [
               AnsiStyled(
                 foreground: LogPalette.error,
@@ -143,9 +184,8 @@ class StructuredLogFormatter extends SpanBasedFormatter {
     if (record.stackTrace case final stackTrace?) {
       bodySpans.addAll([
         NewLine(),
-        LeftBordered(
-          color: themeColor,
-          child: SpanSequence(
+        bordered(
+          SpanSequence(
             children: [
               AnsiStyled(
                 foreground: LogPalette.error,
