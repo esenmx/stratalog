@@ -43,6 +43,28 @@ const payments = LogLayer('Payments'); // declare custom layers once
 payments.success('Order captured');
 ```
 
+## Uncaught errors
+
+Route framework and zone errors through the same pipeline — the record's `Error:`/`Stack Trace:` sections replace Flutter's console dump, and `CrashReporterWriter` already forwards `error`+ records to the crash backend, so no separate `recordFlutterFatalError` wiring either:
+
+```dart
+FlutterError.onError = (details) {
+  if (details.silent) return; // framework-flagged noise (e.g. image load failures)
+  LogLayer.ui.error(
+    details.context?.toDescription() ?? 'flutter framework error',
+    error: details.exception,
+    stackTrace: details.stack,
+    data: {if (details.library case final library?) 'library': library},
+  );
+};
+PlatformDispatcher.instance.onError = (error, stackTrace) {
+  LogLayer.app.error('uncaught zone error', error: error, stackTrace: stackTrace);
+  return true; // handled — suppresses the default "Unhandled exception" dump
+};
+```
+
+Do **not** forward to `FlutterError.presentError` (or chain the previous handler) after logging, and do not `return false` from `PlatformDispatcher.onError` — either re-prints the same error as the framework's `════ Exception caught by ════` dump, so every uncaught error appears twice. `presentError` only controls console text; the debug red error screen (`ErrorWidget`) is unaffected.
+
 ## Copyable payloads
 
 `Network` and `Storage` records render their entire body flush-left at column 0 — message (multi-line SQL included), `Data ▼` JSON, errors, and stack traces all skip the `│` gutter — so a payload or statement copies straight out of the console:
