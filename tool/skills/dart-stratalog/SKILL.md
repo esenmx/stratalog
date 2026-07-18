@@ -25,6 +25,8 @@ Core (`stratalog`) is pure Dart; every integration is a sibling package — add 
 
 `configureLogging()` once, first line of bootstrap, before `runApp`. Reconfigure by calling again — never mutate `Chirp.root` in place; `LogLayer` re-resolves automatically. Debug → colored structured console via `dart:developer` (never `print`); release → single-line JSON.
 
+Global handlers route through the same pipeline: `FlutterError.onError` → `LogLayer.ui.error(details.context?.toDescription() ?? 'flutter framework error', error: details.exception, stackTrace: details.stack)` (guard `if (details.silent) return;` first); `PlatformDispatcher.instance.onError` → `LogLayer.app.error(...)` then `return true`. Never also call `FlutterError.presentError`/chain the previous handler, and never `return false` — either re-prints the error as the framework's `════ Exception caught by ════` dump (console shows it twice). No `recordFlutterFatalError` wiring either: `CrashReporterWriter` already forwards `error`+ records, so direct SDK calls double-report to the backend.
+
 ## Layers
 
 `LogLayer` is a **const value type** — declare custom layers once, never strings at call sites:
