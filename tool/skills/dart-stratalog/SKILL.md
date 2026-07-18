@@ -56,7 +56,7 @@ Adapter throws are swallowed by design — a log call must never crash the app (
 
 ## Non-obvious invariants
 
-- Network taps log failures at `warning`, never `error` — non-2xx/non-OK is control flow the repository maps to a typed failure. Reserve `error` for bugs; same split everywhere: `Exception` → warning, `Error` → error.
+- Network taps log failures at `warning`, never `error` — non-2xx/non-OK is control flow the repository maps to a typed failure. Reserve `error` for bugs — judged by **nature, not Dart type**: mapped/expected control flow → `warning` (usually surfaces as `Exception`); bug-grade conditions → `error` even when they arrive as an `Exception` (canonical case: a failed bootstrap init `.wait` — half-initialized app must reach the crash reporter); `Error` → `error` always.
 - Sensitive header/metadata redaction is allowlist-based; extending it means passing `sensitiveHeaders`/`sensitiveMetadata`, not logging raw dumps.
 - `stratalog_firebase_auth` logs streams only — sign-in *failures* throw at the call site; catch and `LogLayer.auth.warning(...)` there. OAuth providers surface as `google.com`/`apple.com`/`oidc.*` in `providers`.
 - `stratalog_drift`: `logArgs: false` when tables hold PII — bound args are row data.
