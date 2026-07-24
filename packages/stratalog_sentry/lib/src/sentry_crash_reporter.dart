@@ -38,7 +38,7 @@ final class SentryCrashReporter implements CrashReporter {
   }
 
   @override
-  void addBreadcrumb(String message) {
-    unawaited(Sentry.addBreadcrumb(Breadcrumb(message: message)));
+  void addBreadcrumb(String message, {Map<String, Object?>? data}) {
+    unawaited(Sentry.addBreadcrumb(Breadcrumb(message: message, data: data)));
   }
 }

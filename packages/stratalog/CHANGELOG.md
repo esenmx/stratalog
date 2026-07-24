@@ -1,3 +1,7 @@
+# 0.3.0
+
+- **Breaking**: `CrashReporter.addBreadcrumb` gains `{Map<String, Object?>? data}`; `CrashReporterWriter` forwards the record's `data:` map on breadcrumbs (null when empty). Breadcrumb discipline documented: method path/status/codes/durations/ids, never message bodies.
+
 # 0.2.0
 
 - Per-layer elision: `ElidingFormatter.layerElision` keys `ElisionConfig` budgets by `loggerName`; `ElisionConfig.none` passes payloads verbatim, `ElisionConfig.vital` clips hard to vital fields. `configureLogging(layerElision:)` defaults to `defaultLayerElision` — Network/Storage print untruncated on the debug console (their JSON is a copy-out artifact), State clips to vital fields; release output keeps the single global budget. `ElidingFormatter.of` honors `ElisionConfig.enabled`, so `elision: ElisionConfig.none` disables the global budget while keeping per-layer overrides.

@@ -4,11 +4,11 @@ import 'package:stratalog/stratalog.dart';
 /// Central bloc observability — mirrors `stratalog_riverpod`'s format:
 ///
 /// ```dart
-/// Bloc.observer = const BlocLogger(LogLayer.state);
+/// Bloc.observer = const BlocLogger();
 /// ```
 final class BlocLogger extends BlocObserver {
   /// Logs observer events to [logger], typically `LogLayer.state`.
-  const BlocLogger(this.logger, {this.maxValueLength = 800});
+  const BlocLogger({this.logger = .state, this.maxValueLength = 800});
 
   /// Destination layer.
   final LogLayer logger;
@@ -20,7 +20,9 @@ final class BlocLogger extends BlocObserver {
 
   @override
   void onCreate(BlocBase<dynamic> bloc) {
-    logger.trace('+ ${bloc.runtimeType} | initial: ${_short(bloc.state)}');
+    logger.trace(
+      '✚ create ${bloc.runtimeType} | initial: ${_short(bloc.state)}',
+    );
     super.onCreate(bloc);
   }
 
@@ -36,7 +38,7 @@ final class BlocLogger extends BlocObserver {
     // logging both would duplicate every state change.
     if (bloc is! Bloc) {
       logger.trace(
-        '~ ${bloc.runtimeType} | '
+        '↻ change ${bloc.runtimeType} | '
         '${_short(change.currentState)} ➔ ${_short(change.nextState)}',
       );
     }
@@ -49,7 +51,7 @@ final class BlocLogger extends BlocObserver {
     Transition<dynamic, dynamic> transition,
   ) {
     logger.trace(
-      '~ ${bloc.runtimeType} | ${_short(transition.event)}: '
+      '↻ transition ${bloc.runtimeType} | ${_short(transition.event)}: '
       '${_short(transition.currentState)} ➔ ${_short(transition.nextState)}',
     );
     super.onTransition(bloc, transition);
@@ -76,7 +78,7 @@ final class BlocLogger extends BlocObserver {
 
   @override
   void onClose(BlocBase<dynamic> bloc) {
-    logger.trace('- ${bloc.runtimeType}');
+    logger.trace('⊘ close ${bloc.runtimeType}');
     super.onClose(bloc);
   }
 

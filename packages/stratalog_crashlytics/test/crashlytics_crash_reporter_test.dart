@@ -83,6 +83,20 @@ void main() {
     );
   });
 
+  test('breadcrumb data is inlined into the Crashlytics log string', () {
+    LogLayer.network.info(
+      '✗ NOT_FOUND /geo.v1.GeoService/GetCity',
+      data: {'duration_ms': 12, 'error_code': 'geo.404'},
+    );
+
+    verify(
+      crashlytics.log(
+        '[Network/info] ✗ NOT_FOUND /geo.v1.GeoService/GetCity '
+        '{duration_ms: 12, error_code: geo.404}',
+      ),
+    ).called(1);
+  });
+
   test('a throwing backend never propagates to the log call', () {
     when(crashlytics.log(any)).thenThrow(StateError('no default app'));
     check(() => LogLayer.app.info('crumb')).returnsNormally();
