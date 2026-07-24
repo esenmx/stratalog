@@ -7,7 +7,7 @@ import 'package:stratalog/stratalog.dart';
 /// ```dart
 /// AppDatabase(
 ///   NativeDatabase.createInBackground(file)
-///       .interceptWith(LoggerQueryInterceptor(LogLayer.storage)),
+///       .interceptWith(LoggerQueryInterceptor()),
 /// );
 /// ```
 ///
@@ -16,8 +16,8 @@ import 'package:stratalog/stratalog.dart';
 /// untouched. Transaction begin/commit/rollback and batches are traced too.
 final class LoggerQueryInterceptor extends QueryInterceptor {
   /// Logs statements to [logger], typically `LogLayer.storage`.
-  LoggerQueryInterceptor(
-    this.logger, {
+  LoggerQueryInterceptor({
+    this.logger = .storage,
     this.logArgs = true,
     this.maxStatementChars,
   });

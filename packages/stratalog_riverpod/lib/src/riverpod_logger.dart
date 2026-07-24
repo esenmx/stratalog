@@ -7,11 +7,11 @@ import 'package:stratalog/stratalog.dart';
 /// `Mutation` lifecycle events with structured properties.
 ///
 /// ```dart
-/// ProviderScope(observers: [RiverpodLogger(LogLayer.state)], child: app)
+/// ProviderScope(observers: [RiverpodLogger()], child: app)
 /// ```
 final class RiverpodLogger extends ProviderObserver {
   /// Logs observer events to [logger], typically `LogLayer.state`.
-  const RiverpodLogger(this.logger, {this.maxValueLength = 800});
+  const RiverpodLogger({this.logger = .state, this.maxValueLength = 800});
 
   /// Destination layer.
   final LogLayer logger;
@@ -23,7 +23,7 @@ final class RiverpodLogger extends ProviderObserver {
 
   @override
   void didAddProvider(ProviderObserverContext context, Object? value) {
-    logger.trace('+ ${context.name} | initial: ${_short(value)}');
+    logger.trace('✚ add ${context.name} | initial: ${_short(value)}');
   }
 
   @override
@@ -33,13 +33,14 @@ final class RiverpodLogger extends ProviderObserver {
     Object? newValue,
   ) {
     logger.trace(
-      '~ ${context.name} | ${_short(previousValue)} ➔ ${_short(newValue)}',
+      '↻ update ${context.name} | '
+      '${_short(previousValue)} ➔ ${_short(newValue)}',
     );
   }
 
   @override
   void didDisposeProvider(ProviderObserverContext context) {
-    logger.trace('- ${context.name}');
+    logger.trace('⊘ dispose ${context.name}');
   }
 
   @override

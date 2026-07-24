@@ -60,6 +60,22 @@ void main() {
     ).contains('[Network/info] token refreshed');
   });
 
+  test('breadcrumb carries the record data map', () async {
+    LogLayer.network.info(
+      '✗ NOT_FOUND /geo.v1.GeoService/GetCity',
+      data: {'duration_ms': 12, 'error_code': 'geo.404'},
+    );
+    LogLayer.network.error('boom', error: Exception('x'));
+    await settle();
+
+    final crumb = (captured.single.breadcrumbs ?? []).singleWhere(
+      (b) => (b.message ?? '').contains('GetCity'),
+    );
+    check(
+      crumb.data,
+    ).isNotNull().deepEquals({'duration_ms': 12, 'error_code': 'geo.404'});
+  });
+
   test('uninitialized hub no-ops instead of throwing', () async {
     await Sentry.close();
     check(

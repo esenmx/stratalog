@@ -84,7 +84,13 @@ final class _EchoService extends Service {
 
   Future<List<int>> _boom(ServiceCall call, Future<List<int>> request) async {
     await request;
-    throw const GrpcError.notFound('missing');
+    throw const GrpcError.custom(
+      StatusCode.notFound,
+      'missing',
+      null,
+      null,
+      {'error-code': 'geo.404'},
+    );
   }
 
   Future<_BigMessage> _echoBig(
@@ -144,7 +150,7 @@ void main() {
     );
     client = _EchoClient(
       channel,
-      interceptors: [LoggerGrpcInterceptor(.network)],
+      interceptors: [LoggerGrpcInterceptor()],
     );
   });
 
@@ -168,7 +174,7 @@ void main() {
     check(writer.records.last.data['duration_ms']).isA<int>();
   });
 
-  test('failure logs status code at warning and still throws', () async {
+  test('failure logs status, error-code trailer, and still throws', () async {
     await check(client.boom([0])).throws<GrpcError>();
     await settle();
 
@@ -176,6 +182,8 @@ void main() {
     check(record.level).equals(.warning);
     check('${record.message}').equals('✗ NOT_FOUND /test.Echo/Boom');
     check(record.error).isA<GrpcError>();
+    check(record.data['error_code']).equals('geo.404');
+    check(record.data['duration_ms']).isA<int>();
   });
 
   test('large message lands in record data verbatim — no clipping', () async {
@@ -202,6 +210,47 @@ void main() {
     ).deepEquals(expectedBody());
   });
 
+  test('logBodies false pins the release shape — no body keys ever', () async {
+    final quiet = _EchoClient(
+      channel,
+      interceptors: [LoggerGrpcInterceptor(logBodies: false)],
+    );
+
+    await quiet.echoBig(_BigMessage()..text = 'user-payload');
+    await check(quiet.boom([0])).throws<GrpcError>();
+    await settle();
+
+    check(writer.records.map((r) => '${r.message}')).deepEquals([
+      '→ /test.Echo/EchoBig',
+      '← OK /test.Echo/EchoBig',
+      '→ /test.Echo/Boom',
+      '✗ NOT_FOUND /test.Echo/Boom',
+    ]);
+    // The release contract: only method path, status, error-code trailer,
+    // duration, and metadata — a future tap change reintroducing body dumps
+    // must fail here.
+    final keys = writer.records.expand((r) => r.data.keys).toSet();
+    check(
+      keys.difference({'metadata', 'duration_ms', 'error_code'}),
+    ).isEmpty();
+    check(
+      writer.records.map((r) => '${r.message} ${r.data}').join('\n'),
+    ).not((it) => it.contains('user-payload'));
+  });
+
+  test('protoLogShape under name stripping is the tag-keyed map', () {
+    final message = _BigMessage()
+      ..text = 'hi'
+      ..items.addAll(['a', 'b']);
+
+    check(
+      protoLogShape(message, namesStripped: true),
+    ).isA<Map<String, Object?>>().deepEquals({
+      '1': 'hi',
+      '2': ['a', 'b'],
+    });
+  });
+
   test('sensitive metadata verbatim by default', () async {
     await client.echo(
       [0],
@@ -218,7 +267,7 @@ void main() {
     final maskedClient = _EchoClient(
       channel,
       interceptors: [
-        LoggerGrpcInterceptor(.network, maskSensitiveValues: true),
+        LoggerGrpcInterceptor(maskSensitiveValues: true),
       ],
     );
     await maskedClient.echo(

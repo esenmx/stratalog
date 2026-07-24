@@ -75,7 +75,6 @@ void main() {
 
   test('sensitive headers masked, unlisted dropped, allowlisted kept', () {
     LoggerDioInterceptor(
-      .network,
       maskSensitiveValues: true,
     ).onRequest(request(), RequestInterceptorHandler());
 
@@ -93,9 +92,7 @@ void main() {
   test('sensitive header values pass through verbatim by default', () {
     // maskSensitiveValues defaults to false on purpose: local debugging wants
     // the bearer token copyable from the console.
-    LoggerDioInterceptor(
-      .network,
-    ).onRequest(request(), RequestInterceptorHandler());
+    LoggerDioInterceptor().onRequest(request(), RequestInterceptorHandler());
 
     final headers =
         writer.records.single.data['headers']! as Map<String, Object?>;
@@ -106,7 +103,7 @@ void main() {
   test('body is logged as full structured data, not truncated here', () {
     // Elision is the sink's job (ElidingFormatter). The interceptor keeps the
     // JSON shape and the full payload so no downstream sink is forced to.
-    LoggerDioInterceptor(.network).onResponse(
+    LoggerDioInterceptor().onResponse(
       Response<Object?>(
         requestOptions: request(),
         statusCode: 200,
@@ -141,16 +138,14 @@ void main() {
         ..method = 'POST'
         ..data = largeBody();
 
-      LoggerDioInterceptor(
-        .network,
-      ).onRequest(options, RequestInterceptorHandler());
+      LoggerDioInterceptor().onRequest(options, RequestInterceptorHandler());
 
       final body = writer.records.single.data['body']! as Map<String, Object?>;
       check(body).deepEquals(largeBody());
     });
 
     test('large response body reaches record.data unclipped', () {
-      LoggerDioInterceptor(.network).onResponse(
+      LoggerDioInterceptor().onResponse(
         Response<Object?>(
           requestOptions: request(),
           statusCode: 200,
@@ -165,7 +160,7 @@ void main() {
   });
 
   test('failures log at warning with status and duration', () {
-    final interceptor = LoggerDioInterceptor(.network);
+    final interceptor = LoggerDioInterceptor();
     final options = request();
     interceptor.onRequest(options, RequestInterceptorHandler());
     writer.records.clear();
@@ -198,7 +193,7 @@ void main() {
     final dio = Dio(BaseOptions(baseUrl: 'https://api.example.com'))
       ..httpClientAdapter = _StubAdapter(200, '{"data":{"id":1}}');
     dio.interceptors
-      ..add(LoggerDioInterceptor(.network))
+      ..add(LoggerDioInterceptor())
       ..add(
         InterceptorsWrapper(
           onResponse: (response, handler) =>
@@ -232,7 +227,7 @@ void main() {
   test('network errors carry the dio type in the message', () async {
     final dio = Dio(BaseOptions(baseUrl: 'https://api.example.com'))
       ..httpClientAdapter = _RefusingAdapter();
-    dio.interceptors.add(LoggerDioInterceptor(.network));
+    dio.interceptors.add(LoggerDioInterceptor());
 
     Object? caught;
     try {
@@ -255,7 +250,7 @@ void main() {
     final dio = Dio(BaseOptions(baseUrl: 'https://api.example.com'))
       ..httpClientAdapter = _StubAdapter(500, '{"data":{"message":"boom"}}');
     dio.interceptors
-      ..add(LoggerDioInterceptor(.network))
+      ..add(LoggerDioInterceptor())
       ..add(
         InterceptorsWrapper(
           onError: (err, handler) => handler.resolve(

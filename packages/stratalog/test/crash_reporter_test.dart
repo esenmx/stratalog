@@ -5,7 +5,7 @@ import 'package:test/test.dart';
 
 final class _FakeReporter implements CrashReporter {
   final errors = <(Object, String?, bool)>[];
-  final breadcrumbs = <String>[];
+  final breadcrumbs = <(String, Map<String, Object?>?)>[];
 
   @override
   void recordError(
@@ -18,7 +18,8 @@ final class _FakeReporter implements CrashReporter {
   }
 
   @override
-  void addBreadcrumb(String message) => breadcrumbs.add(message);
+  void addBreadcrumb(String message, {Map<String, Object?>? data}) =>
+      breadcrumbs.add((message, data));
 }
 
 final class _ThrowingReporter implements CrashReporter {
@@ -33,7 +34,8 @@ final class _ThrowingReporter implements CrashReporter {
   }
 
   @override
-  void addBreadcrumb(String message) => throw StateError('nope');
+  void addBreadcrumb(String message, {Map<String, Object?>? data}) =>
+      throw StateError('nope');
 }
 
 void main() {
@@ -52,11 +54,28 @@ void main() {
       ..error('boom', error: Exception('x'))
       ..wtf('fatal boom', error: Exception('y'));
 
-    check(reporter.breadcrumbs).deepEquals(['[Auth/info] breadcrumb me']);
+    check(
+      reporter.breadcrumbs.map((b) => b.$1),
+    ).deepEquals(['[Auth/info] breadcrumb me']);
     check(reporter.errors).length.equals(2);
     check(reporter.errors[0].$2).equals('[Auth] boom');
     check(reporter.errors[0].$3).isFalse();
     check(reporter.errors[1].$3).isTrue(); // above error -> fatal
+  });
+
+  test('breadcrumbs carry record data; empty data maps to null', () {
+    final reporter = _FakeReporter();
+    loggerWith(CrashReporterWriter(reporter))
+      ..info(
+        '✗ NOT_FOUND /geo.v1.GeoService/GetCity',
+        data: {'duration_ms': 12, 'error_code': 'geo.404'},
+      )
+      ..info('bare');
+
+    check(
+      reporter.breadcrumbs[0].$2,
+    ).isNotNull().deepEquals({'duration_ms': 12, 'error_code': 'geo.404'});
+    check(reporter.breadcrumbs[1].$2).isNull();
   });
 
   test('message stands in when no error object is attached', () {

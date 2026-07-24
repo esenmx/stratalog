@@ -13,8 +13,8 @@ import 'package:stratalog/stratalog.dart';
 /// repository boundary maps to a typed failure, not a crash.
 final class LoggerDioInterceptor extends Interceptor {
   /// Logs traffic to [logger], typically `LogLayer.network`.
-  LoggerDioInterceptor(
-    this.logger, {
+  LoggerDioInterceptor({
+    this.logger = .network,
     this.headerAllowlist = defaultHeaderAllowlist,
     this.sensitiveHeaders = defaultSensitiveHeaders,
     this.maskSensitiveValues = false,

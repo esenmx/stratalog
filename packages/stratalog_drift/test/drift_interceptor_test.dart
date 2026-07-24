@@ -31,7 +31,7 @@ void main() {
     writer = _CapturingWriter();
     Chirp.root = ChirpLogger().addWriter(writer);
     db = _Db(
-      NativeDatabase.memory().interceptWith(LoggerQueryInterceptor(.storage)),
+      NativeDatabase.memory().interceptWith(LoggerQueryInterceptor()),
     );
   });
 
@@ -81,7 +81,7 @@ void main() {
     await db.close();
     db = _Db(
       NativeDatabase.memory().interceptWith(
-        LoggerQueryInterceptor(.storage, logArgs: false),
+        LoggerQueryInterceptor(logArgs: false),
       ),
     );
     await db.customStatement('CREATE TABLE t (secret TEXT)');
@@ -108,7 +108,7 @@ void main() {
   });
 
   test('long statements are ellipsized in the message', () async {
-    final interceptor = LoggerQueryInterceptor(.storage, maxStatementChars: 16);
+    final interceptor = LoggerQueryInterceptor(maxStatementChars: 16);
     await db.close();
     db = _Db(NativeDatabase.memory().interceptWith(interceptor));
 

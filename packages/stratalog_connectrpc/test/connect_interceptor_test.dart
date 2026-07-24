@@ -77,7 +77,7 @@ void main() {
       UnaryResponse(request.spec, Headers(), 'pong', Headers());
 
   test('success logs procedure with duration at trace', () async {
-    final interceptor = loggerConnectInterceptor(.network);
+    final interceptor = loggerConnectInterceptor();
     final wrapped = interceptor<String, String>(ok);
 
     final response = await wrapped(_request());
@@ -106,9 +106,7 @@ void main() {
       Request<_BigMessage, _BigMessage> request,
     ) async => UnaryResponse(request.spec, Headers(), message, Headers());
 
-    final wrapped = loggerConnectInterceptor(
-      .network,
-    )<_BigMessage, _BigMessage>(okBig);
+    final wrapped = loggerConnectInterceptor()<_BigMessage, _BigMessage>(okBig);
     await wrapped(
       UnaryRequest(
         const Spec(
@@ -134,7 +132,7 @@ void main() {
 
   test('sensitive headers verbatim by default', () async {
     final headers = Headers()..add('authorization', 'Bearer secret-token');
-    final wrapped = loggerConnectInterceptor(.network)<String, String>(ok);
+    final wrapped = loggerConnectInterceptor()<String, String>(ok);
 
     await wrapped(_request(headers: headers));
 
@@ -148,7 +146,6 @@ void main() {
       ..add('authorization', 'Bearer secret-token')
       ..add('x-request-id', 'r1');
     final wrapped = loggerConnectInterceptor(
-      .network,
       maskSensitiveValues: true,
     )<String, String>(ok);
 
@@ -163,12 +160,16 @@ void main() {
     ).not((it) => it.contains('secret-token'));
   });
 
-  test('ConnectException logs code at warning and rethrows', () async {
+  test('ConnectException logs code, error-code trailer, rethrows', () async {
     Future<Response<String, String>> fails(Request<String, String> _) async {
-      throw ConnectException(.notFound, 'missing');
+      throw ConnectException(
+        .notFound,
+        'missing',
+        metadata: Headers()..add('error-code', 'geo.404'),
+      );
     }
 
-    final wrapped = loggerConnectInterceptor(.network)<String, String>(
+    final wrapped = loggerConnectInterceptor()<String, String>(
       fails,
     );
 
@@ -178,6 +179,59 @@ void main() {
     check(
       '${record.message}',
     ).equals('✗ not_found /acme.foo.v1.FooService/Bar');
+    check(record.data['error_code']).equals('geo.404');
+    check(record.data['duration_ms']).isA<int>();
+  });
+
+  test('logBodies false pins the release shape — no body keys ever', () async {
+    final message = _BigMessage()..text = 'user-payload';
+    Future<Response<_BigMessage, _BigMessage>> okBig(
+      Request<_BigMessage, _BigMessage> request,
+    ) async => UnaryResponse(request.spec, Headers(), message, Headers());
+
+    final wrapped = loggerConnectInterceptor(
+      logBodies: false,
+    )<_BigMessage, _BigMessage>(okBig);
+    await wrapped(
+      UnaryRequest(
+        const Spec(
+          '/acme.foo.v1.FooService/Big',
+          .unary,
+          _BigMessage.new,
+          _BigMessage.new,
+        ),
+        'https://api.example.com/acme.foo.v1.FooService/Big',
+        Headers(),
+        message,
+        const _NeverAborts(),
+      ),
+    );
+
+    check(writer.records.map((r) => '${r.message}')).deepEquals([
+      '→ /acme.foo.v1.FooService/Big',
+      '← OK /acme.foo.v1.FooService/Big',
+    ]);
+    // The release contract: only procedure, code, error-code trailer,
+    // duration, and headers — a future tap change reintroducing body dumps
+    // must fail here.
+    final keys = writer.records.expand((r) => r.data.keys).toSet();
+    check(keys.difference({'headers', 'duration_ms', 'error_code'})).isEmpty();
+    check(
+      writer.records.map((r) => '${r.message} ${r.data}').join('\n'),
+    ).not((it) => it.contains('user-payload'));
+  });
+
+  test('protoLogShape under name stripping is the tag-keyed map', () {
+    final message = _BigMessage()
+      ..text = 'hi'
+      ..items.addAll(['a', 'b']);
+
+    check(
+      protoLogShape(message, namesStripped: true),
+    ).isA<Map<String, Object?>>().deepEquals({
+      '1': 'hi',
+      '2': ['a', 'b'],
+    });
   });
 
   test('streaming spec logs with the stream arrow', () async {
@@ -190,7 +244,7 @@ void main() {
       Headers(),
     );
 
-    final wrapped = loggerConnectInterceptor(.network)<String, String>(
+    final wrapped = loggerConnectInterceptor()<String, String>(
       okStream,
     );
     await wrapped(
