@@ -3,7 +3,7 @@
 Dio integration for [stratalog](https://pub.dev/packages/stratalog) — taps Dio into stratalog's colored, contrast-verified log layers.
 
 ```dart
-dio.interceptors.add(LoggerDioInterceptor(LogLayer.network)); // add FIRST
+dio.interceptors.add(LoggerDioInterceptor()); // add FIRST
 ```
 
 Pure HTTP-wire logging — add it **first**: dio runs hooks in list order, so first position sees the raw server response before any other interceptor can mutate, throw over, or swallow it, and still catches the errors those interceptors raise. Failure lines name their cause: `✗ 500` a server error, `✗ connectionError`/`✗ receiveTimeout` the wire, `✗ unknown` a client-side pipeline failure (the raw body sits on the `←` trace line above). Deserialized results and failures are logged where they land — e.g. `stratalog_riverpod`.

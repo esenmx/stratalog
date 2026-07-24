@@ -36,7 +36,8 @@ final class CrashlyticsCrashReporter implements CrashReporter {
   }
 
   @override
-  void addBreadcrumb(String message) {
-    unawaited(_instance.log(message));
+  void addBreadcrumb(String message, {Map<String, Object?>? data}) {
+    // Crashlytics breadcrumbs are single strings — inline the data map.
+    unawaited(_instance.log(data == null ? message : '$message $data'));
   }
 }

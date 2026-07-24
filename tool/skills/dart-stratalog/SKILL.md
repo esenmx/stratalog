@@ -9,13 +9,13 @@ Core (`stratalog`) is pure Dart; every integration is a sibling package — add 
 
 |Package|Entry point|
 |---|---|
-|`stratalog_dio`|`dio.interceptors.add(LoggerDioInterceptor(LogLayer.network))` — add **FIRST**: dio runs hooks FIFO, so first position logs the raw wire (response before any interceptor can mutate/throw/swallow it, and the errors they raise — last position goes blind to both). Failure lines name their cause: `✗ 500` server, `✗ connectionError` wire, `✗ unknown` client pipeline (raw body on the `←` trace line above). Deserialized failures log via `stratalog_riverpod`|
-|`stratalog_grpc`|`Client(channel, interceptors: [LoggerGrpcInterceptor(LogLayer.network)])`|
-|`stratalog_connectrpc`|`Transport(..., interceptors: [loggerConnectInterceptor(LogLayer.network)])`|
-|`stratalog_riverpod`|`ProviderScope(observers: [const RiverpodLogger(LogLayer.state)])`|
-|`stratalog_bloc`|`Bloc.observer = const BlocLogger(LogLayer.state)`|
-|`stratalog_auto_route`|`router.config(navigatorObservers: () => [AppRouterObserver(LogLayer.route)])`|
-|`stratalog_drift`|`executor.interceptWith(LoggerQueryInterceptor(LogLayer.storage))`|
+|`stratalog_dio`|`dio.interceptors.add(LoggerDioInterceptor())` — add **FIRST**: dio runs hooks FIFO, so first position logs the raw wire (response before any interceptor can mutate/throw/swallow it, and the errors they raise — last position goes blind to both). Failure lines name their cause: `✗ 500` server, `✗ connectionError` wire, `✗ unknown` client pipeline (raw body on the `←` trace line above). Deserialized failures log via `stratalog_riverpod`|
+|`stratalog_grpc`|`Client(channel, interceptors: [LoggerGrpcInterceptor()])`|
+|`stratalog_connectrpc`|`Transport(..., interceptors: [loggerConnectInterceptor()])`|
+|`stratalog_riverpod`|`ProviderScope(observers: [const RiverpodLogger()])`|
+|`stratalog_bloc`|`Bloc.observer = const BlocLogger()`|
+|`stratalog_auto_route`|`router.config(navigatorObservers: () => [AppRouterObserver()])`|
+|`stratalog_drift`|`executor.interceptWith(LoggerQueryInterceptor())`|
 |`stratalog_firebase_auth`|`FirebaseAuthLogger(FirebaseAuth.instance).attach()` after `Firebase.initializeApp`|
 |`stratalog_firebase_analytics`|`LoggerAnalytics(FirebaseAnalytics.instance)` — a facade; call through it|
 |`stratalog_crashlytics` / `stratalog_sentry`|`configureLogging(crashReporter: const CrashlyticsCrashReporter())`|
@@ -45,7 +45,7 @@ Every color must pass WCAG ≥ 3.0 on solarized light/dark AND soft-gray light/d
 
 ## Crash reporting
 
-`error`+ → report (`critical`/`wtf` → fatal); `info`+ → breadcrumb. Veto expected failures via the writer form:
+`error`+ → report (`critical`/`wtf` → fatal); `info`+ → breadcrumb (message + the record's `data:` map). Veto expected failures via the writer form:
 
 ```dart
 configureLogging(writers: [
@@ -55,6 +55,15 @@ configureLogging(writers: [
 ```
 
 Adapter throws are swallowed by design — a log call must never crash the app (uninitialized Firebase/Sentry degrades to no-op). Other backends: implement 2-method `CrashReporter`.
+
+## Proto name stripping & release body discipline
+
+Apps ship release AOT with `protobuf.omit_enum_names` / `omit_field_names` / `omit_message_names` dart-defines → `GeneratedMessage.toString()`/`ProtobufEnum.toString()` print numbers and proto3 JSON is unusable there (debug/profile keep names). The gRPC/Connect taps are aligned:
+
+- Release/breadcrumb records carry only stripping-proof fields: literal method path, status code name (grpc's `StatusCode` table / Connect's plain Dart enum — never protobuf `.name`/`qualifiedMessageName`), the `error-code` trailer as `error_code` (key via `errorCodeTrailer:`), `duration_ms`, and caller `data:` fields.
+- Bodies are opt-in via `logBodies:` — defaults on in debug/profile, **off in product**. Opted-in bodies under the omit defines emit the tag-keyed `writeToJson()` map (numeric keys, enum numbers — decodable against the `.proto` at the release tag), not proto3 JSON. Logging a message yourself: `protoLogShape(msg)` (exported by both taps), never `toString()`.
+- `maskSensitiveValues` defaults to masking in product builds only.
+- Release-shape tests pin this contract (`logBodies false pins the release shape` in both tap suites) — a tap change reintroducing body dumps fails there.
 
 ## Non-obvious invariants
 

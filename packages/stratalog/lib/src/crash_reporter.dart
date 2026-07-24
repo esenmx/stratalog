@@ -14,8 +14,9 @@ import 'package:chirp/chirp.dart';
 ///           .recordError(error, stackTrace, reason: reason, fatal: fatal);
 ///
 ///   @override
-///   void addBreadcrumb(String message) =>
-///       FirebaseCrashlytics.instance.log(message);
+///   void addBreadcrumb(String message, {Map<String, Object?>? data}) =>
+///       FirebaseCrashlytics.instance
+///           .log(data == null ? message : '$message $data');
 /// }
 /// ```
 ///
@@ -29,8 +30,9 @@ import 'package:chirp/chirp.dart';
 ///           hint: reason == null ? null : Hint.withMap({'reason': reason})));
 ///
 ///   @override
-///   void addBreadcrumb(String message) =>
-///       unawaited(Sentry.addBreadcrumb(Breadcrumb(message: message)));
+///   void addBreadcrumb(String message, {Map<String, Object?>? data}) =>
+///       unawaited(
+///           Sentry.addBreadcrumb(Breadcrumb(message: message, data: data)));
 /// }
 /// ```
 abstract interface class CrashReporter {
@@ -42,8 +44,12 @@ abstract interface class CrashReporter {
     bool fatal = false,
   });
 
-  /// Attach a low-severity record as context for the next report.
-  void addBreadcrumb(String message);
+  /// Attach a low-severity record as context for the next report. [data] is
+  /// the record's structured `data:` map — under the breadcrumb discipline
+  /// that means method paths, status/error codes, durations, entity ids;
+  /// never message bodies (network taps keep bodies out of release records
+  /// by default — see their `logBodies`).
+  void addBreadcrumb(String message, {Map<String, Object?>? data});
 }
 
 /// Bridges the log stream into a [CrashReporter]:
@@ -101,6 +107,7 @@ final class CrashReporterWriter extends ChirpWriter {
         reporter.addBreadcrumb(
           '[${record.loggerName ?? 'root'}/${record.level.name}] '
           '${record.message}',
+          data: record.data.isEmpty ? null : record.data,
         );
       }
     } on Object catch (_) {

@@ -3,7 +3,7 @@
 bloc integration for [stratalog](https://pub.dev/packages/stratalog).
 
 ```dart
-Bloc.observer = const BlocLogger(LogLayer.state);
+Bloc.observer = const BlocLogger();
 ```
 
 Create/change/transition/close for every bloc and cubit, mirroring `stratalog_riverpod`'s format (`+`, `~`, `-`, `⚡`). Blocs log transitions with the event; the duplicate `onChange` line is suppressed. `Exception` failures log at `warning`, `Error`s at `error`; fat states are ellipsized.

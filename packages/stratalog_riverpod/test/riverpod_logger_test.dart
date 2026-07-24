@@ -32,20 +32,20 @@ void main() {
 
   test('provider add and dispose are traced', () {
     final container = ProviderContainer(
-      observers: [const RiverpodLogger(.state)],
+      observers: [const RiverpodLogger()],
     );
     final provider = Provider((ref) => 'hello');
     container
       ..read(provider)
       ..dispose();
 
-    check(messages()).contains('+ Provider<String> | initial: hello');
-    check(messages()).contains('- Provider<String>');
+    check(messages()).contains('✚ add Provider<String> | initial: hello');
+    check(messages()).contains('⊘ dispose Provider<String>');
   });
 
   test('update is traced with both values', () {
     final container = ProviderContainer(
-      observers: [const RiverpodLogger(.state)],
+      observers: [const RiverpodLogger()],
     );
     final provider = NotifierProvider<_Counter, int>(_Counter.new);
     container.read(provider.notifier).increment();
@@ -56,20 +56,20 @@ void main() {
 
   test('fat states are ellipsized', () {
     final container = ProviderContainer(
-      observers: [const RiverpodLogger(.state, maxValueLength: 16)],
+      observers: [const RiverpodLogger(maxValueLength: 16)],
     );
     final provider = Provider((ref) => 'x' * 100);
     container
       ..read(provider)
       ..dispose();
 
-    final add = messages().firstWhere((m) => m.startsWith('+'));
+    final add = messages().firstWhere((m) => m.startsWith('✚'));
     check(add).contains('…(+84 chars)');
   });
 
   test('Exception failure -> warning, Error failure -> error', () {
     final container = ProviderContainer(
-      observers: [const RiverpodLogger(.state)],
+      observers: [const RiverpodLogger()],
     );
 
     final throwsException = Provider<int>((ref) => throw Exception('x'));

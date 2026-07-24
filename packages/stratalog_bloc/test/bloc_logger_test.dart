@@ -39,7 +39,7 @@ void main() {
   setUp(() {
     writer = _CapturingWriter();
     Chirp.root = ChirpLogger().addWriter(writer);
-    Bloc.observer = const BlocLogger(.state);
+    Bloc.observer = const BlocLogger();
   });
 
   tearDown(() {
@@ -54,9 +54,9 @@ void main() {
     await cubit.close();
 
     check(messages()).deepEquals([
-      '+ _CounterCubit | initial: 0',
-      '~ _CounterCubit | 0 ➔ 1',
-      '- _CounterCubit',
+      '✚ create _CounterCubit | initial: 0',
+      '↻ change _CounterCubit | 0 ➔ 1',
+      '⊘ close _CounterCubit',
     ]);
   });
 
@@ -68,8 +68,8 @@ void main() {
       await bloc.close();
 
       check(messages()).contains('⚡ _CounterBloc | event: inc');
-      check(messages()).contains('~ _CounterBloc | inc: 0 ➔ 1');
-      check(messages().where((m) => m.startsWith('~'))).length.equals(1);
+      check(messages()).contains('↻ transition _CounterBloc | inc: 0 ➔ 1');
+      check(messages().where((m) => m.startsWith('↻'))).length.equals(1);
     },
   );
 
@@ -86,7 +86,7 @@ void main() {
   });
 
   test('fat states are ellipsized', () async {
-    Bloc.observer = const BlocLogger(.state, maxValueLength: 8);
+    Bloc.observer = const BlocLogger(maxValueLength: 8);
 
     final cubit = _FatCubit();
     await cubit.close();

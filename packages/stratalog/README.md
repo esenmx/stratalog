@@ -128,7 +128,7 @@ configureLogging(crashReporter: const CrashlyticsCrashReporter());
 
 Any other backend is a 2-method `CrashReporter` implementation away.
 
-`error`+ records become reports (`critical`/`wtf` → `fatal: true`), `info`+ records become breadcrumbs. Tune thresholds or veto expected failures by constructing the writer yourself:
+`error`+ records become reports (`critical`/`wtf` → `fatal: true`), `info`+ records become breadcrumbs — message plus the record's structured `data:` map. Tune thresholds or veto expected failures by constructing the writer yourself:
 
 ```dart
 configureLogging(writers: [
@@ -136,25 +136,27 @@ configureLogging(writers: [
 ]);
 ```
 
+Breadcrumb discipline: breadcrumbs carry RPC method path, status/error codes, durations, entity ids — never message bodies or `toString()` dumps (bodies push user payloads into third-party crash storage, and protobuf name stripping makes them unreadable anyway). The network taps enforce this by keeping bodies out of release records by default — see their `logBodies`.
+
 ## Integrations
 
 Each lives in its own package, so its dependency stays out of your graph:
 
 ```dart
 // stratalog_dio
-dio.interceptors.add(LoggerDioInterceptor(LogLayer.network)); // add FIRST
+dio.interceptors.add(LoggerDioInterceptor()); // add FIRST
 
 // stratalog_grpc
-FooServiceClient(channel, interceptors: [LoggerGrpcInterceptor(LogLayer.network)]);
+FooServiceClient(channel, interceptors: [LoggerGrpcInterceptor()]);
 
 // stratalog_connectrpc — Connect / gRPC / gRPC-Web protocols
-Transport(..., interceptors: [loggerConnectInterceptor(LogLayer.network)]);
+Transport(..., interceptors: [loggerConnectInterceptor()]);
 
 // stratalog_riverpod
-ProviderScope(observers: [const RiverpodLogger(LogLayer.state)], child: app);
+ProviderScope(observers: [const RiverpodLogger()], child: app);
 
 // stratalog_auto_route
-router.config(navigatorObservers: () => [AppRouterObserver(LogLayer.route)]);
+router.config(navigatorObservers: () => [AppRouterObserver()]);
 
 // stratalog_firebase_auth — OAuth2 providers (Google/Apple/OIDC) included
 FirebaseAuthLogger(FirebaseAuth.instance).attach();

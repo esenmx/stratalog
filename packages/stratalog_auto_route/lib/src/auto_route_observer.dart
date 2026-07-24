@@ -7,26 +7,26 @@ import 'package:stratalog/stratalog.dart';
 /// ```dart
 /// MaterialApp.router(
 ///   routerConfig: router.config(
-///     navigatorObservers: () => [AppRouterObserver(LogLayer.route)],
+///     navigatorObservers: () => [AppRouterObserver()],
 ///   ),
 /// )
 /// ```
 final class AppRouterObserver extends AutoRouterObserver {
   /// Logs every navigation event to [logger], typically `LogLayer.route`.
-  AppRouterObserver(this.logger);
+  AppRouterObserver({this.logger = .route});
 
   /// Destination layer.
   final LogLayer logger;
 
   @override
   void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) {
-    logger.trace('push{${previousRoute?.definition} => ${route.definition}}');
+    logger.trace('push{${route.definition}}');
     super.didPush(route, previousRoute);
   }
 
   @override
   void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) {
-    logger.trace('pop{${route.definition} => ${previousRoute?.definition}}');
+    logger.trace('pop{${previousRoute?.definition}}');
     super.didPop(route, previousRoute);
   }
 
@@ -38,7 +38,7 @@ final class AppRouterObserver extends AutoRouterObserver {
 
   @override
   void didReplace({Route<dynamic>? newRoute, Route<dynamic>? oldRoute}) {
-    logger.trace('replace{${oldRoute?.definition} => ${newRoute?.definition}}');
+    logger.trace('replace{${newRoute?.definition}}');
     super.didReplace(newRoute: newRoute, oldRoute: oldRoute);
   }
 
