@@ -1,16 +1,18 @@
 name: stratalog
-description: Opinionated structured logging on chirp — colored layer loggers readable on light & dark themes, with pluggable crash reporting. Pure Dart.
+description: Structured logging on chirp — const LogLayer badges in contrast-verified ANSI colors, per-layer payload elision, JSON release output, pluggable CrashReporter. Pure Dart.
 version: 0.1.0
 homepage: https://mehmetesen.com
 repository: https://github.com/esenmx/stratalog
 issue_tracker: https://github.com/esenmx/stratalog/issues
+publish_to: none
 resolution: workspace
 
 topics:
   - logging
-  - observability
+  - structured-logging
   - ansi
-  - structured-data
+  - crash-reporting
+  - observability
 
 environment:
   sdk: ^3.11.0

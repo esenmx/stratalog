@@ -1,14 +1,16 @@
 name: stratalog_viewer
-description: In-app log viewer for stratalog — ring-buffer writer plus a Flutter page with layer colors, level filter, and search.
+description: "In-app log viewer for stratalog — MemoryLogWriter ring buffer plus LogViewerPage: layer chips, level filter, JSON-aware search, expandable data/error/stack, copy-to-clipboard."
 version: 0.1.0
 homepage: https://mehmetesen.com
 repository: https://github.com/esenmx/stratalog
 issue_tracker: https://github.com/esenmx/stratalog/issues
+publish_to: none
 resolution: workspace
 
 topics:
   - logging
   - debugging
+  - flutter
   - observability
 
 environment:
