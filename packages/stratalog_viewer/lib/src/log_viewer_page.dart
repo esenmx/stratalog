@@ -368,26 +368,28 @@ class _RecordTile extends StatelessWidget {
   /// level down, capped at [_maxHits] entries with values clipped, plus an
   /// `N fields` tail counting top-level entries.
   String _vitalPreview(Map<String, Object?> data) {
-    final hits = <String>[];
-    void collect(Object? key, Object? value) {
-      if (hits.length < _maxHits && keepKeys.contains(key)) {
-        hits.add('$key: ${clipString('$value', _maxHitChars)}');
-      }
-    }
-
-    outer:
-    for (final MapEntry(:key, :value) in data.entries) {
-      collect(key, value);
-      if (value case final Map<Object?, Object?> nested) {
-        for (final MapEntry(:key, :value) in nested.entries) {
-          collect(key, value);
-          if (hits.length == _maxHits) break outer;
-        }
-      }
-      if (hits.length == _maxHits) break;
-    }
+    final hits = _flatEntries(data)
+        .where((entry) => keepKeys.contains(entry.key))
+        .take(_maxHits)
+        .map(
+          (entry) =>
+              '${entry.key}: ${clipString('${entry.value}', _maxHitChars)}',
+        );
     final tail = data.length == 1 ? '1 field' : '${data.length} fields';
     return [...hits, tail].join(' · ');
+  }
+
+  /// Top-level entries interleaved with their one-map-level-down children —
+  /// lazy, so the [_maxHits] cap stops the walk early.
+  static Iterable<MapEntry<Object?, Object?>> _flatEntries(
+    Map<String, Object?> data,
+  ) sync* {
+    for (final entry in data.entries) {
+      yield entry;
+      if (entry.value case final Map<Object?, Object?> nested) {
+        yield* nested.entries;
+      }
+    }
   }
 
   static const _maxHits = 3;
