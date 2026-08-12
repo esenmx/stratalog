@@ -1,6 +1,6 @@
 name: stratalog_dio
-description: Dio interceptor for stratalog — allowlisted, optionally redacted headers and request timing into the Network log layer.
-version: 0.1.0
+description: Dio interceptor for stratalog — allowlisted headers, redacted bodies and query strings, request timing into the Network log layer.
+version: 0.2.0
 homepage: https://mehmetesen.com
 repository: https://github.com/esenmx/stratalog
 issue_tracker: https://github.com/esenmx/stratalog/issues
