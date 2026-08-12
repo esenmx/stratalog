@@ -194,49 +194,56 @@ class StructuredLogFormatter extends SpanBasedFormatter {
       ]);
     }
 
-    final callerInfo = showLocation ? record.callerInfo : null;
     return SpanSequence(
       children: [
-        // HEADER
-        SpanSequence(
-          children: [
-            AnsiStyled(
-              foreground: _badgeTextOn(themeColor),
-              background: themeColor,
-              bold: true,
-              child: PlainText(' ${record.loggerName ?? "App"} '),
-            ),
-            Whitespace(),
-            AnsiStyled(
-              foreground: levelColor,
-              bold: true,
-              child: BracketedLogLevel(record.level),
-            ),
-            Whitespace(),
-            AnsiStyled(
-              dim: true, // dim adapts to the terminal theme
-              child: SpanSequence(
-                children: [
-                  if (showTimestamp) Timestamp(record.wallClock),
-                  if (callerInfo?.callerFileName != null) ...[
-                    if (showTimestamp) PlainText(' • '),
-                    DartSourceCodeLocation(
-                      fileName: callerInfo!.callerFileName,
-                      line: callerInfo.line,
-                    ),
-                  ],
-                  if (callerInfo?.callerMethod != null) ...[
-                    PlainText(' • '),
-                    MethodName(callerInfo!.callerMethod),
-                  ],
-                ],
-              ),
-            ),
-          ],
-        ),
+        _header(record, themeColor, levelColor),
         NewLine(),
         // INDENTED BODY SECTION(S)
         SpanSequence(children: bodySpans),
+      ],
+    );
+  }
+
+  LogSpan _header(
+    LogRecord record,
+    ConsoleColor themeColor,
+    ConsoleColor? levelColor,
+  ) {
+    final callerInfo = showLocation ? record.callerInfo : null;
+    return SpanSequence(
+      children: [
+        AnsiStyled(
+          foreground: _badgeTextOn(themeColor),
+          background: themeColor,
+          bold: true,
+          child: PlainText(' ${record.loggerName ?? "App"} '),
+        ),
+        Whitespace(),
+        AnsiStyled(
+          foreground: levelColor,
+          bold: true,
+          child: BracketedLogLevel(record.level),
+        ),
+        Whitespace(),
+        AnsiStyled(
+          dim: true, // dim adapts to the terminal theme
+          child: SpanSequence(
+            children: [
+              if (showTimestamp) Timestamp(record.wallClock),
+              if (callerInfo?.callerFileName != null) ...[
+                if (showTimestamp) PlainText(' • '),
+                DartSourceCodeLocation(
+                  fileName: callerInfo!.callerFileName,
+                  line: callerInfo.line,
+                ),
+              ],
+              if (callerInfo?.callerMethod != null) ...[
+                PlainText(' • '),
+                MethodName(callerInfo!.callerMethod),
+              ],
+            ],
+          ),
+        ),
       ],
     );
   }
