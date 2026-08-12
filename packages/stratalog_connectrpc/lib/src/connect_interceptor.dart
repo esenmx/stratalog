@@ -62,48 +62,86 @@ Interceptor loggerConnectInterceptor({
       final watch = Stopwatch()..start();
       final procedure = request.spec.procedure;
       final arrow = request.spec.streamType == StreamType.unary ? '→' : '⇄';
-
-      final logData = <String, Object?>{
-        'headers': _safeHeaders(
-          request.headers,
-          sensitiveHeaders,
-          maskSensitiveValues,
+      logger.trace(
+        '$arrow $procedure',
+        data: _requestData(
+          request,
+          sensitiveHeaders: sensitiveHeaders,
+          maskSensitiveValues: maskSensitiveValues,
+          logBodies: logBodies,
         ),
-      };
-      if (logBodies && request is UnaryRequest<I, O>) {
-        logData['request_body'] = _formatMessage(request.message);
-      }
-      logger.trace('$arrow $procedure', data: logData);
+      );
 
       try {
         final response = await next(request);
         // For streams this marks headers received, not stream end — the
         // message stream belongs to the caller and is not observed here.
-        final resData = <String, Object?>{
-          'duration_ms': watch.elapsedMilliseconds,
-        };
-        if (logBodies && response is UnaryResponse<I, O>) {
-          resData['response_body'] = _formatMessage(response.message);
-        }
-        logger.trace('← OK $procedure', data: resData);
+        logger.trace(
+          '← OK $procedure',
+          data: _responseData(response, watch, logBodies: logBodies),
+        );
         return response;
       } on ConnectException catch (error, stackTrace) {
-        final data = <String, Object?>{
-          'duration_ms': watch.elapsedMilliseconds,
-        };
-        if (error.metadata[errorCodeTrailer] case final code?) {
-          data['error_code'] = code;
-        }
-        logger.warning(
-          '✗ ${error.code.name} $procedure',
-          data: data,
-          error: error,
-          stackTrace: stackTrace,
+        _logFailure(
+          logger,
+          procedure,
+          error,
+          stackTrace,
+          watch,
+          errorCodeTrailer: errorCodeTrailer,
         );
         rethrow;
       }
     };
   };
+}
+
+Map<String, Object?> _requestData<I extends Object, O extends Object>(
+  Request<I, O> request, {
+  required Set<String> sensitiveHeaders,
+  required bool maskSensitiveValues,
+  required bool logBodies,
+}) {
+  return {
+    'headers': _safeHeaders(
+      request.headers,
+      sensitiveHeaders,
+      maskSensitiveValues,
+    ),
+    if (logBodies && request is UnaryRequest<I, O>)
+      'request_body': _formatMessage(request.message),
+  };
+}
+
+Map<String, Object?> _responseData<I extends Object, O extends Object>(
+  Response<I, O> response,
+  Stopwatch watch, {
+  required bool logBodies,
+}) {
+  return {
+    'duration_ms': watch.elapsedMilliseconds,
+    if (logBodies && response is UnaryResponse<I, O>)
+      'response_body': _formatMessage(response.message),
+  };
+}
+
+void _logFailure(
+  LogLayer logger,
+  String procedure,
+  ConnectException error,
+  StackTrace stackTrace,
+  Stopwatch watch, {
+  required String errorCodeTrailer,
+}) {
+  logger.warning(
+    '✗ ${error.code.name} $procedure',
+    data: {
+      'duration_ms': watch.elapsedMilliseconds,
+      'error_code': ?error.metadata[errorCodeTrailer],
+    },
+    error: error,
+    stackTrace: stackTrace,
+  );
 }
 
 /// Default for `loggerConnectInterceptor(sensitiveHeaders:)`.
