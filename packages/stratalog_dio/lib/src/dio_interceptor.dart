@@ -8,17 +8,26 @@ import 'package:stratalog/stratalog.dart';
 /// errors those interceptors raise. Deserialized results and their failures
 /// are the provider layer's story, not this interceptor's.
 ///
-/// Request/response trace at `trace` (release-gated); failures log at
-/// `warning`, never `error`: a non-2xx is expected control flow that the
-/// repository boundary maps to a typed failure, not a crash.
+/// Request/response trace at `trace`; failures log at `warning`, never
+/// `error`: a non-2xx is expected control flow that the repository boundary
+/// maps to a typed failure, not a crash.
+///
+/// **`trace` is not release-gated.** `configureLogging` filters by level only
+/// when handed an explicit `minLevel`, and chirp's default is no floor at all,
+/// so in a release build these lines reach the console writer and land in
+/// logcat / os_log. Bodies are therefore redacted at this seam rather than
+/// left to the sink — see [redactBodyKeys] and [redactBodyPaths]. Pass
+/// `configureLogging(minLevel: …)` if a level floor is wanted as well.
 final class LoggerDioInterceptor extends Interceptor {
   /// Logs traffic to [logger], typically `LogLayer.network`.
   LoggerDioInterceptor({
     this.logger = .network,
     this.headerAllowlist = defaultHeaderAllowlist,
     this.sensitiveHeaders = defaultSensitiveHeaders,
+    this.redactBodyKeys = defaultRedactBodyKeys,
+    this.redactBodyPaths = const {},
     this.maskSensitiveValues = false,
-  });
+  }) : _redactKeys = {for (final key in redactBodyKeys) _normalizeKey(key)};
 
   /// Destination layer.
   final LogLayer logger;
@@ -34,6 +43,29 @@ final class LoggerDioInterceptor extends Interceptor {
   /// Logged presence-only as '***': the value (a bearer token, cookie,
   /// app-check token) must never land in a sink — even the debug console.
   final Set<String> sensitiveHeaders;
+
+  /// Body keys whose values are replaced with '***' at any depth of a JSON
+  /// request, response or error body. Matched case-insensitively, ignoring
+  /// `_` and `-`, so one entry covers `newPassword`, `new_password` and
+  /// `NEW-PASSWORD`.
+  ///
+  /// Deliberately **not** gated by [maskSensitiveValues]: a bearer token is
+  /// worth showing on a local console, a password or CVV never is. Pass an
+  /// empty set to log bodies verbatim.
+  final Set<String> redactBodyKeys;
+
+  /// Request paths whose bodies are dropped from the log entirely — request,
+  /// response and error alike. Matched as a substring of the resolved
+  /// `uri.path`, so `/checkout/pay` also covers `/api/v1/checkout/pay`.
+  ///
+  /// Reach for this where the *endpoint* is sensitive rather than a known
+  /// field name: it keeps covering the next key somebody adds to that
+  /// payload, which [redactBodyKeys] cannot.
+  final Set<String> redactBodyPaths;
+
+  /// [redactBodyKeys], normalized once so the hot path only normalizes the
+  /// body's own keys.
+  final Set<String> _redactKeys;
 
   /// Default for [headerAllowlist].
   static const Set<String> defaultHeaderAllowlist = {
@@ -51,6 +83,36 @@ final class LoggerDioInterceptor extends Interceptor {
     'x-api-key',
   };
 
+  /// Default for [redactBodyKeys] — credential-bearing names, already
+  /// normalized. Names too generic to claim globally (`number`, `code`,
+  /// `token`) are left out on purpose: scope those with [redactBodyPaths],
+  /// or a blanket entry would gut every unrelated log line.
+  static const Set<String> defaultRedactBodyKeys = {
+    'password',
+    'newpassword',
+    'oldpassword',
+    'currentpassword',
+    'passwordconfirmation',
+    'cvv',
+    'cvc',
+    'pin',
+    'otp',
+    'secret',
+    'clientsecret',
+    'apikey',
+    'accesstoken',
+    'refreshtoken',
+    'idtoken',
+    'authorization',
+    'cardnumber',
+    'pan',
+  };
+
+  static const _mask = '***';
+  static const _maskedBody = '*** redacted body ***';
+
+  static final _keySeparators = RegExp('[_-]');
+
   // Namespaced so it can't collide with other interceptors' extra entries.
   static const _kStartTime = 'stratalog.start_time';
 
@@ -63,7 +125,7 @@ final class LoggerDioInterceptor extends Interceptor {
       logData['query'] = options.queryParameters;
     }
     if (options.data != null) {
-      logData['body'] = _formatData(options.data);
+      logData['body'] = _formatData(options.data, options);
     }
 
     logger.trace('→ ${options.method} ${options.uri}', data: logData);
@@ -79,7 +141,9 @@ final class LoggerDioInterceptor extends Interceptor {
 
     final logData = <String, Object?>{};
     if (_elapsed(request) case final ms?) logData['duration_ms'] = ms;
-    if (response.data != null) logData['body'] = _formatData(response.data);
+    if (response.data != null) {
+      logData['body'] = _formatData(response.data, request);
+    }
 
     logger.trace(
       '← ${response.statusCode} ${request.method} ${request.uri}',
@@ -99,7 +163,7 @@ final class LoggerDioInterceptor extends Interceptor {
     final logData = <String, Object?>{'type': err.type.name};
     if (_elapsed(request) case final ms?) logData['duration_ms'] = ms;
     if (err.response?.data != null) {
-      logData['response_body'] = _formatData(err.response?.data);
+      logData['response_body'] = _formatData(err.response?.data, request);
     }
 
     logger.warning(
@@ -131,14 +195,36 @@ final class LoggerDioInterceptor extends Interceptor {
     return DateTime.now().difference(start).inMilliseconds;
   }
 
-  // Passes the body through verbatim as structured data; the sink's
+  // Passes the body through as structured data with no clipping; the sink's
   // ElidingFormatter clips oversized leaves without collapsing the JSON
   // shape. FormData never carries a readable body, so it stays a summary.
-  Object? _formatData(Object? data) {
+  Object? _formatData(Object? data, RequestOptions request) {
+    if (redactBodyPaths.any(request.uri.path.contains)) return _maskedBody;
     if (data is FormData) {
       return 'FormData(${data.fields.length} fields, '
           '${data.files.length} files)';
     }
+    if (_redactKeys.isEmpty) return data;
+    return _redactBody(data);
+  }
+
+  // Rebuilds string-keyed so a `Map<String, Object?>` stays one for readers,
+  // and so the record holds a snapshot the caller can no longer mutate.
+  Object? _redactBody(Object? data) {
+    if (data case final Map<Object?, Object?> map) {
+      return <String, Object?>{
+        for (final MapEntry(:key, :value) in map.entries)
+          '$key': _redactKeys.contains(_normalizeKey('$key'))
+              ? _mask
+              : _redactBody(value),
+      };
+    }
+    if (data case final List<Object?> list) {
+      return [for (final element in list) _redactBody(element)];
+    }
     return data;
   }
+
+  static String _normalizeKey(String key) =>
+      key.toLowerCase().replaceAll(_keySeparators, '');
 }

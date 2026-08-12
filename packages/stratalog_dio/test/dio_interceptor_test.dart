@@ -159,6 +159,155 @@ void main() {
     });
   });
 
+  group('body redaction', () {
+    RequestOptions payment() => RequestOptions(
+      path: 'https://api.example.com/api/v1/checkout/pay',
+      method: 'POST',
+      data: {
+        'firstName': 'Ada',
+        'card': {
+          'number': '4242424242424242',
+          'cvv': '123',
+          'expMonth': '04',
+        },
+      },
+    );
+
+    test('redacted-path bodies never reach the record, in any direction', () {
+      final interceptor = LoggerDioInterceptor(
+        redactBodyPaths: {'/checkout/pay'},
+      );
+      final options = payment();
+
+      interceptor
+        ..onRequest(options, RequestInterceptorHandler())
+        ..onResponse(
+          Response<Object?>(
+            requestOptions: options,
+            statusCode: 200,
+            // A server that echoes the submitted card back is exactly the
+            // case a request-only rule would miss.
+            data: {'card': '4242424242424242'},
+          ),
+          ResponseInterceptorHandler(),
+        );
+      runZonedGuarded(
+        () => interceptor.onError(
+          DioException(
+            requestOptions: options,
+            response: Response<Object?>(
+              requestOptions: options,
+              statusCode: 402,
+              data: {'card': '4242424242424242'},
+            ),
+            type: .badResponse,
+          ),
+          ErrorInterceptorHandler(),
+        ),
+        (_, _) {},
+      );
+
+      check(writer.records).length.equals(3);
+      for (final record in writer.records) {
+        check(
+            because: 'record ${record.message} leaked the payload',
+            '${record.data}',
+          )
+          ..not((it) => it.contains('4242'))
+          ..not((it) => it.contains('123'));
+      }
+    });
+
+    test('path matching is scoped — an unlisted endpoint still logs', () {
+      LoggerDioInterceptor(
+        redactBodyPaths: {'/checkout/pay'},
+      ).onRequest(
+        request()
+          ..method = 'POST'
+          ..data = {'query': 'concerts'},
+        RequestInterceptorHandler(),
+      );
+
+      final body = writer.records.single.data['body']! as Map<String, Object?>;
+      check(body['query']).equals('concerts');
+    });
+
+    test('sensitive keys are masked at any depth, siblings kept', () {
+      LoggerDioInterceptor(
+        redactBodyKeys: {'cvv'},
+      ).onRequest(payment(), RequestInterceptorHandler());
+
+      final body = writer.records.single.data['body']! as Map<String, Object?>;
+      final card = body['card']! as Map<String, Object?>;
+      check(card['cvv']).equals('***');
+      check(card['expMonth']).equals('04');
+      check(body['firstName']).equals('Ada');
+    });
+
+    test('key matching ignores case and word separators', () {
+      LoggerDioInterceptor(
+        redactBodyKeys: {'new_password'},
+      ).onRequest(
+        request()
+          ..method = 'POST'
+          ..data = {
+            'newPassword': 'hunter2',
+            'NEW-PASSWORD': 'hunter2',
+            'passwords': 'not-a-match',
+          },
+        RequestInterceptorHandler(),
+      );
+
+      final body = writer.records.single.data['body']! as Map<String, Object?>;
+      check(body['newPassword']).equals('***');
+      check(body['NEW-PASSWORD']).equals('***');
+      check(body['passwords']).equals('not-a-match');
+    });
+
+    test('masking reaches inside lists', () {
+      LoggerDioInterceptor(
+        redactBodyKeys: {'cvv'},
+      ).onRequest(
+        request()
+          ..method = 'POST'
+          ..data = {
+            'cards': [
+              {'cvv': '123'},
+              {'cvv': '456'},
+            ],
+          },
+        RequestInterceptorHandler(),
+      );
+
+      check('${writer.records.single.data}').not((it) => it.contains('123'));
+    });
+
+    test('defaults mask a password without any configuration', () {
+      LoggerDioInterceptor().onRequest(
+        request()
+          ..method = 'POST'
+          ..data = {'password': 'hunter2'},
+        RequestInterceptorHandler(),
+      );
+
+      final body = writer.records.single.data['body']! as Map<String, Object?>;
+      check(body['password']).equals('***');
+    });
+
+    test('an empty key set passes the body through by identity', () {
+      final data = {'password': 'hunter2'};
+
+      LoggerDioInterceptor(redactBodyKeys: const {}).onRequest(
+        request()
+          ..method = 'POST'
+          ..data = data,
+        RequestInterceptorHandler(),
+      );
+
+      check(writer.records.single.data['body']).identicalTo(data);
+    });
+  });
+
   test('failures log at warning with status and duration', () {
     final interceptor = LoggerDioInterceptor();
     final options = request();
