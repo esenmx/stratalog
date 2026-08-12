@@ -15,19 +15,21 @@ import 'package:stratalog/stratalog.dart';
 /// **`trace` is not release-gated.** `configureLogging` filters by level only
 /// when handed an explicit `minLevel`, and chirp's default is no floor at all,
 /// so in a release build these lines reach the console writer and land in
-/// logcat / os_log. Bodies are therefore redacted at this seam rather than
-/// left to the sink — see [redactBodyKeys] and [redactBodyPaths]. Pass
-/// `configureLogging(minLevel: …)` if a level floor is wanted as well.
+/// logcat / os_log. Bodies and query strings are therefore redacted at this
+/// seam rather than left to the sink — see [redactKeys] and
+/// [redactBodyPaths]. Not a chirp record interceptor either: only the tap
+/// sees [RequestOptions], which the path rules and the FormData case need.
+/// Pass `configureLogging(minLevel: …)` if a level floor is wanted as well.
 final class LoggerDioInterceptor extends Interceptor {
   /// Logs traffic to [logger], typically `LogLayer.network`.
   LoggerDioInterceptor({
     this.logger = .network,
     this.headerAllowlist = defaultHeaderAllowlist,
     this.sensitiveHeaders = defaultSensitiveHeaders,
-    this.redactBodyKeys = defaultRedactBodyKeys,
+    this.redactKeys = defaultRedactKeys,
     this.redactBodyPaths = const {},
     this.maskSensitiveValues = false,
-  }) : _redactKeys = {for (final key in redactBodyKeys) _normalizeKey(key)};
+  }) : _redactKeys = {for (final key in redactKeys) _normalizeKey(key)};
 
   /// Destination layer.
   final LogLayer logger;
@@ -44,15 +46,17 @@ final class LoggerDioInterceptor extends Interceptor {
   /// app-check token) must never land in a sink — even the debug console.
   final Set<String> sensitiveHeaders;
 
-  /// Body keys whose values are replaced with '***' at any depth of a JSON
-  /// request, response or error body. Matched case-insensitively, ignoring
-  /// `_` and `-`, so one entry covers `newPassword`, `new_password` and
-  /// `NEW-PASSWORD`.
+  /// Keys whose values are replaced with '***' wherever they appear: at any
+  /// depth of a JSON request, response or error body, and in query
+  /// parameters — the `query` data entry and the URI on the message line
+  /// alike. Matched case-insensitively, ignoring `_` and `-`, so one entry
+  /// covers `newPassword`, `new_password` and `NEW-PASSWORD`.
   ///
   /// Deliberately **not** gated by [maskSensitiveValues]: a bearer token is
   /// worth showing on a local console, a password or CVV never is. Pass an
-  /// empty set to log bodies verbatim.
-  final Set<String> redactBodyKeys;
+  /// empty set to log verbatim. String bodies pass through unparsed — cover
+  /// their endpoints with [redactBodyPaths].
+  final Set<String> redactKeys;
 
   /// Request paths whose bodies are dropped from the log entirely — request,
   /// response and error alike. Matched as a substring of the resolved
@@ -60,10 +64,10 @@ final class LoggerDioInterceptor extends Interceptor {
   ///
   /// Reach for this where the *endpoint* is sensitive rather than a known
   /// field name: it keeps covering the next key somebody adds to that
-  /// payload, which [redactBodyKeys] cannot.
+  /// payload, which [redactKeys] cannot.
   final Set<String> redactBodyPaths;
 
-  /// [redactBodyKeys], normalized once so the hot path only normalizes the
+  /// [redactKeys], normalized once so the hot path only normalizes the
   /// body's own keys.
   final Set<String> _redactKeys;
 
@@ -83,11 +87,11 @@ final class LoggerDioInterceptor extends Interceptor {
     'x-api-key',
   };
 
-  /// Default for [redactBodyKeys] — credential-bearing names, already
+  /// Default for [redactKeys] — credential-bearing names, already
   /// normalized. Names too generic to claim globally (`number`, `code`,
   /// `token`) are left out on purpose: scope those with [redactBodyPaths],
   /// or a blanket entry would gut every unrelated log line.
-  static const Set<String> defaultRedactBodyKeys = {
+  static const Set<String> defaultRedactKeys = {
     'password',
     'newpassword',
     'oldpassword',
@@ -122,13 +126,18 @@ final class LoggerDioInterceptor extends Interceptor {
 
     final logData = <String, Object?>{'headers': _safeHeaders(options.headers)};
     if (options.queryParameters.isNotEmpty) {
-      logData['query'] = options.queryParameters;
+      logData['query'] = _redactKeys.isEmpty
+          ? options.queryParameters
+          : _redactBody(options.queryParameters);
     }
     if (options.data != null) {
       logData['body'] = _formatData(options.data, options);
     }
 
-    logger.trace('→ ${options.method} ${options.uri}', data: logData);
+    logger.trace(
+      '→ ${options.method} ${_redactUri(options.uri)}',
+      data: logData,
+    );
     handler.next(options);
   }
 
@@ -146,7 +155,7 @@ final class LoggerDioInterceptor extends Interceptor {
     }
 
     logger.trace(
-      '← ${response.statusCode} ${request.method} ${request.uri}',
+      '← ${response.statusCode} ${request.method} ${_redactUri(request.uri)}',
       data: logData,
     );
     handler.next(response);
@@ -168,7 +177,7 @@ final class LoggerDioInterceptor extends Interceptor {
 
     logger.warning(
       '✗ ${err.response?.statusCode ?? err.type.name} '
-      '${request.method} ${request.uri}',
+      '${request.method} ${_redactUri(request.uri)}',
       data: logData,
       error: err,
       stackTrace: err.stackTrace,
@@ -223,6 +232,32 @@ final class LoggerDioInterceptor extends Interceptor {
       return [for (final element in list) _redactBody(element)];
     }
     return data;
+  }
+
+  // Only rebuilds when a query key actually matches — `Uri.replace`
+  // re-encodes and may reorder, so the common no-secret URI stays
+  // byte-identical to what went over the wire. The rebuilt query is encoded
+  // by hand: `replace(queryParameters:)` would percent-encode the mask into
+  // `%2A%2A%2A`.
+  Uri _redactUri(Uri uri) {
+    if (!uri.hasQuery) return uri;
+    final query = uri.queryParametersAll;
+    bool match(String key) => _redactKeys.contains(_normalizeKey(key));
+    if (!query.keys.any(match)) return uri;
+    final parts = <String>[];
+    query.forEach((key, values) {
+      final encodedKey = Uri.encodeQueryComponent(key);
+      if (match(key)) {
+        parts.add('$encodedKey=$_mask');
+      } else {
+        parts.addAll(
+          values.map(
+            (value) => '$encodedKey=${Uri.encodeQueryComponent(value)}',
+          ),
+        );
+      }
+    });
+    return uri.replace(query: parts.join('&'));
   }
 
   static String _normalizeKey(String key) =>

@@ -165,11 +165,7 @@ void main() {
       method: 'POST',
       data: {
         'firstName': 'Ada',
-        'card': {
-          'number': '4242424242424242',
-          'cvv': '123',
-          'expMonth': '04',
-        },
+        'card': {'number': '4242424242424242', 'cvv': '123', 'expMonth': '04'},
       },
     );
 
@@ -219,9 +215,7 @@ void main() {
     });
 
     test('path matching is scoped — an unlisted endpoint still logs', () {
-      LoggerDioInterceptor(
-        redactBodyPaths: {'/checkout/pay'},
-      ).onRequest(
+      LoggerDioInterceptor(redactBodyPaths: {'/checkout/pay'}).onRequest(
         request()
           ..method = 'POST'
           ..data = {'query': 'concerts'},
@@ -234,7 +228,7 @@ void main() {
 
     test('sensitive keys are masked at any depth, siblings kept', () {
       LoggerDioInterceptor(
-        redactBodyKeys: {'cvv'},
+        redactKeys: {'cvv'},
       ).onRequest(payment(), RequestInterceptorHandler());
 
       final body = writer.records.single.data['body']! as Map<String, Object?>;
@@ -245,9 +239,7 @@ void main() {
     });
 
     test('key matching ignores case and word separators', () {
-      LoggerDioInterceptor(
-        redactBodyKeys: {'new_password'},
-      ).onRequest(
+      LoggerDioInterceptor(redactKeys: {'new_password'}).onRequest(
         request()
           ..method = 'POST'
           ..data = {
@@ -265,9 +257,7 @@ void main() {
     });
 
     test('masking reaches inside lists', () {
-      LoggerDioInterceptor(
-        redactBodyKeys: {'cvv'},
-      ).onRequest(
+      LoggerDioInterceptor(redactKeys: {'cvv'}).onRequest(
         request()
           ..method = 'POST'
           ..data = {
@@ -294,10 +284,40 @@ void main() {
       check(body['password']).equals('***');
     });
 
+    test('sensitive query values masked in query data and message line', () {
+      LoggerDioInterceptor().onRequest(
+        RequestOptions(
+          path: 'https://api.example.com/users',
+          queryParameters: {'access_token': 'secret-token', 'page': '2'},
+        ),
+        RequestInterceptorHandler(),
+      );
+
+      final record = writer.records.single;
+      check('${record.message}')
+        ..not((it) => it.contains('secret-token'))
+        ..contains('access_token=***')
+        ..contains('page=2');
+      final query = record.data['query']! as Map<String, Object?>;
+      check(query['access_token']).equals('***');
+      check(query['page']).equals('2');
+    });
+
+    test('a URI with no matching query keys logs byte-identical', () {
+      final options = RequestOptions(
+        path: 'https://api.example.com/search',
+        queryParameters: {'q': 'a b+c', 'page': '2'},
+      );
+
+      LoggerDioInterceptor().onRequest(options, RequestInterceptorHandler());
+
+      check('${writer.records.single.message}').endsWith('${options.uri}');
+    });
+
     test('an empty key set passes the body through by identity', () {
       final data = {'password': 'hunter2'};
 
-      LoggerDioInterceptor(redactBodyKeys: const {}).onRequest(
+      LoggerDioInterceptor(redactKeys: const {}).onRequest(
         request()
           ..method = 'POST'
           ..data = data,
