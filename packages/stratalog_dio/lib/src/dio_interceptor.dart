@@ -1,5 +1,11 @@
+import 'dart:typed_data';
+
 import 'package:dio/dio.dart';
 import 'package:stratalog/stratalog.dart';
+
+// Mirrors Flutter's kReleaseMode without a Flutter dependency: dart2js/VM
+// AOT release builds define dart.vm.product.
+const bool _kProduct = .fromEnvironment('dart.vm.product');
 
 /// Pure HTTP-wire logger — add it FIRST in the chain. Dio runs all hooks in
 /// list order AND attaches every onError hook after every onResponse hook,
@@ -20,6 +26,10 @@ import 'package:stratalog/stratalog.dart';
 /// [redactBodyPaths]. Not a chirp record interceptor either: only the tap
 /// sees [RequestOptions], which the path rules and the FormData case need.
 /// Pass `configureLogging(minLevel: …)` if a level floor is wanted as well.
+///
+/// [logBodies] defaults to on in debug/profile and OFF in product builds:
+/// request, response and failure bodies push user payloads into release
+/// sinks (crash breadcrumbs stay at method/status/duration shape).
 final class LoggerDioInterceptor extends Interceptor {
   /// Logs traffic to [logger], typically `LogLayer.network`.
   LoggerDioInterceptor({
@@ -28,15 +38,23 @@ final class LoggerDioInterceptor extends Interceptor {
     this.sensitiveHeaders = defaultSensitiveHeaders,
     this.redactKeys = defaultRedactKeys,
     this.redactBodyPaths = const {},
-    this.maskSensitiveValues = false,
+    this.maskSensitiveValues = true,
+    this.logBodies = !_kProduct,
   }) : _redactKeys = {for (final key in redactKeys) _normalizeKey(key)};
 
   /// Destination layer.
   final LogLayer logger;
 
-  /// Whether to redact [sensitiveHeaders] values. Defaults to `false` (shows
-  /// bearer tokens for local debugging).
+  /// Whether to redact [sensitiveHeaders] values. Defaults to `true` — a
+  /// bearer token or cookie must never land verbatim in a sink, even the
+  /// debug console. Pass `false` to show them for local debugging.
   final bool maskSensitiveValues;
+
+  /// Whether request/response/failure bodies land in trace and warning
+  /// records. Defaults to on in debug/profile and OFF in product builds:
+  /// bodies push user payloads into release sinks (crash breadcrumbs stay at
+  /// method/status/duration shape).
+  final bool logBodies;
 
   /// Only these header values are ever logged verbatim — a full header dump
   /// drowns the log and leaks anything a downstream interceptor attaches.
@@ -130,7 +148,7 @@ final class LoggerDioInterceptor extends Interceptor {
           ? options.queryParameters
           : _redactBody(options.queryParameters);
     }
-    if (options.data != null) {
+    if (logBodies && options.data != null) {
       logData['body'] = _formatData(options.data, options);
     }
 
@@ -150,7 +168,7 @@ final class LoggerDioInterceptor extends Interceptor {
 
     final logData = <String, Object?>{};
     if (_elapsed(request) case final ms?) logData['duration_ms'] = ms;
-    if (response.data != null) {
+    if (logBodies && response.data != null) {
       logData['body'] = _formatData(response.data, request);
     }
 
@@ -171,7 +189,7 @@ final class LoggerDioInterceptor extends Interceptor {
     // on the `←` trace line above).
     final logData = <String, Object?>{'type': err.type.name};
     if (_elapsed(request) case final ms?) logData['duration_ms'] = ms;
-    if (err.response?.data != null) {
+    if (logBodies && err.response?.data != null) {
       logData['response_body'] = _formatData(err.response?.data, request);
     }
 
@@ -219,7 +237,15 @@ final class LoggerDioInterceptor extends Interceptor {
 
   // Rebuilds string-keyed so a `Map<String, Object?>` stays one for readers,
   // and so the record holds a snapshot the caller can no longer mutate.
+  //
+  // TypedData (Uint8List, ByteData, …) is guarded before the List case: it
+  // implements List<int>, so without this an N-byte binary body would be
+  // boxed element-by-element into an N-entry growable list synchronously on
+  // the request/response hook.
   Object? _redactBody(Object? data) {
+    if (data case final TypedData bytes) {
+      return '<${bytes.lengthInBytes}-byte body>';
+    }
     if (data case final Map<Object?, Object?> map) {
       return <String, Object?>{
         for (final MapEntry(:key, :value) in map.entries)
