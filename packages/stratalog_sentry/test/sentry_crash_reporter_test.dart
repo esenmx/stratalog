@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:checks/checks.dart';
 import 'package:chirp/chirp.dart';
 import 'package:sentry/sentry.dart';
@@ -82,4 +84,54 @@ void main() {
       () => LogLayer.app.error('boom', error: Exception('x')),
     ).returnsNormally();
   });
+
+  test(
+    'a rejected captureException future never surfaces as a zone error',
+    () async {
+      await Sentry.close();
+      await Sentry.init((options) {
+        options
+          ..dsn = 'https://public@sentry.example.com/1'
+          // automatedTestMode is the SDK's own documented seam for making a
+          // user-closure exception rethrow instead of being swallowed —
+          // without it, the hub always self-catches and this bug is
+          // unreachable through public API.
+          // ignore: invalid_use_of_internal_member
+          ..automatedTestMode = true
+          ..beforeSend = (event, hint) => throw StateError('sdk unreachable');
+      });
+      final uncaught = <Object>[];
+
+      await runZonedGuarded(() async {
+        LogLayer.app.error('boom', error: Exception('x'));
+        await settle();
+      }, (error, stackTrace) => uncaught.add(error));
+
+      check(uncaught).isEmpty();
+    },
+  );
+
+  test(
+    'a rejected addBreadcrumb future never surfaces as a zone error',
+    () async {
+      await Sentry.close();
+      await Sentry.init((options) {
+        options
+          ..dsn = 'https://public@sentry.example.com/1'
+          // See the captureException test above for why this is needed.
+          // ignore: invalid_use_of_internal_member
+          ..automatedTestMode = true
+          ..beforeBreadcrumb = (crumb, hint) =>
+              throw StateError('sdk unreachable');
+      });
+      final uncaught = <Object>[];
+
+      await runZonedGuarded(() async {
+        LogLayer.network.info('token refreshed');
+        await settle();
+      }, (error, stackTrace) => uncaught.add(error));
+
+      check(uncaught).isEmpty();
+    },
+  );
 }

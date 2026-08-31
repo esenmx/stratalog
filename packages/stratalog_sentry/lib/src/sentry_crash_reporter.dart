@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:sentry/sentry.dart';
 import 'package:stratalog/stratalog.dart';
 
@@ -26,19 +24,17 @@ final class SentryCrashReporter implements CrashReporter {
     String? reason,
     bool fatal = false,
   }) {
-    unawaited(
-      Sentry.captureException(
-        error,
-        stackTrace: stackTrace,
-        hint: reason == null ? null : Hint.withMap({'reason': reason}),
-        withScope: (scope) =>
-            scope.level = fatal ? SentryLevel.fatal : SentryLevel.error,
-      ),
-    );
+    Sentry.captureException(
+      error,
+      stackTrace: stackTrace,
+      hint: reason == null ? null : Hint.withMap({'reason': reason}),
+      withScope: (scope) =>
+          scope.level = fatal ? SentryLevel.fatal : SentryLevel.error,
+    ).ignore();
   }
 
   @override
   void addBreadcrumb(String message, {Map<String, Object?>? data}) {
-    unawaited(Sentry.addBreadcrumb(Breadcrumb(message: message, data: data)));
+    Sentry.addBreadcrumb(Breadcrumb(message: message, data: data)).ignore();
   }
 }
