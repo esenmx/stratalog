@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:developer' as developer;
 
 import 'package:chirp/chirp.dart';
@@ -5,20 +6,38 @@ import 'package:chirp/chirp.dart';
 /// Emits via `dart:developer log()` instead of `print()` so the Flutter
 /// daemon never chunks long lines mid-ANSI-sequence, while forcing 256-color
 /// output on (chirp's built-in `DeveloperLogConsoleWriter` strips it).
+///
+/// Records written in one event-loop turn are coalesced into a single `log()`
+/// call, flushed by microtask: the IDE's DAP handler fetches each event's
+/// string asynchronously and drops the future, so back-to-back events can
+/// reach the debug console out of order — one call per burst keeps the burst
+/// atomic and ordered (cross-batch reordering by the DAP remains possible).
+/// Trap: lines still buffered when the process hard-crashes before the
+/// microtask runs are lost — debug-console output only; uncaught errors
+/// surface via `FlutterError` separately.
 class IdeDebugConsoleWriter extends ChirpWriter {
   /// Renders through [formatter] with [capabilities].
+  ///
+  /// [emit] is the test seam: receives the joined batch and the highest
+  /// mapped level in it; defaults to a `dart:developer log()` wrapper.
   IdeDebugConsoleWriter({
     required this.formatter,
     this.capabilities = const TerminalCapabilities(
       colorSupport: .ansi256,
     ),
-  });
+    void Function(String message, int level)? emit,
+  }) : _emit = emit ?? _developerLog;
 
   /// Renders each record into the buffer handed to `dart:developer log()`.
   final ChirpFormatter formatter;
 
   /// Defaults to ANSI-256, which every IDE debug console renders.
   final TerminalCapabilities capabilities;
+
+  final void Function(String message, int level) _emit;
+
+  final List<String> _pending = [];
+  int _pendingLevel = 0;
 
   @override
   bool get requiresCallerInfo => formatter.requiresCallerInfo;
@@ -28,8 +47,24 @@ class IdeDebugConsoleWriter extends ChirpWriter {
     final buffer = MessageBuffer.console(capabilities: capabilities);
     formatter.format(record, buffer);
 
-    developer.log(buffer.toString(), level: mapToDeveloperLevel(record.level));
+    // Caller zone on purpose: tester.pump/fakeAsync must be able to drive
+    // the flush deterministically in tests.
+    if (_pending.isEmpty) scheduleMicrotask(_flush);
+    _pending.add(buffer.toString());
+    final level = mapToDeveloperLevel(record.level);
+    if (level > _pendingLevel) _pendingLevel = level;
   }
+
+  void _flush() {
+    final message = _pending.join('\n');
+    final level = _pendingLevel;
+    _pending.clear();
+    _pendingLevel = 0;
+    _emit(message, level);
+  }
+
+  static void _developerLog(String message, int level) =>
+      developer.log(message, level: level);
 
   /// Maps chirp severities onto `package:logging`-style values, which is
   /// what `dart:developer log(level:)` expects.
