@@ -45,12 +45,12 @@ payments.success('Order captured');
 
 ## Uncaught errors
 
-Route framework and zone errors through the same pipeline — the record's `Error:`/`Stack Trace:` sections replace Flutter's console dump, and `CrashReporterWriter` already forwards `error`+ records to the crash backend, so no separate `recordFlutterFatalError` wiring either:
+Route framework and zone errors through the same pipeline — the record's `Error:`/`Stack Trace:` sections replace Flutter's console dump, and `CrashReporterWriter` forwards `error`+ records to the crash backend with `fatal` derived from the level: `error` reports `fatal: false` (the `recordFlutterError` analogue), `critical`/`wtf` report `fatal: true` (the `recordFlutterFatalError` analogue). So framework errors log at `.error` and zone errors at `.critical` — logging a zone error at `.error` would silently downgrade it to non-fatal:
 
 ```dart
 FlutterError.onError = (details) {
   if (details.silent) return; // framework-flagged noise (e.g. image load failures)
-  LogLayer.ui.error(
+  LogLayer.ui.error( // .error → fatal: false, matches recordFlutterError
     details.context?.toDescription() ?? 'flutter framework error',
     error: details.exception,
     stackTrace: details.stack,
@@ -58,7 +58,8 @@ FlutterError.onError = (details) {
   );
 };
 PlatformDispatcher.instance.onError = (error, stackTrace) {
-  LogLayer.app.error('uncaught zone error', error: error, stackTrace: stackTrace);
+  // .critical → fatal: true, matches recordFlutterFatalError.
+  LogLayer.app.critical('uncaught zone error', error: error, stackTrace: stackTrace);
   return true; // handled — suppresses the default "Unhandled exception" dump
 };
 ```
