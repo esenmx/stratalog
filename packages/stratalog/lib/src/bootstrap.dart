@@ -1,5 +1,7 @@
 import 'package:chirp/chirp.dart';
 
+import 'package:stratalog/src/console_output_stub.dart'
+    if (dart.library.io) 'package:stratalog/src/console_output_io.dart';
 import 'package:stratalog/src/crash_reporter.dart';
 import 'package:stratalog/src/elide.dart';
 import 'package:stratalog/src/formatter.dart';
@@ -17,8 +19,20 @@ const bool _kReleaseMode = .fromEnvironment('dart.vm.product');
 ///   (bypasses the Flutter daemon's `print()` chunker so long ANSI-colored
 ///   lines never get garbled). Override the format via [debugFormatter];
 ///   [domainColors] then has no effect — pass yours to your formatter.
-/// - Release: single-line JSON to stdout for log pipelines; override via
-///   [releaseFormatter].
+/// - Release: single-line JSON via `stdout.writeln` for log pipelines —
+///   line-atomic with no length cap, where `print()` tears one record into
+///   several logcat entries past Android's 1024-char liblog buffer. Caveat:
+///   Android's logcat mirrors `print()`, not raw process stdout (app stdout
+///   goes to `/dev/null` unless the `log.redirect-stdio` system property is
+///   set), and release iOS likewise routes `print()` through os_log while
+///   raw stdout reaches neither Console.app nor the unified log — a
+///   device-log-scraping pipeline needs its own [console] writer.
+///   Override the format via [releaseFormatter].
+/// - [console] REPLACES the default console writer (the IDE writer in debug,
+///   the JSON stdout writer in release) instead of being appended — a second
+///   console writer next to the default double-emits every record in an IDE
+///   session. Like [writers], it is not wrapped: apply [ElidingFormatter]
+///   yourself if wanted.
 /// - [crashReporter] attaches a [CrashReporterWriter] in every mode (debug
 ///   builds usually construct a no-op adapter). For custom report/breadcrumb
 ///   thresholds or a [CrashReporterWriter.new] `shouldReport` filter, build
@@ -39,6 +53,7 @@ const bool _kReleaseMode = .fromEnvironment('dart.vm.product');
 ///   `elision: ElisionConfig.none` instead.
 void configureLogging({
   List<ChirpWriter> writers = const [],
+  ChirpWriter? console,
   Map<String, ConsoleColor> domainColors = const {},
   CrashReporter? crashReporter,
   ChirpLogLevel? minLevel,
@@ -57,9 +72,19 @@ void configureLogging({
       ? formatter
       : ElidingFormatter.of(formatter, elision, layerElision: layerElision);
 
-  if (_kReleaseMode) {
-    logger.addConsoleWriter(
-      formatter: wrap(releaseFormatter ?? const JsonLogFormatter()),
+  if (console != null) {
+    logger.addWriter(console);
+  } else if (_kReleaseMode) {
+    logger.addWriter(
+      PrintConsoleWriter(
+        formatter: wrap(releaseFormatter ?? const JsonLogFormatter()),
+        output: writeConsoleLine,
+        // chirp reads a null maxChunkLength as "platform default" (924 on
+        // Android), which would still split one record across writeln calls
+        // — stdout has no liblog cap, so chunking is forced off with an
+        // unreachable budget.
+        maxChunkLength: 1 << 30,
+      ),
     );
   } else {
     logger.addWriter(
