@@ -74,6 +74,30 @@ void main() {
     check(out).contains("Instance of 'Object'");
   });
 
+  test('a payload whose toString throws never crashes the format call', () {
+    // chirp's writer dispatch loop has no try/catch around a sink — this
+    // must render, not throw, or every writer queued after this one is
+    // skipped for the record.
+    check(
+      () => render((l) => l.info('x', data: {'obj': _ThrowsOnToString()})),
+    ).returnsNormally();
+  });
+
+  test('a payload whose toString throws renders an unencodable marker', () {
+    final out = stripAnsi(
+      render((l) => l.info('x', data: {'obj': _ThrowsOnToString()})).single,
+    );
+    check(out).contains('<unencodable: _ThrowsOnToString>');
+  });
+
+  test('a cyclic data map never crashes the format call', () {
+    final cyclic = <String, Object?>{};
+    cyclic['self'] = cyclic;
+    check(
+      () => render((l) => l.info('x', data: cyclic)),
+    ).returnsNormally();
+  });
+
   test('showTimestamp/showLocation strip header segments and caller cost', () {
     final formatter = StructuredLogFormatter(
       showTimestamp: false,
@@ -194,4 +218,9 @@ WHERE id = ?''',
     check(formatter.domainColors['Payments']).equals(Ansi256.springGreen4_29);
     check(formatter.domainColors['Network']).equals(LogPalette.network);
   });
+}
+
+final class _ThrowsOnToString {
+  @override
+  String toString() => throw StateError('poison');
 }
