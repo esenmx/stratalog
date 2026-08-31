@@ -13,3 +13,4 @@ export 'src/formatter.dart';
 export 'src/ide_writer.dart';
 export 'src/layers.dart';
 export 'src/palette.dart';
+export 'src/snapshot.dart';
