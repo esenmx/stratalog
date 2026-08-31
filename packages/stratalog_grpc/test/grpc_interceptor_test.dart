@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:checks/checks.dart';
 import 'package:chirp/chirp.dart';
 import 'package:grpc/grpc.dart';
@@ -10,6 +12,16 @@ final class _CapturingWriter extends ChirpWriter {
 
   @override
   void write(LogRecord record) => records.add(record);
+}
+
+/// Throws on outcome records only — the ingress `→` log runs synchronously
+/// inside the caller's invocation and would fail the call itself.
+final class _ExplodingWriter extends ChirpWriter {
+  @override
+  void write(LogRecord record) {
+    if ('${record.message}'.startsWith('→')) return;
+    throw StateError('sink down');
+  }
 }
 
 /// Hand-rolled proto — no protoc: a string field plus a repeated field, big
@@ -172,6 +184,23 @@ void main() {
       '← OK /test.Echo/Echo',
     ]);
     check(writer.records.last.data['duration_ms']).isA<int>();
+  });
+
+  test('throwing writer in the unary side listener never reaches the zone — '
+      'caller still gets the reply', () async {
+    Chirp.root = ChirpLogger().addWriter(_ExplodingWriter());
+    final zoneErrors = <Object>[];
+
+    // The side-listener future is created inside this guarded zone; under
+    // `unawaited` its error would surface here as an unhandled zone error.
+    final reply = await runZonedGuarded(
+      () => client.echo([7]),
+      (error, _) => zoneErrors.add(error),
+    )!;
+    await settle();
+
+    check(reply).deepEquals([7]);
+    check(zoneErrors).isEmpty();
   });
 
   test('failure logs status, error-code trailer, and still throws', () async {

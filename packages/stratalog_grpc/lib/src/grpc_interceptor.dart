@@ -96,22 +96,22 @@ final class LoggerGrpcInterceptor extends ClientInterceptor {
     final call = invoker(method, request, options);
     // Side listener only — the caller's own await still receives the result
     // or error untouched.
-    unawaited(
-      call.then(
-        (response) {
-          final resData = <String, Object?>{
-            'duration_ms': watch.elapsedMilliseconds,
-          };
-          if (logBodies && response != null) {
-            resData['response_body'] = _formatMessage(response);
-          }
-          logger.trace('← OK ${method.path}', data: resData);
-        },
-        onError: (Object error, StackTrace stackTrace) {
-          _logFailure(method.path, error, stackTrace, watch);
-        },
-      ),
-    );
+    call
+        .then(
+          (response) {
+            final resData = <String, Object?>{
+              'duration_ms': watch.elapsedMilliseconds,
+            };
+            if (logBodies && response != null) {
+              resData['response_body'] = _formatMessage(response);
+            }
+            logger.trace('← OK ${method.path}', data: resData);
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            _logFailure(method.path, error, stackTrace, watch);
+          },
+        )
+        .ignore();
     return call;
   }
 
@@ -128,23 +128,45 @@ final class LoggerGrpcInterceptor extends ClientInterceptor {
       data: {'metadata': _safeMetadata(options.metadata)},
     );
 
-    final call = invoker(method, requests, options);
-    // The response stream is single-subscription and belongs to the caller;
-    // completion/errors are observed through the trailers future instead.
-    unawaited(
-      call.trailers.then(
-        (_) {
-          logger.trace(
-            '⇄ done ${method.path}',
-            data: {'duration_ms': watch.elapsedMilliseconds},
-          );
-        },
-        onError: (Object error, StackTrace stackTrace) {
-          _logFailure(method.path, error, stackTrace, watch);
-        },
-      ),
+    // grpc's `call.trailers` never errors: it completes with the raw metadata
+    // BEFORE the library derives an error status from it, and with `{}` on
+    // cancel/transport teardown — so neither trailers nor their 'grpc-status'
+    // can observe failure. Terminal outcomes surface only as events on the
+    // single-subscription response stream, which belongs to the caller; the
+    // proxy rides the caller's own subscription. First terminal event wins:
+    // grpc emits done after an error, and cancel surfaces a CANCELLED error,
+    // so later events stay silent here while still reaching the caller.
+    var terminal = false;
+    void done() {
+      if (terminal) return;
+      terminal = true;
+      logger.trace(
+        '⇄ done ${method.path}',
+        data: {'duration_ms': watch.elapsedMilliseconds},
+      );
+    }
+
+    void failure(Object error, StackTrace stackTrace) {
+      if (terminal) return;
+      terminal = true;
+      _logFailure(method.path, error, stackTrace, watch);
+    }
+
+    void cancelled() {
+      if (terminal) return;
+      terminal = true;
+      logger.trace(
+        '⇄ cancelled ${method.path}',
+        data: {'duration_ms': watch.elapsedMilliseconds},
+      );
+    }
+
+    return _TerminalObservingStream(
+      invoker(method, requests, options),
+      onDone: done,
+      onFailure: failure,
+      onCancel: cancelled,
     );
-    return call;
   }
 
   void _logFailure(
@@ -204,3 +226,109 @@ Object? protoLogShape(
   bool namesStripped = _namesStripped,
 }) =>
     namesStripped ? jsonDecode(message.writeToJson()) : message.toProto3Json();
+
+// Pass-through [ResponseStream] proxy that reports each call's terminal event
+// from the caller's own subscription — the stream is single-subscription, so
+// a side listener is impossible. `fromHandlers` keeps pause/resume/cancel and
+// event delivery semantics of the inner stream; [single] (the seam generated
+// client-streaming stubs consume) bypasses the transformer, so it side-listens
+// on the future instead.
+final class _TerminalObservingStream<R> extends StreamView<R>
+    implements ResponseStream<R> {
+  _TerminalObservingStream(
+    this._inner, {
+    required void Function() onDone,
+    required void Function(Object error, StackTrace stackTrace) onFailure,
+    required void Function() onCancel,
+  }) : _onDone = onDone,
+       _onFailure = onFailure,
+       _onCancel = onCancel,
+       super(
+         _inner.transform(
+           StreamTransformer<R, R>.fromHandlers(
+             handleError: (error, stackTrace, sink) {
+               onFailure(error, stackTrace);
+               sink.addError(error, stackTrace);
+             },
+             handleDone: (sink) {
+               onDone();
+               sink.close();
+             },
+           ),
+         ),
+       );
+
+  final ResponseStream<R> _inner;
+  final void Function() _onDone;
+  final void Function(Object error, StackTrace stackTrace) _onFailure;
+  final void Function() _onCancel;
+
+  @override
+  StreamSubscription<R> listen(
+    void Function(R value)? onData, {
+    Function? onError,
+    void Function()? onDone,
+    bool? cancelOnError,
+  }) => _CancelObservingSubscription(
+    super.listen(
+      onData,
+      onError: onError,
+      onDone: onDone,
+      cancelOnError: cancelOnError,
+    ),
+    _onCancel,
+  );
+
+  @override
+  ResponseFuture<R> get single {
+    final response = _inner.single;
+    response.then<void>((_) => _onDone(), onError: _onFailure).ignore();
+    return response;
+  }
+
+  @override
+  Future<Map<String, String>> get headers => _inner.headers;
+
+  @override
+  Future<Map<String, String>> get trailers => _inner.trailers;
+
+  @override
+  Future<void> cancel() {
+    _onCancel();
+    return _inner.cancel();
+  }
+}
+
+final class _CancelObservingSubscription<R> implements StreamSubscription<R> {
+  _CancelObservingSubscription(this._inner, this._onCancel);
+
+  final StreamSubscription<R> _inner;
+  final void Function() _onCancel;
+
+  @override
+  Future<void> cancel() {
+    _onCancel();
+    return _inner.cancel();
+  }
+
+  @override
+  void onData(void Function(R data)? handleData) => _inner.onData(handleData);
+
+  @override
+  void onError(Function? handleError) => _inner.onError(handleError);
+
+  @override
+  void onDone(void Function()? handleDone) => _inner.onDone(handleDone);
+
+  @override
+  void pause([Future<void>? resumeSignal]) => _inner.pause(resumeSignal);
+
+  @override
+  void resume() => _inner.resume();
+
+  @override
+  bool get isPaused => _inner.isPaused;
+
+  @override
+  Future<E> asFuture<E>([E? futureValue]) => _inner.asFuture<E>(futureValue);
+}
