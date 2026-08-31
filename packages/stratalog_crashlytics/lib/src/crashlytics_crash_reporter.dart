@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:firebase_crashlytics/firebase_crashlytics.dart';
 import 'package:stratalog/stratalog.dart';
 
@@ -30,14 +28,14 @@ final class CrashlyticsCrashReporter implements CrashReporter {
     String? reason,
     bool fatal = false,
   }) {
-    unawaited(
-      _instance.recordError(error, stackTrace, reason: reason, fatal: fatal),
-    );
+    _instance
+        .recordError(error, stackTrace, reason: reason, fatal: fatal)
+        .ignore();
   }
 
   @override
   void addBreadcrumb(String message, {Map<String, Object?>? data}) {
     // Crashlytics breadcrumbs are single strings — inline the data map.
-    unawaited(_instance.log(data == null ? message : '$message $data'));
+    _instance.log(data == null ? message : '$message $data').ignore();
   }
 }
