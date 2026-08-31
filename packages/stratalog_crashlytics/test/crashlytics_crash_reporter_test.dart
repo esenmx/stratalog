@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:checks/checks.dart';
 import 'package:chirp/chirp.dart';
 import 'package:firebase_crashlytics/firebase_crashlytics.dart';
@@ -100,5 +102,43 @@ void main() {
   test('a throwing backend never propagates to the log call', () {
     when(crashlytics.log(any)).thenThrow(StateError('no default app'));
     check(() => LogLayer.app.info('crumb')).returnsNormally();
+  });
+
+  test(
+    'a rejected recordError future never surfaces as a zone error',
+    () async {
+      when(
+        crashlytics.recordError(
+          any,
+          any,
+          reason: anyNamed('reason'),
+          fatal: anyNamed('fatal'),
+          information: anyNamed('information'),
+          printDetails: anyNamed('printDetails'),
+        ),
+      ).thenAnswer((_) => Future<void>.error(StateError('sdk unreachable')));
+      final uncaught = <Object>[];
+
+      await runZonedGuarded(() async {
+        LogLayer.app.error('boom', error: Exception('x'));
+        await Future<void>.delayed(Duration.zero);
+      }, (error, stackTrace) => uncaught.add(error));
+
+      check(uncaught).isEmpty();
+    },
+  );
+
+  test('a rejected log future never surfaces as a zone error', () async {
+    when(
+      crashlytics.log(any),
+    ).thenAnswer((_) => Future<void>.error(StateError('sdk unreachable')));
+    final uncaught = <Object>[];
+
+    await runZonedGuarded(() async {
+      LogLayer.network.info('token refreshed');
+      await Future<void>.delayed(Duration.zero);
+    }, (error, stackTrace) => uncaught.add(error));
+
+    check(uncaught).isEmpty();
   });
 }
