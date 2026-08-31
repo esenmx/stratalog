@@ -1,5 +1,7 @@
 import 'package:chirp/chirp.dart';
 
+import 'package:stratalog/src/snapshot.dart';
+
 /// Adapter boundary for crash backends — implement once per project against
 /// whichever SDK it uses (Crashlytics, Sentry, Datadog, ...). Keeps this
 /// package free of any vendor dependency.
@@ -26,13 +28,14 @@ import 'package:chirp/chirp.dart';
 ///   @override
 ///   void recordError(Object error, StackTrace? stackTrace,
 ///           {String? reason, bool fatal = false}) =>
-///       unawaited(Sentry.captureException(error, stackTrace: stackTrace,
-///           hint: reason == null ? null : Hint.withMap({'reason': reason})));
+///       Sentry.captureException(error, stackTrace: stackTrace,
+///           hint: reason == null ? null : Hint.withMap({'reason': reason}))
+///           .ignore();
 ///
 ///   @override
 ///   void addBreadcrumb(String message, {Map<String, Object?>? data}) =>
-///       unawaited(
-///           Sentry.addBreadcrumb(Breadcrumb(message: message, data: data)));
+///       Sentry.addBreadcrumb(Breadcrumb(message: message, data: data))
+///           .ignore();
 /// }
 /// ```
 abstract interface class CrashReporter {
@@ -107,7 +110,10 @@ final class CrashReporterWriter extends ChirpWriter {
         reporter.addBreadcrumb(
           '[${record.loggerName ?? 'root'}/${record.level.name}] '
           '${record.message}',
-          data: record.data.isEmpty ? null : record.data,
+          // record.data aliases the caller's live map (chirp hands writers
+          // the reference, no copy) — a backend that retains the breadcrumb
+          // past this call must not alias it.
+          data: record.data.isEmpty ? null : snapshotData(record.data),
         );
       }
     } on Object catch (_) {
