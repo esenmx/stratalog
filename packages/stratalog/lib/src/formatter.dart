@@ -128,10 +128,7 @@ class StructuredLogFormatter extends SpanBasedFormatter {
 
     // DATA
     if (record.data.isNotEmpty) {
-      final jsonStr = const JsonEncoder.withIndent(
-        '  ',
-        _jsonFallback,
-      ).convert(record.data);
+      final jsonStr = _encodeData(record.data);
       bodySpans.addAll([
         NewLine(),
         if (isRaw) ...[
@@ -248,7 +245,30 @@ class StructuredLogFormatter extends SpanBasedFormatter {
     );
   }
 
-  static Object? _jsonFallback(Object? o) => o.toString();
+  static const JsonEncoder _dataEncoder = JsonEncoder.withIndent(
+    '  ',
+    _jsonFallback,
+  );
+
+  /// chirp's writer dispatch loop has no try/catch around a sink — a throw
+  /// here would skip every writer queued after this one. `_jsonFallback`
+  /// handles a non-encodable leaf; this belt covers what it can't, cyclic
+  /// data throwing from the encoder's own walk before any leaf is reached.
+  static String _encodeData(Map<String, Object?> data) {
+    try {
+      return _dataEncoder.convert(data);
+    } on Object catch (_) {
+      return '<unencodable: ${data.runtimeType}>';
+    }
+  }
+
+  static Object? _jsonFallback(Object? o) {
+    try {
+      return o.toString();
+    } on Object catch (_) {
+      return '<unencodable: ${o.runtimeType}>';
+    }
+  }
 
   /// Pure black/white (silver washes out on mid-tone badges), flipped by
   /// perceived background luminance so any badge color stays legible.
