@@ -6,20 +6,20 @@ import 'package:stratalog/stratalog.dart';
 /// packages for Dio/gRPC/Riverpod/auto_route/FirebaseAuth taps.
 void main() {
   configureLogging(
-    // Terminal `dart run` drops `dart:developer log()` output — mirror to
-    // stdout so the demo prints outside an IDE debug console, wrapped in the
-    // same per-layer elision the debug console gets. An app needs only
+    // Terminal `dart run` drops `dart:developer log()` output — replace the
+    // IDE writer with a print-backed one so the demo prints outside an IDE
+    // debug console, wrapped in the same per-layer elision the debug console
+    // gets. `console:` replaces rather than appends: a second console writer
+    // would double-emit every record in an IDE session. An app needs only
     // `configureLogging()`.
-    writers: [
-      PrintConsoleWriter(
-        formatter: ElidingFormatter.of(
-          StructuredLogFormatter(),
-          const ElisionConfig(),
-          layerElision: defaultLayerElision,
-        ),
-        capabilities: const TerminalCapabilities(colorSupport: .ansi256),
+    console: PrintConsoleWriter(
+      formatter: ElidingFormatter.of(
+        StructuredLogFormatter(),
+        const ElisionConfig(),
+        layerElision: defaultLayerElision,
       ),
-    ],
+      capabilities: const TerminalCapabilities(colorSupport: .ansi256),
+    ),
   );
 
   LogLayer.app.info('Bootstrap complete', data: {'flavor': 'dev'});
@@ -27,7 +27,6 @@ void main() {
 
   const payments = LogLayer('Payments');
   // Declared once, logged through everywhere — the variable IS the point.
-  // ignore: cascade_invocations
   payments
     ..info('Charging card', data: {'orderId': 8123})
     ..warning('Card near expiry');
