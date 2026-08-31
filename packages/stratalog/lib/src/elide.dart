@@ -44,38 +44,69 @@ String clipString(String s, int max) {
 ///
 /// Unlike a per-payload tail-chop, no single large leaf can evict its
 /// siblings, and the field you opened the log for is always present.
+///
+/// Cycle-safe: a Map/Iterable re-entered on the current traversal path
+/// renders as the string `'<cycle>'` instead of recursing forever — a cyclic
+/// payload would otherwise blow the stack inside the log call itself.
+/// Detection is path-based, so aliased (DAG) substructure elides normally at
+/// every occurrence.
 Object? elideJson(
   Object? value, {
   int maxStringChars = _defaultMaxStringChars,
   int maxArrayItems = _defaultMaxArrayItems,
   Set<String> keepKeys = defaultKeepKeys,
+}) => _elideJson(
+  value,
+  maxStringChars: maxStringChars,
+  maxArrayItems: maxArrayItems,
+  keepKeys: keepKeys,
+  seen: .identity(),
+);
+
+Object? _elideJson(
+  Object? value, {
+  required int maxStringChars,
+  required int maxArrayItems,
+  required Set<String> keepKeys,
+  required Set<Object?> seen,
 }) {
+  // `seen` holds the current traversal path, not all visited nodes — each
+  // node is removed after its subtree is walked, so an alias reached twice
+  // via different paths elides both times and only a true back-edge is a
+  // cycle.
   switch (value) {
     case final Map<Object?, Object?> map:
-      return {
+      if (!seen.add(map)) return '<cycle>';
+      final out = {
         for (final MapEntry(:key, :value) in map.entries)
           key: keepKeys.contains(key)
               ? value
-              : elideJson(
+              : _elideJson(
                   value,
                   maxStringChars: maxStringChars,
                   maxArrayItems: maxArrayItems,
                   keepKeys: keepKeys,
+                  seen: seen,
                 ),
       };
+      seen.remove(map);
+      return out;
     case final Iterable<Object?> iterable:
+      if (!seen.add(iterable)) return '<cycle>';
       final out = <Object?>[
         for (final e in iterable.take(maxArrayItems))
-          elideJson(
+          _elideJson(
             e,
             maxStringChars: maxStringChars,
             maxArrayItems: maxArrayItems,
             keepKeys: keepKeys,
+            seen: seen,
           ),
       ];
       if (iterable.length > maxArrayItems) {
         out.add('…(+${iterable.length - maxArrayItems} more)');
       }
+      seen.remove(iterable);
       return out;
     case final String s when _looksBinary(s):
       return '<${s.length}-char blob elided>';
@@ -95,15 +126,17 @@ Map<String, Object?> elideData(
   int maxArrayItems = _defaultMaxArrayItems,
   Set<String> keepKeys = defaultKeepKeys,
 }) {
+  final seen = Set<Object?>.identity();
   return {
     for (final MapEntry(:key, :value) in data.entries)
       key: keepKeys.contains(key)
           ? value
-          : elideJson(
+          : _elideJson(
               value,
               maxStringChars: maxStringChars,
               maxArrayItems: maxArrayItems,
               keepKeys: keepKeys,
+              seen: seen,
             ),
   };
 }
@@ -185,7 +218,10 @@ final class ElisionConfig {
 /// Per-layer elision defaults for `configureLogging`, keyed by
 /// `record.loggerName` (precedent: `LogPalette.domains`): Network and Storage
 /// payloads are copy-out artifacts — JSON you paste into tools — so they pass
-/// verbatim; State is chatty, so it clips to vital fields.
+/// verbatim; State is chatty, so it clips to vital fields. Trade-off:
+/// verbatim payloads enlarge the batched `dart:developer log()` messages, and
+/// bigger messages take the IDE's async fetch longer — widening the window in
+/// which separate batches can reach the debug console out of order.
 const Map<String, ElisionConfig> defaultLayerElision = {
   'Network': .none,
   'Storage': .none,
