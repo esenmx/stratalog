@@ -63,6 +63,14 @@ UnaryRequest<String, String> _request({Headers? headers}) => UnaryRequest(
   const _NeverAborts(),
 );
 
+StreamRequest<String, String> _streamRequest() => StreamRequest(
+  _spec(.bidi),
+  'https://api.example.com/acme.foo.v1.FooService/Bar',
+  Headers(),
+  const .empty(),
+  const _NeverAborts(),
+);
+
 void main() {
   late _CapturingWriter writer;
 
@@ -234,7 +242,7 @@ void main() {
     });
   });
 
-  test('streaming spec logs with the stream arrow', () async {
+  test('stream call logs only the request arrow at headers', () async {
     Future<Response<String, String>> okStream(
       Request<String, String> request,
     ) async => StreamResponse(
@@ -244,19 +252,93 @@ void main() {
       Headers(),
     );
 
-    final wrapped = loggerConnectInterceptor()<String, String>(
-      okStream,
-    );
-    await wrapped(
-      StreamRequest(
-        _spec(.bidi),
-        'https://api.example.com/acme.foo.v1.FooService/Bar',
-        Headers(),
-        const .empty(),
-        const _NeverAborts(),
-      ),
+    final wrapped = loggerConnectInterceptor()<String, String>(okStream);
+    await wrapped(_streamRequest());
+
+    // Protocol.stream completes the future at headers-received — the
+    // terminal line belongs to the message stream, never here.
+    check(writer.records.map((r) => '${r.message}')).deepEquals([
+      '⇄ /acme.foo.v1.FooService/Bar',
+    ]);
+  });
+
+  test('clean stream logs done exactly once, headers and trailers '
+      'pass by reference', () async {
+    final headers = Headers()..add('x-init', 'h1');
+    final trailers = Headers()..add('x-trailer', 't1');
+    Future<Response<String, String>> okStream(
+      Request<String, String> request,
+    ) async => StreamResponse(
+      request.spec,
+      headers,
+      .fromIterable(['a', 'b']),
+      trailers,
     );
 
-    check('${writer.records.first.message}').startsWith('⇄ ');
+    final wrapped = loggerConnectInterceptor()<String, String>(okStream);
+    final response =
+        await wrapped(_streamRequest()) as StreamResponse<String, String>;
+
+    check(identical(response.headers, headers)).isTrue();
+    check(identical(response.trailers, trailers)).isTrue();
+    check(await response.message.toList()).deepEquals(['a', 'b']);
+    check(writer.records.map((r) => '${r.message}')).deepEquals([
+      '⇄ /acme.foo.v1.FooService/Bar',
+      '⇄ done /acme.foo.v1.FooService/Bar',
+    ]);
+    check(writer.records.last.data['duration_ms']).isA<int>();
+  });
+
+  test('stream ConnectException logs failure exactly once with code and '
+      'error-code trailer, rethrows', () async {
+    Stream<String> failing() async* {
+      yield 'a';
+      throw ConnectException(
+        .unavailable,
+        'dropped',
+        metadata: Headers()..add('error-code', 'net.503'),
+      );
+    }
+
+    Future<Response<String, String>> okStream(
+      Request<String, String> request,
+    ) async => StreamResponse(request.spec, Headers(), failing(), Headers());
+
+    final wrapped = loggerConnectInterceptor()<String, String>(okStream);
+    final response =
+        await wrapped(_streamRequest()) as StreamResponse<String, String>;
+
+    await check(response.message.toList()).throws<ConnectException>();
+    check(writer.records.map((r) => '${r.message}')).deepEquals([
+      '⇄ /acme.foo.v1.FooService/Bar',
+      '✗ unavailable /acme.foo.v1.FooService/Bar',
+    ]);
+    final record = writer.records.last;
+    check(record.level).equals(.warning);
+    check(record.data['error_code']).equals('net.503');
+    check(record.data['duration_ms']).isA<int>();
+  });
+
+  test('non-Connect stream error logs a terminal failure line and '
+      'propagates', () async {
+    Stream<String> failing() async* {
+      yield 'a';
+      throw StateError('boom');
+    }
+
+    Future<Response<String, String>> okStream(
+      Request<String, String> request,
+    ) async => StreamResponse(request.spec, Headers(), failing(), Headers());
+
+    final wrapped = loggerConnectInterceptor()<String, String>(okStream);
+    final response =
+        await wrapped(_streamRequest()) as StreamResponse<String, String>;
+
+    await check(response.message.toList()).throws<StateError>();
+    check(writer.records.map((r) => '${r.message}')).deepEquals([
+      '⇄ /acme.foo.v1.FooService/Bar',
+      '✗ - /acme.foo.v1.FooService/Bar',
+    ]);
+    check(writer.records.last.level).equals(.warning);
   });
 }

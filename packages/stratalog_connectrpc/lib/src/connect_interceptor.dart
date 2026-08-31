@@ -32,6 +32,11 @@ const bool _namesStripped =
 /// non-OK code is expected control flow that the repository boundary maps to
 /// a typed failure, not a crash.
 ///
+/// Stream calls return a wrapped [StreamResponse] (same headers/trailers)
+/// whose terminal line logs when the message stream ends: `⇄ done` on clean
+/// completion, the failure line on any error — Connect or not — rethrown
+/// untouched. A subscription the caller cancels logs no terminal line.
+///
 /// Release discipline: with [logBodies] at its default, product builds emit
 /// only the literal procedure path (a stub string that survives protobuf
 /// name stripping), the Connect code name (a plain Dart enum, unaffected by
@@ -74,13 +79,31 @@ Interceptor loggerConnectInterceptor({
 
       try {
         final response = await next(request);
-        // For streams this marks headers received, not stream end — the
-        // message stream belongs to the caller and is not observed here.
-        logger.trace(
-          '← OK $procedure',
-          data: _responseData(response, watch, logBodies: logBodies),
-        );
-        return response;
+        switch (response) {
+          case UnaryResponse<I, O>():
+            logger.trace(
+              '← OK $procedure',
+              data: _responseData(response, watch, logBodies: logBodies),
+            );
+            return response;
+          // Protocol.stream completes this future right after headers —
+          // stream failures surface only on `message`, so the terminal line
+          // is deferred to a wrapping stream. Trailers pass by reference:
+          // the protocol populates that same Headers at end of stream.
+          case StreamResponse<I, O>(:final message):
+            return StreamResponse(
+              response.spec,
+              response.headers,
+              _terminalTapped(
+                message,
+                logger,
+                procedure,
+                watch,
+                errorCodeTrailer: errorCodeTrailer,
+              ),
+              response.trailers,
+            );
+        }
       } on ConnectException catch (error, stackTrace) {
         _logFailure(
           logger,
@@ -114,31 +137,63 @@ Map<String, Object?> _requestData<I extends Object, O extends Object>(
 }
 
 Map<String, Object?> _responseData<I extends Object, O extends Object>(
-  Response<I, O> response,
+  UnaryResponse<I, O> response,
   Stopwatch watch, {
   required bool logBodies,
 }) {
   return {
     'duration_ms': watch.elapsedMilliseconds,
-    if (logBodies && response is UnaryResponse<I, O>)
-      'response_body': _formatMessage(response.message),
+    if (logBodies) 'response_body': _formatMessage(response.message),
   };
+}
+
+Stream<O> _terminalTapped<O>(
+  Stream<O> messages,
+  LogLayer logger,
+  String procedure,
+  Stopwatch watch, {
+  required String errorCodeTrailer,
+}) async* {
+  try {
+    await for (final message in messages) {
+      yield message;
+    }
+  } on Object catch (error, stackTrace) {
+    _logFailure(
+      logger,
+      procedure,
+      error,
+      stackTrace,
+      watch,
+      errorCodeTrailer: errorCodeTrailer,
+    );
+    rethrow;
+  }
+  logger.trace(
+    '⇄ done $procedure',
+    data: {'duration_ms': watch.elapsedMilliseconds},
+  );
 }
 
 void _logFailure(
   LogLayer logger,
   String procedure,
-  ConnectException error,
+  Object error,
   StackTrace stackTrace,
   Stopwatch watch, {
   required String errorCodeTrailer,
 }) {
+  var code = '-';
+  final data = <String, Object?>{'duration_ms': watch.elapsedMilliseconds};
+  if (error case ConnectException(code: final connectCode, :final metadata)) {
+    code = connectCode.name;
+    if (metadata[errorCodeTrailer] case final value?) {
+      data['error_code'] = value;
+    }
+  }
   logger.warning(
-    '✗ ${error.code.name} $procedure',
-    data: {
-      'duration_ms': watch.elapsedMilliseconds,
-      'error_code': ?error.metadata[errorCodeTrailer],
-    },
+    '✗ $code $procedure',
+    data: data,
     error: error,
     stackTrace: stackTrace,
   );
