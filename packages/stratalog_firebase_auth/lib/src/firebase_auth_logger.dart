@@ -51,7 +51,7 @@ final class FirebaseAuthLogger {
   /// Cancels the subscriptions.
   void detach() {
     for (final subscription in _subscriptions) {
-      unawaited(subscription.cancel());
+      subscription.cancel().ignore();
     }
     _subscriptions.clear();
   }
