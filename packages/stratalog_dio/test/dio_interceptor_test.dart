@@ -73,10 +73,9 @@ void main() {
     },
   );
 
-  test('sensitive headers masked, unlisted dropped, allowlisted kept', () {
-    LoggerDioInterceptor(
-      maskSensitiveValues: true,
-    ).onRequest(request(), RequestInterceptorHandler());
+  test('sensitive headers masked by default, unlisted dropped, allowlisted '
+      'kept', () {
+    LoggerDioInterceptor().onRequest(request(), RequestInterceptorHandler());
 
     final headers =
         writer.records.single.data['headers']! as Map<String, Object?>;
@@ -89,10 +88,10 @@ void main() {
     ).not((it) => it.contains('secret-token'));
   });
 
-  test('sensitive header values pass through verbatim by default', () {
-    // maskSensitiveValues defaults to false on purpose: local debugging wants
-    // the bearer token copyable from the console.
-    LoggerDioInterceptor().onRequest(request(), RequestInterceptorHandler());
+  test('sensitive header values pass through verbatim when opted out', () {
+    LoggerDioInterceptor(
+      maskSensitiveValues: false,
+    ).onRequest(request(), RequestInterceptorHandler());
 
     final headers =
         writer.records.single.data['headers']! as Map<String, Object?>;
@@ -325,6 +324,83 @@ void main() {
       );
 
       check(writer.records.single.data['body']).identicalTo(data);
+    });
+
+    test('a TypedData body is summarized, never boxed element-by-element', () {
+      // Uint8List implements List<int>, so a naive List match would rebuild
+      // it as an N-entry growable list of boxed ints. 8 MB is large enough
+      // that element-wise boxing would be conspicuously slow.
+      final bytes = Uint8List(8 * 1024 * 1024);
+
+      LoggerDioInterceptor().onResponse(
+        Response<Object?>(
+          requestOptions: request(),
+          statusCode: 200,
+          data: bytes,
+        ),
+        ResponseInterceptorHandler(),
+      );
+
+      check(writer.records.single.data['body'])
+        ..isA<String>()
+        ..equals('<${bytes.lengthInBytes}-byte body>');
+    });
+  });
+
+  group('logBodies', () {
+    test('defaults to on outside a product build', () {
+      // dart test always runs the VM in JIT mode, so dart.vm.product is
+      // never true here — this pins the default to that flag rather than a
+      // bare `true` literal.
+      check(
+        LoggerDioInterceptor().logBodies,
+      ).equals(!const bool.fromEnvironment('dart.vm.product'));
+    });
+
+    test('false strips the request and response body on success', () {
+      final interceptor = LoggerDioInterceptor(logBodies: false);
+      final options = request()
+        ..method = 'POST'
+        ..data = {'q': 'concerts'};
+
+      interceptor
+        ..onRequest(options, RequestInterceptorHandler())
+        ..onResponse(
+          Response<Object?>(
+            requestOptions: options,
+            statusCode: 200,
+            data: {'result': 'ok'},
+          ),
+          ResponseInterceptorHandler(),
+        );
+
+      for (final record in writer.records) {
+        check(record.data).not((it) => it.containsKey('body'));
+      }
+    });
+
+    test('false strips the response body on failure', () {
+      final options = request();
+
+      runZonedGuarded(
+        () => LoggerDioInterceptor(logBodies: false).onError(
+          DioException(
+            requestOptions: options,
+            response: Response<Object?>(
+              requestOptions: options,
+              statusCode: 500,
+              data: {'message': 'boom'},
+            ),
+            type: .badResponse,
+          ),
+          ErrorInterceptorHandler(),
+        ),
+        (_, _) {},
+      );
+
+      check(
+        writer.records.single.data,
+      ).not((it) => it.containsKey('response_body'));
     });
   });
 
