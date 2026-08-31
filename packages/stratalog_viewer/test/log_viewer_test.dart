@@ -40,16 +40,20 @@ void main() {
     return copied;
   }
 
-  test('ring buffer evicts the oldest beyond capacity and notifies', () {
+  test('ring buffer evicts the oldest beyond capacity and coalesces '
+      'notification to one per turn', () async {
     var notifications = 0;
     writer.addListener(() => notifications++);
 
     for (var i = 1; i <= 4; i++) {
       LogLayer.app.info('m$i');
     }
+    expect(notifications, 0); // notify is async, not synchronous with write
+
+    await Future<void>.value(); // flush the coalesced microtask
 
     expect(writer.records.map((r) => '${r.message}'), ['m2', 'm3', 'm4']);
-    expect(notifications, 4);
+    expect(notifications, 1);
   });
 
   testWidgets('renders records newest first and expands the body', (

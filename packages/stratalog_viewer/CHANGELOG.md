@@ -1,3 +1,8 @@
+# Unreleased
+
+- `MemoryLogWriter` is now a genuine async event bus: `write()` still enqueues onto the ring buffer synchronously, but listener notification is a single microtask coalesced across every write/clear in the same turn instead of a `notifyListeners()` per record — a log emitted during a widget's build phase while the viewer is mounted no longer throws `setState() or markNeedsBuild() called during build` (which previously could cascade unboundedly through the README's `FlutterError.onError` wiring).
+- Retained records now snapshot their `data` map at ingress (`snapshotData`) instead of aliasing the caller's map — chirp hands writers `data` by reference, so mutating a logged map after the call could previously silently change what the viewer displays.
+
 # 0.2.0
 
 - Search now matches inside JSON payloads (`data`) and errors, not just message/layer.
