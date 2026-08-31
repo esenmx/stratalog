@@ -125,6 +125,39 @@ void main() {
       check(user['name']).equals('Jane'); // keepKey, verbatim
       check(user['bio']).equals('${'y' * 8}…(+92 chars)');
     });
+
+    test('a self-referencing map renders <cycle> instead of overflowing', () {
+      final cyclic = <Object?, Object?>{'note': 'x'};
+      cyclic['self'] = cyclic;
+      final out = _elideMap(cyclic);
+      check(out['note']).equals('x');
+      check(out['self']).equals('<cycle>');
+    });
+
+    test('a self-referencing list renders <cycle> instead of overflowing', () {
+      final cyclic = <Object?>[1, 2];
+      cyclic.add(cyclic);
+      final out = elideJson(cyclic)! as List<Object?>;
+      check(out[0]).equals(1);
+      check(out[1]).equals(2);
+      check(out[2]).equals('<cycle>');
+    });
+
+    test('an aliased (non-cyclic) map elides at every occurrence, never '
+        '<cycle>', () {
+      final shared = <Object?, Object?>{'note': 'x' * 100};
+      final out = _elideMap({
+        'first': shared,
+        'second': shared,
+      }, maxStringChars: 8);
+      final elided = '${'x' * 8}…(+92 chars)';
+      check(
+        out['first'],
+      ).isA<Map<Object?, Object?>>().deepEquals({'note': elided});
+      check(
+        out['second'],
+      ).isA<Map<Object?, Object?>>().deepEquals({'note': elided});
+    });
   });
 
   group('elideData', () {
@@ -135,6 +168,18 @@ void main() {
       }, maxStringChars: 8);
       check(out['id']).equals('A' * 2000);
       check(out['note']).equals('${'x' * 8}…(+92 chars)');
+    });
+
+    test('an aliased map across entries elides at every occurrence, never '
+        '<cycle>', () {
+      final shared = <String, Object?>{'status': 200};
+      final out = elideData({'request': shared, 'mirror': shared});
+      check(
+        out['request'],
+      ).isA<Map<Object?, Object?>>().deepEquals({'status': 200});
+      check(
+        out['mirror'],
+      ).isA<Map<Object?, Object?>>().deepEquals({'status': 200});
     });
   });
 
