@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:grpc/grpc.dart';
 import 'package:protobuf/protobuf.dart';
@@ -13,9 +12,9 @@ const bool _kProduct = .fromEnvironment('dart.vm.product');
 // Any of them degrades name-based output: proto3 JSON needs field/enum/
 // message names, so body capture must fall back to tag-keyed classic JSON.
 const bool _namesStripped =
-    bool.fromEnvironment('protobuf.omit_field_names') ||
-    bool.fromEnvironment('protobuf.omit_enum_names') ||
-    bool.fromEnvironment('protobuf.omit_message_names');
+    .fromEnvironment('protobuf.omit_field_names') ||
+    .fromEnvironment('protobuf.omit_enum_names') ||
+    .fromEnvironment('protobuf.omit_message_names');
 
 /// Observability-only gRPC [ClientInterceptor] — pass it in your channel's
 /// client constructor:
@@ -42,7 +41,7 @@ final class LoggerGrpcInterceptor extends ClientInterceptor {
   LoggerGrpcInterceptor({
     this.logger = .network,
     this.sensitiveMetadata = defaultSensitiveMetadata,
-    this.maskSensitiveValues = _kProduct,
+    this.maskSensitiveValues = true,
     this.logBodies = !_kProduct,
     this.errorCodeTrailer = 'error-code',
   });
@@ -50,9 +49,9 @@ final class LoggerGrpcInterceptor extends ClientInterceptor {
   /// Destination layer.
   final LogLayer logger;
 
-  /// Whether to redact [sensitiveMetadata] values. Defaults to verbatim in
-  /// debug/profile (shows bearer tokens for local debugging) and '***' in
-  /// product builds — tokens must never land in a release sink.
+  /// Whether to redact [sensitiveMetadata] values. Defaults to `true` — a
+  /// bearer token or cookie must never land verbatim in a sink, even the
+  /// debug console. Pass `false` to show them for local debugging.
   final bool maskSensitiveValues;
 
   /// Metadata keys affected by [maskSensitiveValues]; when masked they are
@@ -216,7 +215,7 @@ final class LoggerGrpcInterceptor extends ClientInterceptor {
 
 /// Loggable shape of [message]: proto3 JSON normally; on a build compiled
 /// with any `protobuf.omit_*_names` define (name metadata tree-shaken) the
-/// classic tag-keyed JSON map from [GeneratedMessage.writeToJson] — numeric
+/// classic tag-keyed JSON map from [GeneratedMessage.writeToJsonMap] — numeric
 /// keys, enums as numbers. Tag numbers are contract-stable, so a dump plus
 /// the `.proto` at the release tag decodes fully. Never log
 /// [GeneratedMessage.toString] instead: under stripping it degrades to
@@ -224,8 +223,7 @@ final class LoggerGrpcInterceptor extends ClientInterceptor {
 Object? protoLogShape(
   GeneratedMessage message, {
   bool namesStripped = _namesStripped,
-}) =>
-    namesStripped ? jsonDecode(message.writeToJson()) : message.toProto3Json();
+}) => namesStripped ? message.writeToJsonMap() : message.toProto3Json();
 
 // Pass-through [ResponseStream] proxy that reports each call's terminal event
 // from the caller's own subscription — the stream is single-subscription, so

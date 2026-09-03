@@ -280,26 +280,8 @@ void main() {
     });
   });
 
-  test('sensitive metadata verbatim by default', () async {
+  test('sensitive metadata masked by default, others verbatim', () async {
     await client.echo(
-      [0],
-      options: CallOptions(metadata: {'authorization': 'Bearer secret-token'}),
-    );
-    await settle();
-
-    final metadata =
-        writer.records.first.data['metadata']! as Map<String, Object?>;
-    check(metadata['authorization']).equals('Bearer secret-token');
-  });
-
-  test('sensitive metadata masked, others verbatim', () async {
-    final maskedClient = _EchoClient(
-      channel,
-      interceptors: [
-        LoggerGrpcInterceptor(maskSensitiveValues: true),
-      ],
-    );
-    await maskedClient.echo(
       [0],
       options: CallOptions(
         metadata: {
@@ -317,5 +299,23 @@ void main() {
     check(
       '${writer.records.first.data}',
     ).not((it) => it.contains('secret-token'));
+  });
+
+  test('sensitive metadata verbatim when opted out', () async {
+    final unmaskedClient = _EchoClient(
+      channel,
+      interceptors: [
+        LoggerGrpcInterceptor(maskSensitiveValues: false),
+      ],
+    );
+    await unmaskedClient.echo(
+      [0],
+      options: CallOptions(metadata: {'authorization': 'Bearer secret-token'}),
+    );
+    await settle();
+
+    final metadata =
+        writer.records.first.data['metadata']! as Map<String, Object?>;
+    check(metadata['authorization']).equals('Bearer secret-token');
   });
 }
