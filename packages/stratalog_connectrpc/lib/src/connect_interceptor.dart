@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:connectrpc/connect.dart';
 import 'package:protobuf/protobuf.dart';
 import 'package:stratalog/stratalog.dart';
@@ -12,9 +10,9 @@ const bool _kProduct = .fromEnvironment('dart.vm.product');
 // Any of them degrades name-based output: proto3 JSON needs field/enum/
 // message names, so body capture must fall back to tag-keyed classic JSON.
 const bool _namesStripped =
-    bool.fromEnvironment('protobuf.omit_field_names') ||
-    bool.fromEnvironment('protobuf.omit_enum_names') ||
-    bool.fromEnvironment('protobuf.omit_message_names');
+    .fromEnvironment('protobuf.omit_field_names') ||
+    .fromEnvironment('protobuf.omit_enum_names') ||
+    .fromEnvironment('protobuf.omit_message_names');
 
 /// Observability-only ConnectRPC [Interceptor] — add it to your transport
 /// (works with the Connect, gRPC, and gRPC-Web protocols alike):
@@ -52,13 +50,12 @@ const bool _namesStripped =
 /// instead of proto3 JSON.
 ///
 /// [sensitiveHeaders] values are redacted per [maskSensitiveValues], which
-/// defaults to verbatim in debug/profile (shows bearer tokens for local
-/// debugging) and '***' in product builds — tokens must never land in a
-/// release sink.
+/// defaults to `true` (masks tokens and cookies as '***' out of the box).
+/// Pass `false` to show them for local debugging.
 Interceptor loggerConnectInterceptor({
   LogLayer logger = .network,
   Set<String> sensitiveHeaders = defaultSensitiveHeaders,
-  bool maskSensitiveValues = _kProduct,
+  bool maskSensitiveValues = true,
   bool logBodies = !_kProduct,
   String errorCodeTrailer = 'error-code',
 }) {
@@ -66,7 +63,7 @@ Interceptor loggerConnectInterceptor({
     return (Request<I, O> request) async {
       final watch = Stopwatch()..start();
       final procedure = request.spec.procedure;
-      final arrow = request.spec.streamType == StreamType.unary ? '→' : '⇄';
+      final arrow = request.spec.streamType == .unary ? '→' : '⇄';
       logger.trace(
         '$arrow $procedure',
         data: _requestData(
@@ -104,7 +101,7 @@ Interceptor loggerConnectInterceptor({
               response.trailers,
             );
         }
-      } on ConnectException catch (error, stackTrace) {
+      } on Object catch (error, stackTrace) {
         _logFailure(
           logger,
           procedure,
@@ -131,8 +128,8 @@ Map<String, Object?> _requestData<I extends Object, O extends Object>(
       sensitiveHeaders,
       maskSensitiveValues,
     ),
-    if (logBodies && request is UnaryRequest<I, O>)
-      'request_body': _formatMessage(request.message),
+    if (request case UnaryRequest<I, O>(:final message) when logBodies)
+      'request_body': _formatMessage(message),
   };
 }
 
@@ -140,12 +137,10 @@ Map<String, Object?> _responseData<I extends Object, O extends Object>(
   UnaryResponse<I, O> response,
   Stopwatch watch, {
   required bool logBodies,
-}) {
-  return {
-    'duration_ms': watch.elapsedMilliseconds,
-    if (logBodies) 'response_body': _formatMessage(response.message),
-  };
-}
+}) => {
+  'duration_ms': watch.elapsedMilliseconds,
+  if (logBodies) 'response_body': _formatMessage(response.message),
+};
 
 Stream<O> _terminalTapped<O>(
   Stream<O> messages,
@@ -221,17 +216,15 @@ Map<String, Object?> _safeHeaders(
 }
 
 // A best-effort mapping to structure so ElidingFormatter can clip the leaves.
-Object? _formatMessage(Object? message) {
-  if (message == null) return null;
-  if (message is GeneratedMessage) return protoLogShape(message);
-  // Non-protobuf codecs (e.g. JsonCodec payloads) carry no schema to map —
-  // their toString is the only shape available.
-  return message.toString();
-}
+Object? _formatMessage(Object? message) => switch (message) {
+  null => null,
+  final GeneratedMessage msg => protoLogShape(msg),
+  final other => other.toString(),
+};
 
 /// Loggable shape of [message]: proto3 JSON normally; on a build compiled
 /// with any `protobuf.omit_*_names` define (name metadata tree-shaken) the
-/// classic tag-keyed JSON map from [GeneratedMessage.writeToJson] — numeric
+/// classic tag-keyed JSON map from [GeneratedMessage.writeToJsonMap] — numeric
 /// keys, enums as numbers. Tag numbers are contract-stable, so a dump plus
 /// the `.proto` at the release tag decodes fully. Never log
 /// [GeneratedMessage.toString] instead: under stripping it degrades to
@@ -239,5 +232,4 @@ Object? _formatMessage(Object? message) {
 Object? protoLogShape(
   GeneratedMessage message, {
   bool namesStripped = _namesStripped,
-}) =>
-    namesStripped ? jsonDecode(message.writeToJson()) : message.toProto3Json();
+}) => namesStripped ? message.writeToJsonMap() : message.toProto3Json();

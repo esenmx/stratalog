@@ -138,24 +138,11 @@ void main() {
     ).deepEquals(expectedBody());
   });
 
-  test('sensitive headers verbatim by default', () async {
-    final headers = Headers()..add('authorization', 'Bearer secret-token');
-    final wrapped = loggerConnectInterceptor()<String, String>(ok);
-
-    await wrapped(_request(headers: headers));
-
-    final logged =
-        writer.records.first.data['headers']! as Map<String, Object?>;
-    check(logged['authorization']).equals('Bearer secret-token');
-  });
-
-  test('sensitive headers masked, others verbatim', () async {
+  test('sensitive headers masked by default, others verbatim', () async {
     final headers = Headers()
       ..add('authorization', 'Bearer secret-token')
       ..add('x-request-id', 'r1');
-    final wrapped = loggerConnectInterceptor(
-      maskSensitiveValues: true,
-    )<String, String>(ok);
+    final wrapped = loggerConnectInterceptor()<String, String>(ok);
 
     await wrapped(_request(headers: headers));
 
@@ -166,6 +153,19 @@ void main() {
     check(
       '${writer.records.first.data}',
     ).not((it) => it.contains('secret-token'));
+  });
+
+  test('sensitive headers verbatim when opted out', () async {
+    final headers = Headers()..add('authorization', 'Bearer secret-token');
+    final wrapped = loggerConnectInterceptor(
+      maskSensitiveValues: false,
+    )<String, String>(ok);
+
+    await wrapped(_request(headers: headers));
+
+    final logged =
+        writer.records.first.data['headers']! as Map<String, Object?>;
+    check(logged['authorization']).equals('Bearer secret-token');
   });
 
   test('ConnectException logs code, error-code trailer, rethrows', () async {
@@ -188,6 +188,22 @@ void main() {
       '${record.message}',
     ).equals('✗ not_found /acme.foo.v1.FooService/Bar');
     check(record.data['error_code']).equals('geo.404');
+    check(record.data['duration_ms']).isA<int>();
+  });
+
+  test('non-Connect unary error logs a failure line and propagates', () async {
+    Future<Response<String, String>> fails(Request<String, String> _) async {
+      throw StateError('boom');
+    }
+
+    final wrapped = loggerConnectInterceptor()<String, String>(fails);
+
+    await check(wrapped(_request())).throws<StateError>();
+    final record = writer.records.last;
+    check(record.level).equals(.warning);
+    check(
+      '${record.message}',
+    ).equals('✗ - /acme.foo.v1.FooService/Bar');
     check(record.data['duration_ms']).isA<int>();
   });
 
