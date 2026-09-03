@@ -22,7 +22,7 @@ void main() {
     ),
   );
 
-  LogLayer.app.info('Bootstrap complete', data: {'flavor': 'dev'});
+  LogLayer.app.info('Startup complete', data: {'flavor': 'dev'});
   LogLayer.auth.success('Signed in', data: {'method': 'apple'});
 
   const payments = LogLayer('Payments');

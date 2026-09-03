@@ -34,7 +34,7 @@ final class LogLayer {
   /// Badge/gutter color; `null` falls back to `LogPalette.colorFor(name)`.
   final ConsoleColor? color;
 
-  /// Bootstrap, config, DI wiring, business logic; the fallback layer.
+  /// App startup, config, DI wiring, business logic; the fallback layer.
   static const app = LogLayer('App');
 
   /// State-management transitions (provider lifecycles, mutations).
