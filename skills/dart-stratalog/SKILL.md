@@ -21,9 +21,9 @@ Core (`stratalog`) is pure Dart; every integration is a sibling package — add 
 |`stratalog_crashlytics` / `stratalog_sentry`|`configureLogging(crashReporter: const CrashlyticsCrashReporter())`|
 |`stratalog_viewer`|`MemoryLogWriter` in `writers:` + `LogViewerPage(writer: ...)`|
 
-## Bootstrap
+## Setup (main.dart)
 
-`configureLogging()` once, first line of bootstrap, before `runApp`. Reconfigure by calling again — never mutate `Chirp.root` in place; `LogLayer` re-resolves automatically. Debug → colored structured console via `dart:developer` (never `print`); release → single-line JSON.
+`configureLogging()` once, first line of `main()`, before `runApp`. Reconfigure by calling again — never mutate `Chirp.root` in place; `LogLayer` re-resolves automatically. Debug → colored structured console via `dart:developer` (never `print`); release → single-line JSON.
 
 Global handlers route through the same pipeline: `FlutterError.onError` → `LogLayer.ui.error(details.context?.toDescription() ?? 'flutter framework error', error: details.exception, stackTrace: details.stack)` (guard `if (details.silent) return;` first); `PlatformDispatcher.instance.onError` → `LogLayer.app.error(...)` then `return true`. Never also call `FlutterError.presentError`/chain the previous handler, and never `return false` — either re-prints the error as the framework's `════ Exception caught by ════` dump (console shows it twice). No `recordFlutterFatalError` wiring either: `CrashReporterWriter` already forwards `error`+ records, so direct SDK calls double-report to the backend.
 
@@ -67,7 +67,7 @@ Apps ship release AOT with `protobuf.omit_enum_names` / `omit_field_names` / `om
 
 ## Non-obvious invariants
 
-- Network taps log failures at `warning`, never `error` — non-2xx/non-OK is control flow the repository maps to a typed failure. Reserve `error` for bugs — judged by **nature, not Dart type**: mapped/expected control flow → `warning` (usually surfaces as `Exception`); bug-grade conditions → `error` even when they arrive as an `Exception` (canonical case: a failed bootstrap init `.wait` — half-initialized app must reach the crash reporter); `Error` → `error` always.
+- Network taps log failures at `warning`, never `error` — non-2xx/non-OK is control flow the repository maps to a typed failure. Reserve `error` for bugs — judged by **nature, not Dart type**: mapped/expected control flow → `warning` (usually surfaces as `Exception`); bug-grade conditions → `error` even when they arrive as an `Exception` (canonical case: a failed startup init `.wait` — half-initialized app must reach the crash reporter); `Error` → `error` always.
 - Sensitive header/metadata redaction is allowlist-based; extending it means passing `sensitiveHeaders`/`sensitiveMetadata`, not logging raw dumps.
 - **`trace` has no release floor.** `configureLogging` calls `setMinLogLevel` only when handed an explicit `minLevel`, and chirp defaults to none — so the taps' `→`/`←` trace lines reach the release console writer and persist in logcat / os_log. Anything that must not survive a release build is redacted at the tap, never left to the sink or to `kReleaseMode`.
 - `stratalog_dio`: `redactKeys` masks values `***` at any depth of bodies and in query strings, message-line URI included (defaults cover passwords, `cvv`/`cvc`, `pin`, `otp`, tokens, secrets; matching ignores case and `_`/`-`) and is **always on**, unlike header masking. String bodies pass through unparsed. `redactBodyPaths` drops a whole body — request, response and error — for endpoints sensitive as such (`{'/checkout/pay'}`); prefer it over key lists there, since it still covers the next field added to that payload. Card PAN/CVV under PCI-DSS is the canonical case. The gRPC/ConnectRPC taps need no equivalent — their `logBodies` already defaults off in product builds.

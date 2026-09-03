@@ -106,7 +106,7 @@ One crisp home per record — the taxonomy names concerns, not libraries:
 
 | Layer | Owns |
 |---|---|
-| `app` | bootstrap, config, DI, business logic — the fallback |
+| `app` | app startup, config, DI, business logic — the fallback |
 | `state` | state-management transitions (Riverpod/Provider/bloc) |
 | `route` | navigation, deep links, guards |
 | `ui` | widget/render issues, media, animations |

@@ -11,7 +11,7 @@ import 'package:stratalog/src/ide_writer.dart';
 // AOT release builds define dart.vm.product.
 const bool _kReleaseMode = .fromEnvironment('dart.vm.product');
 
-/// Configures the global chirp root. Call ONCE from bootstrap, before
+/// Configures the global chirp root. Call ONCE from main(), before
 /// `runApp`. To reconfigure, call again — `LogLayer` re-resolves against the
 /// new root automatically; never mutate `Chirp.root` in place.
 ///
