@@ -31,9 +31,7 @@ void main() {
   Iterable<String> messages() => writer.records.map((r) => '${r.message}');
 
   test('provider add and dispose are traced', () {
-    final container = ProviderContainer(
-      observers: [const RiverpodLogger()],
-    );
+    final container = ProviderContainer(observers: [const RiverpodLogger()]);
     final provider = Provider((ref) => 'hello');
     container
       ..read(provider)
@@ -44,9 +42,7 @@ void main() {
   });
 
   test('update is traced with both values', () {
-    final container = ProviderContainer(
-      observers: [const RiverpodLogger()],
-    );
+    final container = ProviderContainer(observers: [const RiverpodLogger()]);
     final provider = NotifierProvider<_Counter, int>(_Counter.new);
     container.read(provider.notifier).increment();
 
@@ -68,9 +64,7 @@ void main() {
   });
 
   test('Exception failure -> warning, Error failure -> error', () {
-    final container = ProviderContainer(
-      observers: [const RiverpodLogger()],
-    );
+    final container = ProviderContainer(observers: [const RiverpodLogger()]);
 
     final throwsException = Provider<int>((ref) => throw Exception('x'));
     check(() => container.read(throwsException)).throws<Object>();

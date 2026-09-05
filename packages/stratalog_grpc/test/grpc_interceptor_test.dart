@@ -27,10 +27,9 @@ final class _ExplodingWriter extends ChirpWriter {
 /// Hand-rolled proto — no protoc: a string field plus a repeated field, big
 /// enough to expose any producer-side clipping.
 final class _BigMessage extends GeneratedMessage {
-  _BigMessage();
+  new();
 
-  factory _BigMessage.fromBuffer(List<int> bytes) =>
-      _BigMessage()..mergeFromBuffer(bytes);
+  factory fromBuffer(List<int> bytes) => _BigMessage()..mergeFromBuffer(bytes);
 
   static final BuilderInfo _info =
       BuilderInfo('test.Big', createEmptyInstance: _BigMessage.new)
@@ -55,7 +54,7 @@ final class _BigMessage extends GeneratedMessage {
 
 /// Hand-rolled echo service — no protoc: payloads are raw bytes.
 final class _EchoService extends Service {
-  _EchoService() {
+  new() {
     $addMethod(
       ServiceMethod<List<int>, List<int>>(
         'Echo',
@@ -96,25 +95,20 @@ final class _EchoService extends Service {
 
   Future<List<int>> _boom(ServiceCall call, Future<List<int>> request) async {
     await request;
-    throw const GrpcError.custom(
-      StatusCode.notFound,
-      'missing',
-      null,
-      null,
-      {'error-code': 'geo.404'},
-    );
+    throw const GrpcError.custom(StatusCode.notFound, 'missing', null, null, {
+      'error-code': 'geo.404',
+    });
   }
 
-  Future<_BigMessage> _echoBig(
-    ServiceCall call,
-    Future<_BigMessage> request,
-  ) => request;
+  Future<_BigMessage> _echoBig(ServiceCall call, Future<_BigMessage> request) =>
+      request;
 }
 
-final class _EchoClient extends Client {
+final class _EchoClient(
   // ignore: matching_super_parameters -- Client's positional is `_channel`
-  _EchoClient(ClientChannel super.channel, {super.interceptors});
-
+  ClientChannel super.channel, {
+  super.interceptors,
+}) extends Client {
   static final _echo = ClientMethod<List<int>, List<int>>(
     '/test.Echo/Echo',
     (value) => value,
@@ -156,14 +150,9 @@ void main() {
     channel = ClientChannel(
       'localhost',
       port: server.port!,
-      options: const ChannelOptions(
-        credentials: .insecure(),
-      ),
+      options: const ChannelOptions(credentials: .insecure()),
     );
-    client = _EchoClient(
-      channel,
-      interceptors: [LoggerGrpcInterceptor()],
-    );
+    client = _EchoClient(channel, interceptors: [LoggerGrpcInterceptor()]);
   });
 
   tearDown(() async {
@@ -179,10 +168,8 @@ void main() {
     await settle();
 
     check(reply).deepEquals([1, 2, 3]);
-    check(writer.records.map((r) => '${r.message}')).deepEquals([
-      '→ /test.Echo/Echo',
-      '← OK /test.Echo/Echo',
-    ]);
+    check(writer.records.map((r) => '${r.message}'))
+        .deepEquals(['→ /test.Echo/Echo', '← OK /test.Echo/Echo']);
     check(writer.records.last.data['duration_ms']).isA<int>();
   });
 
@@ -231,12 +218,10 @@ void main() {
     await settle();
 
     check(reply.text).length.equals(5000);
-    check(
-      writer.records.first.data['request_body']! as Map<String, Object?>,
-    ).deepEquals(expectedBody());
-    check(
-      writer.records.last.data['response_body']! as Map<String, Object?>,
-    ).deepEquals(expectedBody());
+    check(writer.records.first.data['request_body']! as Map<String, Object?>)
+        .deepEquals(expectedBody());
+    check(writer.records.last.data['response_body']! as Map<String, Object?>)
+        .deepEquals(expectedBody());
   });
 
   test('logBodies false pins the release shape — no body keys ever', () async {
@@ -259,12 +244,9 @@ void main() {
     // duration, and metadata — a future tap change reintroducing body dumps
     // must fail here.
     final keys = writer.records.expand((r) => r.data.keys).toSet();
-    check(
-      keys.difference({'metadata', 'duration_ms', 'error_code'}),
-    ).isEmpty();
-    check(
-      writer.records.map((r) => '${r.message} ${r.data}').join('\n'),
-    ).not((it) => it.contains('user-payload'));
+    check(keys.difference({'metadata', 'duration_ms', 'error_code'})).isEmpty();
+    check(writer.records.map((r) => '${r.message} ${r.data}').join('\n'))
+        .not((it) => it.contains('user-payload'));
   });
 
   test('protoLogShape under name stripping is the tag-keyed map', () {
@@ -272,12 +254,12 @@ void main() {
       ..text = 'hi'
       ..items.addAll(['a', 'b']);
 
-    check(
-      protoLogShape(message, namesStripped: true),
-    ).isA<Map<String, Object?>>().deepEquals({
-      '1': 'hi',
-      '2': ['a', 'b'],
-    });
+    check(protoLogShape(message, namesStripped: true))
+        .isA<Map<String, Object?>>()
+        .deepEquals({
+          '1': 'hi',
+          '2': ['a', 'b'],
+        });
   });
 
   test('sensitive metadata masked by default, others verbatim', () async {
@@ -296,17 +278,14 @@ void main() {
         writer.records.first.data['metadata']! as Map<String, Object?>;
     check(metadata['authorization']).equals('***');
     check(metadata['x-request-id']).equals('r1');
-    check(
-      '${writer.records.first.data}',
-    ).not((it) => it.contains('secret-token'));
+    check('${writer.records.first.data}')
+        .not((it) => it.contains('secret-token'));
   });
 
   test('sensitive metadata verbatim when opted out', () async {
     final unmaskedClient = _EchoClient(
       channel,
-      interceptors: [
-        LoggerGrpcInterceptor(maskSensitiveValues: false),
-      ],
+      interceptors: [LoggerGrpcInterceptor(maskSensitiveValues: false)],
     );
     await unmaskedClient.echo(
       [0],

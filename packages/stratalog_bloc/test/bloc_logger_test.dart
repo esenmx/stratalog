@@ -12,15 +12,15 @@ final class _CapturingWriter extends ChirpWriter {
 }
 
 final class _NoopObserver extends BlocObserver {
-  const _NoopObserver();
+  const new();
 }
 
 final class _FatCubit extends Cubit<String> {
-  _FatCubit() : super('x' * 100);
+  new() : super('x' * 100);
 }
 
 final class _CounterCubit extends Cubit<int> {
-  _CounterCubit() : super(0);
+  new() : super(0);
 
   void increment() => emit(state + 1);
 
@@ -28,7 +28,7 @@ final class _CounterCubit extends Cubit<int> {
 }
 
 final class _CounterBloc extends Bloc<String, int> {
-  _CounterBloc() : super(0) {
+  new() : super(0) {
     on<String>((event, emit) => emit(state + 1));
   }
 }

@@ -8,12 +8,13 @@ import 'package:stratalog/src/palette.dart';
 
 /// Draws a colored left border along every line of [child] — one visual
 /// gutter per record instead of a full box.
-class LeftBordered extends SingleChildSpan {
-  /// Wraps [child] with a [color]ed gutter.
-  LeftBordered({required this.color, super.child});
-
+class LeftBordered({
   /// Gutter color; `null` renders in the terminal's default foreground.
-  final ConsoleColor? color;
+  required final ConsoleColor? color,
+  super.child,
+}) extends SingleChildSpan {
+  /// Wraps [child] with a [color]ed gutter.
+  this;
 
   @override
   void render(ConsoleMessageBuffer buffer) {
@@ -70,36 +71,33 @@ class LeftBordered extends SingleChildSpan {
 /// set — readable on solarized and soft-gray backgrounds, light or dark.
 /// Badge text flips black/white by background luminance; low levels render
 /// in the terminal's default color.
-class StructuredLogFormatter extends SpanBasedFormatter {
-  /// [domainColors] entries overlay [LogPalette.domains].
-  StructuredLogFormatter({
-    Map<String, ConsoleColor>? domainColors,
-    this.showTimestamp = true,
-    this.showLocation = true,
-    this.rawDataLayers = defaultRawDataLayers,
-  }) : domainColors = domainColors == null
-           ? LogPalette.domains
-           : {...LogPalette.domains, ...domainColors};
-
-  /// Badge/gutter color per layer name, overlaid on [LogPalette.domains].
-  final Map<String, ConsoleColor> domainColors;
-
-  /// Layers whose entire body renders flush-left with no gutter — copyable
-  /// multi-line SQL in messages and valid, selectable JSON straight off the
-  /// console. Pass `const {}` to restore the gutter everywhere.
-  final Set<String> rawDataLayers;
-
-  /// String literals, not `LogLayer` field accesses — a const field access
-  /// isn't a const expression (precedent: [LogPalette.domains]).
-  static const Set<String> defaultRawDataLayers = {'Network', 'Storage'};
+class StructuredLogFormatter({
+  Map<String, ConsoleColor>? domainColors,
 
   /// Renders the wall-clock time in the header.
-  final bool showTimestamp;
+  final bool showTimestamp = true,
 
   /// Renders `file:line • method` in the header. Costs a
   /// `StackTrace.current` per log — turn off before pointing this formatter
   /// at a hot path.
-  final bool showLocation;
+  final bool showLocation = true,
+
+  /// Layers whose entire body renders flush-left with no gutter — copyable
+  /// multi-line SQL in messages and valid, selectable JSON straight off the
+  /// console. Pass `const {}` to restore the gutter everywhere.
+  final Set<String> rawDataLayers = defaultRawDataLayers,
+}) extends SpanBasedFormatter {
+  /// [domainColors] entries overlay [LogPalette.domains].
+  this;
+
+  /// Badge/gutter color per layer name, overlaid on [LogPalette.domains].
+  final Map<String, ConsoleColor> domainColors = domainColors == null
+      ? LogPalette.domains
+      : {...LogPalette.domains, ...domainColors};
+
+  /// String literals, not `LogLayer` field accesses — a const field access
+  /// isn't a const expression (precedent: [LogPalette.domains]).
+  static const Set<String> defaultRawDataLayers = {'Network', 'Storage'};
 
   @override
   bool get requiresCallerInfo => showLocation;

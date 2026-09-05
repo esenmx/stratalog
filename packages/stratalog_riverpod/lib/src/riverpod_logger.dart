@@ -9,17 +9,17 @@ import 'package:stratalog/stratalog.dart';
 /// ```dart
 /// ProviderScope(observers: [RiverpodLogger()], child: app)
 /// ```
-final class RiverpodLogger extends ProviderObserver {
-  /// Logs observer events to [logger], typically `LogLayer.state`.
-  const RiverpodLogger({this.logger = .state, this.maxValueLength = 800});
-
+final class const RiverpodLogger({
   /// Destination layer.
-  final LogLayer logger;
+  final LogLayer logger = .state,
 
   /// State `toString()`s beyond this length are ellipsized — a fat entity
   /// list rebuilding every frame must not drown the console. Set `null` to
   /// disable.
-  final int? maxValueLength;
+  final int? maxValueLength = 800,
+}) extends ProviderObserver {
+  /// Logs observer events to [logger], typically `LogLayer.state`.
+  this;
 
   @override
   void didAddProvider(ProviderObserverContext context, Object? value) {

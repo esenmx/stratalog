@@ -14,16 +14,16 @@ import 'package:stratalog/stratalog.dart';
 /// stream of dispatched events to tap — mirroring has to happen on the way
 /// in. Only the high-traffic surface is wrapped; anything else stays
 /// reachable via [analytics].
-final class LoggerAnalytics {
-  /// Mirrors calls on [analytics] to [logger], typically
-  /// `LogLayer.analytics`.
-  const LoggerAnalytics(this.analytics, {this.logger = .analytics});
-
+final class const LoggerAnalytics(
   /// The wrapped instance — escape hatch for the unwrapped API surface.
-  final FirebaseAnalytics analytics;
+  final FirebaseAnalytics analytics, {
 
   /// Destination layer.
-  final LogLayer logger;
+  final LogLayer logger = .analytics,
+}) {
+  /// Mirrors calls on [analytics] to [logger], typically
+  /// `LogLayer.analytics`.
+  this;
 
   /// Mirrors [FirebaseAnalytics.logEvent].
   Future<void> logEvent({

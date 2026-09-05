@@ -14,9 +14,7 @@ import 'package:stratalog_viewer/stratalog_viewer.dart';
 
 /// Stand-in for any producer that logs during build (e.g. a riverpod tap
 /// observing a provider read via ref.watch inside a widget's build).
-final class _BuildPhaseLogger extends StatefulWidget {
-  const _BuildPhaseLogger({super.key});
-
+final class const _BuildPhaseLogger({super.key}) extends StatefulWidget {
   @override
   State<_BuildPhaseLogger> createState() => _BuildPhaseLoggerState();
 }

@@ -57,9 +57,8 @@ void main() {
     await settle();
 
     final crumbs = captured.single.breadcrumbs ?? [];
-    check(
-      crumbs.map((b) => b.message ?? ''),
-    ).contains('[Network/info] token refreshed');
+    check(crumbs.map((b) => b.message ?? ''))
+        .contains('[Network/info] token refreshed');
   });
 
   test('breadcrumb carries the record data map', () async {
@@ -73,16 +72,15 @@ void main() {
     final crumb = (captured.single.breadcrumbs ?? []).singleWhere(
       (b) => (b.message ?? '').contains('GetCity'),
     );
-    check(
-      crumb.data,
-    ).isNotNull().deepEquals({'duration_ms': 12, 'error_code': 'geo.404'});
+    check(crumb.data)
+        .isNotNull()
+        .deepEquals({'duration_ms': 12, 'error_code': 'geo.404'});
   });
 
   test('uninitialized hub no-ops instead of throwing', () async {
     await Sentry.close();
-    check(
-      () => LogLayer.app.error('boom', error: Exception('x')),
-    ).returnsNormally();
+    check(() => LogLayer.app.error('boom', error: Exception('x')))
+        .returnsNormally();
   });
 
   test(

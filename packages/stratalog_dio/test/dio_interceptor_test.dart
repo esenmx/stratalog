@@ -14,12 +14,8 @@ final class _CapturingWriter extends ChirpWriter {
   void write(LogRecord record) => records.add(record);
 }
 
-final class _StubAdapter implements HttpClientAdapter {
-  _StubAdapter(this.statusCode, this.body);
-
-  final int statusCode;
-  final String body;
-
+final class _StubAdapter(final int statusCode, final String body)
+    implements HttpClientAdapter {
   @override
   Future<ResponseBody> fetch(
     RequestOptions options,
@@ -83,15 +79,13 @@ void main() {
     check(headers['cookie']).equals('***');
     check(headers['content-type']).equals('application/json');
     check(headers).not((it) => it.containsKey('x-internal-envelope'));
-    check(
-      '${writer.records.single.data}',
-    ).not((it) => it.contains('secret-token'));
+    check('${writer.records.single.data}')
+        .not((it) => it.contains('secret-token'));
   });
 
   test('sensitive header values pass through verbatim when opted out', () {
-    LoggerDioInterceptor(
-      maskSensitiveValues: false,
-    ).onRequest(request(), RequestInterceptorHandler());
+    LoggerDioInterceptor(maskSensitiveValues: false)
+        .onRequest(request(), RequestInterceptorHandler());
 
     final headers =
         writer.records.single.data['headers']! as Map<String, Object?>;
@@ -226,9 +220,8 @@ void main() {
     });
 
     test('sensitive keys are masked at any depth, siblings kept', () {
-      LoggerDioInterceptor(
-        redactKeys: {'cvv'},
-      ).onRequest(payment(), RequestInterceptorHandler());
+      LoggerDioInterceptor(redactKeys: {'cvv'})
+          .onRequest(payment(), RequestInterceptorHandler());
 
       final body = writer.records.single.data['body']! as Map<String, Object?>;
       final card = body['card']! as Map<String, Object?>;
@@ -352,9 +345,8 @@ void main() {
       // dart test always runs the VM in JIT mode, so dart.vm.product is
       // never true here — this pins the default to that flag rather than a
       // bare `true` literal.
-      check(
-        LoggerDioInterceptor().logBodies,
-      ).equals(!const bool.fromEnvironment('dart.vm.product'));
+      check(LoggerDioInterceptor().logBodies)
+          .equals(!const bool.fromEnvironment('dart.vm.product'));
     });
 
     test('false strips the request and response body on success', () {
@@ -398,9 +390,8 @@ void main() {
         (_, _) {},
       );
 
-      check(
-        writer.records.single.data,
-      ).not((it) => it.containsKey('response_body'));
+      check(writer.records.single.data)
+          .not((it) => it.containsKey('response_body'));
     });
   });
 
@@ -426,9 +417,8 @@ void main() {
 
     final record = writer.records.single;
     check(record.level).equals(.warning);
-    check(
-      '${record.message}',
-    ).equals('✗ 404 GET https://api.example.com/users');
+    check('${record.message}')
+        .equals('✗ 404 GET https://api.example.com/users');
     check(record.data['duration_ms']).isA<int>();
     check(record.data['type']).equals('badResponse');
   });
@@ -463,9 +453,8 @@ void main() {
     // Dio dropped the response from the wrapped exception; the raw body sits
     // on the `←` trace line above, the warning names the pipeline failure.
     final warning = writer.records.singleWhere((r) => r.level == .warning);
-    check(
-      '${warning.message}',
-    ).equals('✗ unknown GET https://api.example.com/users');
+    check('${warning.message}')
+        .equals('✗ unknown GET https://api.example.com/users');
     check(warning.data['type']).equals('unknown');
   });
 
@@ -483,9 +472,8 @@ void main() {
     check(caught).isNotNull();
 
     final warning = writer.records.singleWhere((r) => r.level == .warning);
-    check(
-      '${warning.message}',
-    ).equals('✗ connectionError GET https://api.example.com/users');
+    check('${warning.message}')
+        .equals('✗ connectionError GET https://api.example.com/users');
     check(warning.data['type']).equals('connectionError');
     check(warning.data['duration_ms']).isA<int>();
   });
@@ -512,9 +500,8 @@ void main() {
     check(response.data).equals('recovered');
 
     final warning = writer.records.singleWhere((r) => r.level == .warning);
-    check(
-      '${warning.message}',
-    ).equals('✗ 500 GET https://api.example.com/users');
+    check('${warning.message}')
+        .equals('✗ 500 GET https://api.example.com/users');
     check('${warning.data['response_body']}').contains('boom');
     check(warning.data['type']).equals('badResponse');
     check(warning.data['duration_ms']).isA<int>();

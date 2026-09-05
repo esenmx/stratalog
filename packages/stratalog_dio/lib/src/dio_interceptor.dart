@@ -30,39 +30,17 @@ const bool _kProduct = .fromEnvironment('dart.vm.product');
 /// [logBodies] defaults to on in debug/profile and OFF in product builds:
 /// request, response and failure bodies push user payloads into release
 /// sinks (crash breadcrumbs stay at method/status/duration shape).
-final class LoggerDioInterceptor extends Interceptor {
-  /// Logs traffic to [logger], typically `LogLayer.network`.
-  LoggerDioInterceptor({
-    this.logger = .network,
-    this.headerAllowlist = defaultHeaderAllowlist,
-    this.sensitiveHeaders = defaultSensitiveHeaders,
-    this.redactKeys = defaultRedactKeys,
-    this.redactBodyPaths = const {},
-    this.maskSensitiveValues = true,
-    this.logBodies = !_kProduct,
-  }) : _redactKeys = {for (final key in redactKeys) _normalizeKey(key)};
-
+final class LoggerDioInterceptor({
   /// Destination layer.
-  final LogLayer logger;
-
-  /// Whether to redact [sensitiveHeaders] values. Defaults to `true` — a
-  /// bearer token or cookie must never land verbatim in a sink, even the
-  /// debug console. Pass `false` to show them for local debugging.
-  final bool maskSensitiveValues;
-
-  /// Whether request/response/failure bodies land in trace and warning
-  /// records. Defaults to on in debug/profile and OFF in product builds:
-  /// bodies push user payloads into release sinks (crash breadcrumbs stay at
-  /// method/status/duration shape).
-  final bool logBodies;
+  final LogLayer logger = .network,
 
   /// Only these header values are ever logged verbatim — a full header dump
   /// drowns the log and leaks anything a downstream interceptor attaches.
-  final Set<String> headerAllowlist;
+  final Set<String> headerAllowlist = defaultHeaderAllowlist,
 
   /// Logged presence-only as '***': the value (a bearer token, cookie,
   /// app-check token) must never land in a sink — even the debug console.
-  final Set<String> sensitiveHeaders;
+  final Set<String> sensitiveHeaders = defaultSensitiveHeaders,
 
   /// Keys whose values are replaced with '***' wherever they appear: at any
   /// depth of a JSON request, response or error body, and in query
@@ -74,7 +52,7 @@ final class LoggerDioInterceptor extends Interceptor {
   /// worth showing on a local console, a password or CVV never is. Pass an
   /// empty set to log verbatim. String bodies pass through unparsed — cover
   /// their endpoints with [redactBodyPaths].
-  final Set<String> redactKeys;
+  final Set<String> redactKeys = defaultRedactKeys,
 
   /// Request paths whose bodies are dropped from the log entirely — request,
   /// response and error alike. Matched as a substring of the resolved
@@ -83,11 +61,27 @@ final class LoggerDioInterceptor extends Interceptor {
   /// Reach for this where the *endpoint* is sensitive rather than a known
   /// field name: it keeps covering the next key somebody adds to that
   /// payload, which [redactKeys] cannot.
-  final Set<String> redactBodyPaths;
+  final Set<String> redactBodyPaths = const {},
+
+  /// Whether to redact [sensitiveHeaders] values. Defaults to `true` — a
+  /// bearer token or cookie must never land verbatim in a sink, even the
+  /// debug console. Pass `false` to show them for local debugging.
+  final bool maskSensitiveValues = true,
+
+  /// Whether request/response/failure bodies land in trace and warning
+  /// records. Defaults to on in debug/profile and OFF in product builds:
+  /// bodies push user payloads into release sinks (crash breadcrumbs stay at
+  /// method/status/duration shape).
+  final bool logBodies = !_kProduct,
+}) extends Interceptor {
+  /// Logs traffic to [logger], typically `LogLayer.network`.
+  this;
 
   /// [redactKeys], normalized once so the hot path only normalizes the
   /// body's own keys.
-  final Set<String> _redactKeys;
+  final Set<String> _redactKeys = {
+    for (final key in redactKeys) _normalizeKey(key),
+  };
 
   /// Default for [headerAllowlist].
   static const Set<String> defaultHeaderAllowlist = {

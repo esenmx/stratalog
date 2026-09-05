@@ -14,8 +14,8 @@ topics:
   - observability
 
 environment:
-  sdk: ^3.11.0
-  flutter: ">=3.38.0"
+  sdk: ^3.13.0
+  flutter: ">=3.47.0"
 
 dependencies:
   firebase_auth: ^6.1.0
@@ -28,4 +28,4 @@ dev_dependencies:
   firebase_auth_mocks: ^0.15.2
   flutter_test:
     sdk: flutter
-  very_good_analysis: ^10.2.0
+  very_good_analysis: ^11.0.0

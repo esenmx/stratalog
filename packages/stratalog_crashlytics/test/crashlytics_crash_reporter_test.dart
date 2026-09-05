@@ -129,9 +129,8 @@ void main() {
   );
 
   test('a rejected log future never surfaces as a zone error', () async {
-    when(
-      crashlytics.log(any),
-    ).thenAnswer((_) => Future<void>.error(StateError('sdk unreachable')));
+    when(crashlytics.log(any))
+        .thenAnswer((_) => Future<void>.error(StateError('sdk unreachable')));
     final uncaught = <Object>[];
 
     await runZonedGuarded(() async {

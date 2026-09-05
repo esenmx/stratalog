@@ -62,9 +62,7 @@ void main() {
     LogLayer.network.warning('slow response', data: {'ms': 132});
     LogLayer.auth.info('signed in');
 
-    await tester.pumpWidget(
-      MaterialApp(home: LogViewerPage(writer: writer)),
-    );
+    await tester.pumpWidget(MaterialApp(home: LogViewerPage(writer: writer)));
 
     expect(find.text('slow response'), findsOneWidget);
     expect(find.text('signed in'), findsOneWidget);
@@ -81,9 +79,7 @@ void main() {
     LogLayer.network.info('token refreshed');
     LogLayer.storage.info('migration applied');
 
-    await tester.pumpWidget(
-      MaterialApp(home: LogViewerPage(writer: writer)),
-    );
+    await tester.pumpWidget(MaterialApp(home: LogViewerPage(writer: writer)));
     await tester.enterText(find.byType(TextField), 'Storage');
     await tester.pump();
 
@@ -100,9 +96,7 @@ void main() {
     );
     LogLayer.storage.info('migration applied');
 
-    await tester.pumpWidget(
-      MaterialApp(home: LogViewerPage(writer: writer)),
-    );
+    await tester.pumpWidget(MaterialApp(home: LogViewerPage(writer: writer)));
     await tester.enterText(find.byType(TextField), 'usr_42');
     await tester.pump();
 
@@ -120,9 +114,7 @@ void main() {
       },
     );
 
-    await tester.pumpWidget(
-      MaterialApp(home: LogViewerPage(writer: writer)),
-    );
+    await tester.pumpWidget(MaterialApp(home: LogViewerPage(writer: writer)));
     await tester.enterText(find.byType(TextField), 'usr_42');
     await tester.pumpAndSettle();
 
@@ -156,9 +148,7 @@ void main() {
       },
     );
 
-    await tester.pumpWidget(
-      MaterialApp(home: LogViewerPage(writer: writer)),
-    );
+    await tester.pumpWidget(MaterialApp(home: LogViewerPage(writer: writer)));
     await tester.enterText(find.byType(TextField), 'loaded'); // message hit
     await tester.pumpAndSettle();
     expect(find.textContaining('"usr_42"'), findsNothing);
@@ -178,9 +168,7 @@ void main() {
       },
     );
 
-    await tester.pumpWidget(
-      MaterialApp(home: LogViewerPage(writer: writer)),
-    );
+    await tester.pumpWidget(MaterialApp(home: LogViewerPage(writer: writer)));
     await tester.enterText(find.byType(TextField), 'odd');
     await tester.pump();
 
@@ -191,9 +179,7 @@ void main() {
   testWidgets('expand-all toggle reveals data blocks', (tester) async {
     LogLayer.network.warning('slow response', data: {'ms': 132});
 
-    await tester.pumpWidget(
-      MaterialApp(home: LogViewerPage(writer: writer)),
-    );
+    await tester.pumpWidget(MaterialApp(home: LogViewerPage(writer: writer)));
     expect(find.textContaining('"ms": 132'), findsNothing);
 
     await tester.tap(find.byIcon(Icons.unfold_more));
@@ -212,9 +198,7 @@ void main() {
     LogLayer.network.info('profile fetched');
     LogLayer.storage.info('migration applied');
 
-    await tester.pumpWidget(
-      MaterialApp(home: LogViewerPage(writer: writer)),
-    );
+    await tester.pumpWidget(MaterialApp(home: LogViewerPage(writer: writer)));
 
     expect(find.byType(FilterChip), findsNWidgets(2));
     expect(find.widgetWithText(FilterChip, 'Network'), findsOneWidget);
@@ -225,9 +209,7 @@ void main() {
     LogLayer.network.info('token refreshed');
     LogLayer.storage.info('migration applied');
 
-    await tester.pumpWidget(
-      MaterialApp(home: LogViewerPage(writer: writer)),
-    );
+    await tester.pumpWidget(MaterialApp(home: LogViewerPage(writer: writer)));
     await tester.tap(find.widgetWithText(FilterChip, 'Storage'));
     await tester.pump();
 
@@ -246,9 +228,7 @@ void main() {
   ) async {
     LogLayer.network.info('token refreshed');
 
-    await tester.pumpWidget(
-      MaterialApp(home: LogViewerPage(writer: writer)),
-    );
+    await tester.pumpWidget(MaterialApp(home: LogViewerPage(writer: writer)));
     await tester.tap(find.widgetWithText(FilterChip, 'Network'));
     await tester.pump();
 
@@ -272,9 +252,7 @@ void main() {
       },
     );
 
-    await tester.pumpWidget(
-      MaterialApp(home: LogViewerPage(writer: writer)),
-    );
+    await tester.pumpWidget(MaterialApp(home: LogViewerPage(writer: writer)));
 
     // Visible on the collapsed tile — no tap/expand before these asserts.
     expect(find.textContaining('id: usr_42'), findsOneWidget);
@@ -285,9 +263,7 @@ void main() {
   testWidgets('single-entry data pluralizes as 1 field', (tester) async {
     LogLayer.network.info('ping', data: {'ms': 132});
 
-    await tester.pumpWidget(
-      MaterialApp(home: LogViewerPage(writer: writer)),
-    );
+    await tester.pumpWidget(MaterialApp(home: LogViewerPage(writer: writer)));
 
     expect(find.textContaining('1 field'), findsOneWidget);
     expect(find.textContaining('1 fields'), findsNothing);
@@ -308,17 +284,13 @@ void main() {
   testWidgets('no preview line for records without data', (tester) async {
     LogLayer.app.info('plain message');
 
-    await tester.pumpWidget(
-      MaterialApp(home: LogViewerPage(writer: writer)),
-    );
+    await tester.pumpWidget(MaterialApp(home: LogViewerPage(writer: writer)));
 
     expect(find.textContaining('fields'), findsNothing);
   });
 
   testWidgets('live updates arrive without rebuild plumbing', (tester) async {
-    await tester.pumpWidget(
-      MaterialApp(home: LogViewerPage(writer: writer)),
-    );
+    await tester.pumpWidget(MaterialApp(home: LogViewerPage(writer: writer)));
     expect(find.text('No records'), findsOneWidget);
 
     LogLayer.app.info('late arrival');
@@ -331,9 +303,7 @@ void main() {
     final copied = mockClipboard(tester);
     LogLayer.network.info('payload', data: {'id': 42, 'ok': true});
 
-    await tester.pumpWidget(
-      MaterialApp(home: LogViewerPage(writer: writer)),
-    );
+    await tester.pumpWidget(MaterialApp(home: LogViewerPage(writer: writer)));
     await tester.tap(find.text('payload'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Copy JSON'));
@@ -349,9 +319,7 @@ void main() {
     final copied = mockClipboard(tester);
     LogLayer.network.info('payload', data: {'id': 42});
 
-    await tester.pumpWidget(
-      MaterialApp(home: LogViewerPage(writer: writer)),
-    );
+    await tester.pumpWidget(MaterialApp(home: LogViewerPage(writer: writer)));
     await tester.tap(find.byIcon(Icons.copy_all));
     await tester.pump();
 
@@ -365,9 +333,7 @@ void main() {
     cyclic['self'] = cyclic;
     LogLayer.app.info('loop', data: cyclic);
 
-    await tester.pumpWidget(
-      MaterialApp(home: LogViewerPage(writer: writer)),
-    );
+    await tester.pumpWidget(MaterialApp(home: LogViewerPage(writer: writer)));
     await tester.tap(find.text('loop'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Copy JSON'));
@@ -385,9 +351,7 @@ void main() {
   ) async {
     LogLayer.app.error('boom', error: StateError('bad'));
 
-    await tester.pumpWidget(
-      MaterialApp(home: LogViewerPage(writer: writer)),
-    );
+    await tester.pumpWidget(MaterialApp(home: LogViewerPage(writer: writer)));
     await tester.tap(find.text('boom'));
     await tester.pumpAndSettle();
 

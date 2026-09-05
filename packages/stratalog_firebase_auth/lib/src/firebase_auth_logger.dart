@@ -26,15 +26,15 @@ import 'package:stratalog/stratalog.dart';
 /// and photo URLs never logged. Sign-in *failures* throw at the call site
 /// (`FirebaseAuthException`) before any stream fires — log those where you
 /// catch them, e.g. `LogLayer.auth.warning(...)`.
-final class FirebaseAuthLogger {
-  /// Logs [auth]'s streams to [logger] once [attach]ed.
-  FirebaseAuthLogger(this.auth, {this.logger = .auth});
-
+final class FirebaseAuthLogger(
   /// The tapped FirebaseAuth instance.
-  final FirebaseAuth auth;
+  final FirebaseAuth auth, {
 
   /// Destination layer.
-  final LogLayer logger;
+  final LogLayer logger = .auth,
+}) {
+  /// Logs [auth]'s streams to [logger] once [attach]ed.
+  this;
 
   final List<StreamSubscription<User?>> _subscriptions = [];
   String? _lastUid;

@@ -14,7 +14,7 @@ final class _CapturingWriter extends ChirpWriter {
 }
 
 final class _StreamService extends Service {
-  _StreamService() {
+  new() {
     $addMethod(
       ServiceMethod<List<int>, List<int>>(
         'BoomStream',
@@ -76,13 +76,9 @@ final class _StreamService extends Service {
   ) async* {
     await request;
     yield [1];
-    throw const GrpcError.custom(
-      StatusCode.notFound,
-      'missing',
-      null,
-      null,
-      {'error-code': 'geo.404'},
-    );
+    throw const GrpcError.custom(StatusCode.notFound, 'missing', null, null, {
+      'error-code': 'geo.404',
+    });
   }
 
   Stream<List<int>> _fineStream(
@@ -126,10 +122,11 @@ final class _StreamService extends Service {
   }
 }
 
-final class _StreamClient extends Client {
+final class _StreamClient(
   // ignore: matching_super_parameters -- Client's positional is `_channel`
-  _StreamClient(ClientChannel super.channel, {super.interceptors});
-
+  ClientChannel super.channel, {
+  super.interceptors,
+}) extends Client {
   static ClientMethod<List<int>, List<int>> _method(String name) =>
       ClientMethod('/test.Stream/$name', (value) => value, (bytes) => bytes);
 
@@ -182,10 +179,7 @@ void main() {
       port: server.port!,
       options: const ChannelOptions(credentials: .insecure()),
     );
-    client = _StreamClient(
-      channel,
-      interceptors: [LoggerGrpcInterceptor()],
-    );
+    client = _StreamClient(channel, interceptors: [LoggerGrpcInterceptor()]);
   });
 
   tearDown(() async {
@@ -244,33 +238,30 @@ void main() {
     check(writer.records.last.level).equals(.trace);
   });
 
-  test(
-    'call cancel logs a cancelled line once — the CANCELLED error still '
-    'reaches the caller unlogged',
-    () async {
-      final responses = client.tickStream([0]);
-      final errors = <Object>[];
-      final subscription = responses.listen(
-        null,
-        onError: errors.add,
-        cancelOnError: false,
-      );
-      await responses.headers;
-      await responses.cancel();
-      await settle();
-      await subscription.cancel();
+  test('call cancel logs a cancelled line once — the CANCELLED error still '
+      'reaches the caller unlogged', () async {
+    final responses = client.tickStream([0]);
+    final errors = <Object>[];
+    final subscription = responses.listen(
+      null,
+      onError: errors.add,
+      cancelOnError: false,
+    );
+    await responses.headers;
+    await responses.cancel();
+    await settle();
+    await subscription.cancel();
 
-      check(errors).length.equals(1);
-      check(errors.single)
-          .isA<GrpcError>()
-          .has((e) => e.code, 'code')
-          .equals(StatusCode.cancelled);
-      check(writer.records.map((r) => '${r.message}')).deepEquals([
-        '⇄ /test.Stream/TickStream',
-        '⇄ cancelled /test.Stream/TickStream',
-      ]);
-    },
-  );
+    check(errors).length.equals(1);
+    check(errors.single)
+        .isA<GrpcError>()
+        .has((e) => e.code, 'code')
+        .equals(StatusCode.cancelled);
+    check(writer.records.map((r) => '${r.message}')).deepEquals([
+      '⇄ /test.Stream/TickStream',
+      '⇄ cancelled /test.Stream/TickStream',
+    ]);
+  });
 
   test('client-streaming single logs the done line once', () async {
     final reply = await client.collect(
@@ -283,16 +274,12 @@ void main() {
     await settle();
 
     check(reply).deepEquals([3]);
-    check(writer.records.map((r) => '${r.message}')).deepEquals([
-      '⇄ /test.Stream/Collect',
-      '⇄ done /test.Stream/Collect',
-    ]);
+    check(writer.records.map((r) => '${r.message}'))
+        .deepEquals(['⇄ /test.Stream/Collect', '⇄ done /test.Stream/Collect']);
   });
 
   test('client-streaming single logs the failure once with status', () async {
-    await check(
-      client.collectBoom(Stream.value([0])),
-    ).throws<GrpcError>();
+    await check(client.collectBoom(Stream.value([0]))).throws<GrpcError>();
     await settle();
 
     check(writer.records.map((r) => '${r.message}')).deepEquals([

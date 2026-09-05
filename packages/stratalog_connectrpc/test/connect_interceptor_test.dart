@@ -13,7 +13,7 @@ final class _CapturingWriter extends ChirpWriter {
 }
 
 final class _NeverAborts implements AbortSignal {
-  const _NeverAborts();
+  const new();
 
   @override
   DateTime? get deadline => null;
@@ -25,7 +25,7 @@ final class _NeverAborts implements AbortSignal {
 /// Hand-rolled proto — no protoc: a string field plus a repeated field, big
 /// enough to expose any producer-side clipping.
 final class _BigMessage extends GeneratedMessage {
-  _BigMessage();
+  new();
 
   static final BuilderInfo _info =
       BuilderInfo('test.Big', createEmptyInstance: _BigMessage.new)
@@ -48,12 +48,8 @@ final class _BigMessage extends GeneratedMessage {
   List<String> get items => $_getList(1);
 }
 
-Spec<String, String> _spec(StreamType type) => Spec(
-  '/acme.foo.v1.FooService/Bar',
-  type,
-  () => '',
-  () => '',
-);
+Spec<String, String> _spec(StreamType type) =>
+    Spec('/acme.foo.v1.FooService/Bar', type, () => '', () => '');
 
 UnaryRequest<String, String> _request({Headers? headers}) => UnaryRequest(
   _spec(.unary),
@@ -130,12 +126,10 @@ void main() {
       ),
     );
 
-    check(
-      writer.records.first.data['request_body']! as Map<String, Object?>,
-    ).deepEquals(expectedBody());
-    check(
-      writer.records.last.data['response_body']! as Map<String, Object?>,
-    ).deepEquals(expectedBody());
+    check(writer.records.first.data['request_body']! as Map<String, Object?>)
+        .deepEquals(expectedBody());
+    check(writer.records.last.data['response_body']! as Map<String, Object?>)
+        .deepEquals(expectedBody());
   });
 
   test('sensitive headers masked by default, others verbatim', () async {
@@ -150,9 +144,8 @@ void main() {
         writer.records.first.data['headers']! as Map<String, Object?>;
     check(logged['authorization']).equals('***');
     check(logged['x-request-id']).equals('r1');
-    check(
-      '${writer.records.first.data}',
-    ).not((it) => it.contains('secret-token'));
+    check('${writer.records.first.data}')
+        .not((it) => it.contains('secret-token'));
   });
 
   test('sensitive headers verbatim when opted out', () async {
@@ -177,16 +170,13 @@ void main() {
       );
     }
 
-    final wrapped = loggerConnectInterceptor()<String, String>(
-      fails,
-    );
+    final wrapped = loggerConnectInterceptor()<String, String>(fails);
 
     await check(wrapped(_request())).throws<ConnectException>();
     final record = writer.records.last;
     check(record.level).equals(.warning);
-    check(
-      '${record.message}',
-    ).equals('✗ not_found /acme.foo.v1.FooService/Bar');
+    check('${record.message}')
+        .equals('✗ not_found /acme.foo.v1.FooService/Bar');
     check(record.data['error_code']).equals('geo.404');
     check(record.data['duration_ms']).isA<int>();
   });
@@ -240,9 +230,8 @@ void main() {
     // must fail here.
     final keys = writer.records.expand((r) => r.data.keys).toSet();
     check(keys.difference({'headers', 'duration_ms', 'error_code'})).isEmpty();
-    check(
-      writer.records.map((r) => '${r.message} ${r.data}').join('\n'),
-    ).not((it) => it.contains('user-payload'));
+    check(writer.records.map((r) => '${r.message} ${r.data}').join('\n'))
+        .not((it) => it.contains('user-payload'));
   });
 
   test('protoLogShape under name stripping is the tag-keyed map', () {
@@ -250,32 +239,27 @@ void main() {
       ..text = 'hi'
       ..items.addAll(['a', 'b']);
 
-    check(
-      protoLogShape(message, namesStripped: true),
-    ).isA<Map<String, Object?>>().deepEquals({
-      '1': 'hi',
-      '2': ['a', 'b'],
-    });
+    check(protoLogShape(message, namesStripped: true))
+        .isA<Map<String, Object?>>()
+        .deepEquals({
+          '1': 'hi',
+          '2': ['a', 'b'],
+        });
   });
 
   test('stream call logs only the request arrow at headers', () async {
     Future<Response<String, String>> okStream(
       Request<String, String> request,
-    ) async => StreamResponse(
-      request.spec,
-      Headers(),
-      const .empty(),
-      Headers(),
-    );
+    ) async =>
+        StreamResponse(request.spec, Headers(), const .empty(), Headers());
 
     final wrapped = loggerConnectInterceptor()<String, String>(okStream);
     await wrapped(_streamRequest());
 
     // Protocol.stream completes the future at headers-received — the
     // terminal line belongs to the message stream, never here.
-    check(writer.records.map((r) => '${r.message}')).deepEquals([
-      '⇄ /acme.foo.v1.FooService/Bar',
-    ]);
+    check(writer.records.map((r) => '${r.message}'))
+        .deepEquals(['⇄ /acme.foo.v1.FooService/Bar']);
   });
 
   test('clean stream logs done exactly once, headers and trailers '

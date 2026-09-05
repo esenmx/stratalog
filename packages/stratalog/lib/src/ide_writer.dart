@@ -15,26 +15,23 @@ import 'package:chirp/chirp.dart';
 /// Trap: lines still buffered when the process hard-crashes before the
 /// microtask runs are lost — debug-console output only; uncaught errors
 /// surface via `FlutterError` separately.
-class IdeDebugConsoleWriter extends ChirpWriter {
+class IdeDebugConsoleWriter({
+  /// Renders each record into the buffer handed to `dart:developer log()`.
+  required final ChirpFormatter formatter,
+
+  /// Defaults to ANSI-256, which every IDE debug console renders.
+  final TerminalCapabilities capabilities = const TerminalCapabilities(
+    colorSupport: .ansi256,
+  ),
+  void Function(String message, int level)? emit,
+}) extends ChirpWriter {
   /// Renders through [formatter] with [capabilities].
   ///
   /// [emit] is the test seam: receives the joined batch and the highest
   /// mapped level in it; defaults to a `dart:developer log()` wrapper.
-  IdeDebugConsoleWriter({
-    required this.formatter,
-    this.capabilities = const TerminalCapabilities(
-      colorSupport: .ansi256,
-    ),
-    void Function(String message, int level)? emit,
-  }) : _emit = emit ?? _developerLog;
+  this;
 
-  /// Renders each record into the buffer handed to `dart:developer log()`.
-  final ChirpFormatter formatter;
-
-  /// Defaults to ANSI-256, which every IDE debug console renders.
-  final TerminalCapabilities capabilities;
-
-  final void Function(String message, int level) _emit;
+  final void Function(String message, int level) _emit = emit ?? _developerLog;
 
   final List<String> _pending = [];
   int _pendingLevel = 0;

@@ -11,12 +11,12 @@ import 'package:stratalog/stratalog.dart';
 ///   ),
 /// )
 /// ```
-final class AppRouterObserver extends AutoRouterObserver {
-  /// Logs every navigation event to [logger], typically `LogLayer.route`.
-  AppRouterObserver({this.logger = .route});
-
+final class AppRouterObserver({
   /// Destination layer.
-  final LogLayer logger;
+  final LogLayer logger = .route,
+}) extends AutoRouterObserver {
+  /// Logs every navigation event to [logger], typically `LogLayer.route`.
+  this;
 
   @override
   void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) {

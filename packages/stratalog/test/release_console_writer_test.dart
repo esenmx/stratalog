@@ -27,10 +27,7 @@ void main() {
       'run',
       'test/release_branch_probe.dart',
     ]);
-    check(
-      because: 'probe stderr: ${result.stderr}',
-      result.exitCode,
-    ).equals(0);
+    check(because: 'probe stderr: ${result.stderr}', result.exitCode).equals(0);
     final out = result.stdout as String;
     check(out).contains('writerType=PrintConsoleWriter');
     check(out).contains('outputIsCorePrint=false');
@@ -59,47 +56,44 @@ void main() {
     ).isGreaterThan(androidPrintChunkLength);
   });
 
-  test(
-    'release JSON record over Android chunk budget stays one atomic '
-    'parseable line',
-    () {
-      // Exactly what the release branch of configureLogging() builds —
-      // JsonLogFormatter wrapped in the default ElidingFormatter, chunking
-      // forced off — with the sink captured instead of stdout.
-      final emitted = <String>[];
-      final writer = PrintConsoleWriter(
-        formatter: ElidingFormatter.of(
-          const JsonLogFormatter(),
-          const ElisionConfig(),
-        ),
-        output: emitted.add,
-        maxChunkLength: 1 << 30,
-      );
-      final logger = ChirpLogger()..addWriter(writer);
+  test('release JSON record over Android chunk budget stays one atomic '
+      'parseable line', () {
+    // Exactly what the release branch of configureLogging() builds —
+    // JsonLogFormatter wrapped in the default ElidingFormatter, chunking
+    // forced off — with the sink captured instead of stdout.
+    final emitted = <String>[];
+    final writer = PrintConsoleWriter(
+      formatter: ElidingFormatter.of(
+        const JsonLogFormatter(),
+        const ElisionConfig(),
+      ),
+      output: emitted.add,
+      maxChunkLength: 1 << 30,
+    );
+    final logger = ChirpLogger()..addWriter(writer);
 
-      // Routine network-response record: ~850-char body string — UNDER the
-      // default ElisionConfig.maxStringChars budget of 1024, so elision
-      // passes it verbatim; the full JSON line is over the 924-char Android
-      // print chunk.
-      final body =
-          '{${List.generate(40, (i) => '"f$i":"${'v' * 12}"').join(',')}}';
-      logger.info(
-        'response',
-        data: {'status': 200, 'url': '/api/v1/orders', 'body': body},
-      );
+    // Routine network-response record: ~850-char body string — UNDER the
+    // default ElisionConfig.maxStringChars budget of 1024, so elision
+    // passes it verbatim; the full JSON line is over the 924-char Android
+    // print chunk.
+    final body =
+        '{${List.generate(40, (i) => '"f$i":"${'v' * 12}"').join(',')}}';
+    logger.info(
+      'response',
+      data: {'status': 200, 'url': '/api/v1/orders', 'body': body},
+    );
 
-      check(
-        because: 'record must exceed one Android print chunk',
-        emitted.join().length,
-      ).isGreaterThan(androidPrintChunkLength);
-      check(
-        because: 'one log record must be one atomic sink call',
-        emitted.length,
-      ).equals(1);
-      check(
-        because: 'the emitted line must parse as JSON',
-        () => jsonDecode(emitted.single),
-      ).returnsNormally();
-    },
-  );
+    check(
+      because: 'record must exceed one Android print chunk',
+      emitted.join().length,
+    ).isGreaterThan(androidPrintChunkLength);
+    check(
+      because: 'one log record must be one atomic sink call',
+      emitted.length,
+    ).equals(1);
+    check(
+      because: 'the emitted line must parse as JSON',
+      () => jsonDecode(emitted.single),
+    ).returnsNormally();
+  });
 }

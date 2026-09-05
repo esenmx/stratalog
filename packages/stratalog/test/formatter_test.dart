@@ -16,9 +16,7 @@ List<String> render(
   final root = ChirpLogger().addConsoleWriter(
     formatter: formatter ?? StructuredLogFormatter(),
     output: lines.add,
-    capabilities: const TerminalCapabilities(
-      colorSupport: .ansi256,
-    ),
+    capabilities: const TerminalCapabilities(colorSupport: .ansi256),
   );
   Chirp.root = root;
   log(layer);
@@ -56,10 +54,9 @@ void main() {
 
     final body = lines.skip(1).where((l) => l.isNotEmpty);
     for (final line in body) {
-      check(line).anyOf([
-        (it) => it.startsWith(' ├─ '),
-        (it) => it.startsWith(' │  '),
-      ]);
+      check(
+        line,
+      ).anyOf([(it) => it.startsWith(' ├─ '), (it) => it.startsWith(' │  ')]);
     }
     check(lines.last.trim()).isNotEmpty(); // no dangling border line
     check(out).contains('Data: ');
@@ -78,9 +75,8 @@ void main() {
     // chirp's writer dispatch loop has no try/catch around a sink — this
     // must render, not throw, or every writer queued after this one is
     // skipped for the record.
-    check(
-      () => render((l) => l.info('x', data: {'obj': _ThrowsOnToString()})),
-    ).returnsNormally();
+    check(() => render((l) => l.info('x', data: {'obj': _ThrowsOnToString()})))
+        .returnsNormally();
   });
 
   test('a payload whose toString throws renders an unencodable marker', () {
@@ -93,9 +89,7 @@ void main() {
   test('a cyclic data map never crashes the format call', () {
     final cyclic = <String, Object?>{};
     cyclic['self'] = cyclic;
-    check(
-      () => render((l) => l.info('x', data: cyclic)),
-    ).returnsNormally();
+    check(() => render((l) => l.info('x', data: cyclic))).returnsNormally();
   });
 
   test('showTimestamp/showLocation strip header segments and caller cost', () {
@@ -144,9 +138,8 @@ WHERE id = ?''',
     check(lines[2]).equals('WHERE id = ?'); // continuation at column 0
     check(lines.singleWhere((l) => l.contains('Data ▼'))).equals('Data ▼');
     check(lines.singleWhere((l) => l.contains('Error:'))).startsWith('Error:');
-    check(
-      lines.singleWhere((l) => l.contains('Stack Trace:')),
-    ).startsWith('Stack Trace:');
+    check(lines.singleWhere((l) => l.contains('Stack Trace:')))
+        .startsWith('Stack Trace:');
   });
 
   test('raw layer renders the Data block flush-left as valid JSON', () {
@@ -171,12 +164,12 @@ WHERE id = ?''',
     // Flush-left: braces at column 0, inner indentation is JSON's own.
     check(jsonLines.first).equals('{');
     check(jsonLines.last).equals('}');
-    check(
-      jsonDecode(jsonLines.join('\n')),
-    ).isA<Map<String, Object?>>().deepEquals({
-      'status': 200,
-      'body': {'id': 42, 'name': 'Jane'},
-    });
+    check(jsonDecode(jsonLines.join('\n')))
+        .isA<Map<String, Object?>>()
+        .deepEquals({
+          'status': 200,
+          'body': {'id': 42, 'name': 'Jane'},
+        });
   });
 
   test('rawDataLayers: const {} restores the gutter for Network', () {
@@ -189,10 +182,9 @@ WHERE id = ?''',
 
     check(out).contains('Data: ');
     for (final line in out.split('\n').skip(1).where((l) => l.isNotEmpty)) {
-      check(line).anyOf([
-        (it) => it.startsWith(' ├─ '),
-        (it) => it.startsWith(' │  '),
-      ]);
+      check(
+        line,
+      ).anyOf([(it) => it.startsWith(' ├─ '), (it) => it.startsWith(' │  ')]);
     }
   });
 
@@ -206,9 +198,8 @@ WHERE id = ?''',
   });
 
   test('defaultRawDataLayers covers Network and Storage', () {
-    check(
-      StructuredLogFormatter.defaultRawDataLayers,
-    ).unorderedEquals({'Network', 'Storage'});
+    check(StructuredLogFormatter.defaultRawDataLayers)
+        .unorderedEquals({'Network', 'Storage'});
   });
 
   test('custom domain colors overlay, palette fills the rest', () {
