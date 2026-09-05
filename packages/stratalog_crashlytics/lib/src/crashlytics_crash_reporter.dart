@@ -12,12 +12,12 @@ import 'package:stratalog/stratalog.dart';
 /// build where Firebase never comes up (e.g. a secretless checkout without
 /// config files), `.instance` throws and `CrashReporterWriter`'s catch-all
 /// drops the forward instead of crashing the app.
-final class CrashlyticsCrashReporter implements CrashReporter {
+final class const CrashlyticsCrashReporter([
+  final FirebaseCrashlytics? _crashlytics,
+]) implements CrashReporter {
   /// The optional constructor argument is injectable for tests; defaults to
   /// `FirebaseCrashlytics.instance` resolved lazily.
-  const CrashlyticsCrashReporter([this._crashlytics]);
-
-  final FirebaseCrashlytics? _crashlytics;
+  this;
 
   FirebaseCrashlytics get _instance => _crashlytics ?? .instance;
 

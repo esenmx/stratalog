@@ -46,20 +46,17 @@ String _haystack(LogRecord r) {
 /// Navigator.push(context,
 ///     MaterialPageRoute(builder: (_) => LogViewerPage(writer: memoryWriter)));
 /// ```
-class LogViewerPage extends StatefulWidget {
-  /// Browses [writer]'s buffer; updates live as records arrive.
-  const LogViewerPage({
-    required this.writer,
-    this.keepKeys = defaultKeepKeys,
-    super.key,
-  });
-
+class const LogViewerPage({
   /// The buffer to browse.
-  final MemoryLogWriter writer;
+  required final MemoryLogWriter writer,
 
   /// Keys previewed on collapsed tiles. Defaults to [defaultKeepKeys]; pass
   /// your [ElisionConfig.keepKeys] so the scan line matches console elision.
-  final Set<String> keepKeys;
+  final Set<String> keepKeys = defaultKeepKeys,
+  super.key,
+}) extends StatefulWidget {
+  /// Browses [writer]'s buffer; updates live as records arrive.
+  this;
 
   @override
   State<LogViewerPage> createState() => _LogViewerPageState();
@@ -239,25 +236,16 @@ Color _onBadge(Color background) {
   return luma > 140 ? Colors.black : Colors.white;
 }
 
-class _RecordTile extends StatelessWidget {
-  const _RecordTile({
-    required this.record,
-    required this.keepKeys,
-    required this.onCopy,
-    required this.query,
-    required this.expandAll,
-    required this.onCopyJson,
-  });
-
-  final LogRecord record;
-  final Set<String> keepKeys;
-  final VoidCallback onCopy;
-  final VoidCallback onCopyJson;
+class const _RecordTile({
+  required final LogRecord record,
+  required final Set<String> keepKeys,
+  required final VoidCallback onCopy,
 
   /// Active search query, lowercased; empty when idle.
-  final String query;
-  final bool expandAll;
-
+  required final String query,
+  required final bool expandAll,
+  required final VoidCallback onCopyJson,
+}) extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final name = _layerName(record);
@@ -396,14 +384,12 @@ class _RecordTile extends StatelessWidget {
   static const _maxHitChars = 32;
 }
 
-class _MonoBlock extends StatelessWidget {
-  const _MonoBlock(this.text, {this.query = ''});
-
-  final String text;
+class const _MonoBlock(
+  final String text, {
 
   /// Lowercased search query; hits get a highlight when non-empty.
-  final String query;
-
+  final String query = '',
+}) extends StatelessWidget {
   static const _style = TextStyle(fontFamily: 'monospace', fontSize: 12);
 
   @override

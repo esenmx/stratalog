@@ -54,9 +54,8 @@ void main() {
       ..error('boom', error: Exception('x'))
       ..wtf('fatal boom', error: Exception('y'));
 
-    check(
-      reporter.breadcrumbs.map((b) => b.$1),
-    ).deepEquals(['[Auth/info] breadcrumb me']);
+    check(reporter.breadcrumbs.map((b) => b.$1))
+        .deepEquals(['[Auth/info] breadcrumb me']);
     check(reporter.errors).length.equals(2);
     check(reporter.errors[0].$2).equals('[Auth] boom');
     check(reporter.errors[0].$3).isFalse();
@@ -72,9 +71,9 @@ void main() {
       )
       ..info('bare');
 
-    check(
-      reporter.breadcrumbs[0].$2,
-    ).isNotNull().deepEquals({'duration_ms': 12, 'error_code': 'geo.404'});
+    check(reporter.breadcrumbs[0].$2)
+        .isNotNull()
+        .deepEquals({'duration_ms': 12, 'error_code': 'geo.404'});
     check(reporter.breadcrumbs[1].$2).isNull();
   });
 

@@ -21,12 +21,12 @@ import 'package:stratalog/stratalog.dart';
 /// configureLogging(writers: [memoryWriter]);
 /// // later: LogViewerPage(writer: memoryWriter)
 /// ```
-final class MemoryLogWriter extends ChirpWriter with ChangeNotifier {
-  /// Keeps the newest [capacity] records.
-  MemoryLogWriter({this.capacity = 1000});
-
+final class MemoryLogWriter({
   /// Ring-buffer size; the oldest record is evicted beyond it.
-  final int capacity;
+  final int capacity = 1000,
+}) extends ChirpWriter with ChangeNotifier {
+  /// Keeps the newest [capacity] records.
+  this;
 
   final ListQueue<LogRecord> _records = ListQueue();
   bool _notifyScheduled = false;

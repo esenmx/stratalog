@@ -56,30 +56,22 @@ void main() {
     check(record.data['total']).equals(42);
     check(record.loggerName).equals('Analytics');
     verify(
-      firebase.logEvent(
-        name: 'checkout_started',
-        parameters: {'total': 42},
-      ),
+      firebase.logEvent(name: 'checkout_started', parameters: {'total': 42}),
     ).called(1);
   });
 
   test('logScreenView mirrors the screen name', () async {
     await analytics.logScreenView(screenName: 'Home');
     check('${writer.records.single.message}').equals('screen: Home');
-    verify(
-      firebase.logScreenView(
-        screenName: 'Home',
-      ),
-    ).called(1);
+    verify(firebase.logScreenView(screenName: 'Home')).called(1);
   });
 
   test('setUserId logs presence only, never the id value', () async {
     await analytics.setUserId('user-secret-42');
 
     check('${writer.records.single.message}').equals('user id set');
-    check(
-      '${writer.records.single.data}',
-    ).not((it) => it.contains('user-secret-42'));
+    check('${writer.records.single.data}')
+        .not((it) => it.contains('user-secret-42'));
     verify(firebase.setUserId(id: 'user-secret-42')).called(1);
   });
 }

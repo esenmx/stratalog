@@ -15,7 +15,7 @@ import 'package:stratalog/stratalog.dart';
 /// no-ops — safe in any order.
 final class SentryCrashReporter implements CrashReporter {
   /// Const: all state lives in Sentry's hub.
-  const SentryCrashReporter();
+  const new();
 
   @override
   void recordError(

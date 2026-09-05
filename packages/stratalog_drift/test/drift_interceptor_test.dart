@@ -13,9 +13,7 @@ final class _CapturingWriter extends ChirpWriter {
 }
 
 /// Minimal schema-less database — raw SQL only, no codegen.
-final class _Db extends GeneratedDatabase {
-  _Db(super.executor);
-
+final class _Db(super.executor) extends GeneratedDatabase {
   @override
   Iterable<TableInfo<Table, dynamic>> get allTables => const [];
 
@@ -30,9 +28,7 @@ void main() {
   setUp(() {
     writer = _CapturingWriter();
     Chirp.root = ChirpLogger().addWriter(writer);
-    db = _Db(
-      NativeDatabase.memory().interceptWith(LoggerQueryInterceptor()),
-    );
+    db = _Db(NativeDatabase.memory().interceptWith(LoggerQueryInterceptor()));
   });
 
   tearDown(() async {
@@ -66,9 +62,8 @@ void main() {
   });
 
   test('failures log the statement at warning and rethrow', () async {
-    await check(
-      db.customStatement('SELECT * FROM missing_table'),
-    ).throws<Object>();
+    await check(db.customStatement('SELECT * FROM missing_table'))
+        .throws<Object>();
 
     final failure = writer.records.firstWhere(
       (r) => '${r.message}'.startsWith('✗'),
@@ -90,9 +85,8 @@ void main() {
       variables: [.withString('hunter2')],
     );
 
-    check(
-      '${writer.records.map((r) => r.data).toList()}',
-    ).not((it) => it.contains('hunter2'));
+    check('${writer.records.map((r) => r.data).toList()}')
+        .not((it) => it.contains('hunter2'));
   });
 
   test('long statements log in full by default', () async {

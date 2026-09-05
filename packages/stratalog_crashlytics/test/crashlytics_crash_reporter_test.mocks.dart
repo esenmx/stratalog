@@ -36,25 +36,21 @@ class _FakeFirebaseApp_0 extends _i1.SmartFake implements _i2.FirebaseApp {
 class MockFirebaseCrashlytics extends _i1.Mock
     implements _i3.FirebaseCrashlytics {
   @override
-  _i2.FirebaseApp get app =>
-      (super.noSuchMethod(
-            Invocation.getter(#app),
-            returnValue: _FakeFirebaseApp_0(this, Invocation.getter(#app)),
-            returnValueForMissingStub: _FakeFirebaseApp_0(
-              this,
-              Invocation.getter(#app),
-            ),
-          )
-          as _i2.FirebaseApp);
+  _i2.FirebaseApp get app => (super.noSuchMethod(
+    Invocation.getter(#app),
+    returnValue: _FakeFirebaseApp_0(this, Invocation.getter(#app)),
+    returnValueForMissingStub: _FakeFirebaseApp_0(
+      this,
+      Invocation.getter(#app),
+    ),
+  ) as _i2.FirebaseApp);
 
   @override
-  bool get isCrashlyticsCollectionEnabled =>
-      (super.noSuchMethod(
-            Invocation.getter(#isCrashlyticsCollectionEnabled),
-            returnValue: false,
-            returnValueForMissingStub: false,
-          )
-          as bool);
+  bool get isCrashlyticsCollectionEnabled => (super.noSuchMethod(
+    Invocation.getter(#isCrashlyticsCollectionEnabled),
+    returnValue: false,
+    returnValueForMissingStub: false,
+  ) as bool);
 
   @override
   set app(_i2.FirebaseApp? value) => super.noSuchMethod(
@@ -63,22 +59,18 @@ class MockFirebaseCrashlytics extends _i1.Mock
   );
 
   @override
-  Map<dynamic, dynamic> get pluginConstants =>
-      (super.noSuchMethod(
-            Invocation.getter(#pluginConstants),
-            returnValue: <dynamic, dynamic>{},
-            returnValueForMissingStub: <dynamic, dynamic>{},
-          )
-          as Map<dynamic, dynamic>);
+  Map<dynamic, dynamic> get pluginConstants => (super.noSuchMethod(
+    Invocation.getter(#pluginConstants),
+    returnValue: <dynamic, dynamic>{},
+    returnValueForMissingStub: <dynamic, dynamic>{},
+  ) as Map<dynamic, dynamic>);
 
   @override
-  _i4.Future<bool> checkForUnsentReports() =>
-      (super.noSuchMethod(
-            Invocation.method(#checkForUnsentReports, []),
-            returnValue: _i4.Future<bool>.value(false),
-            returnValueForMissingStub: _i4.Future<bool>.value(false),
-          )
-          as _i4.Future<bool>);
+  _i4.Future<bool> checkForUnsentReports() => (super.noSuchMethod(
+    Invocation.method(#checkForUnsentReports, []),
+    returnValue: _i4.Future<bool>.value(false),
+    returnValueForMissingStub: _i4.Future<bool>.value(false),
+  ) as _i4.Future<bool>);
 
   @override
   void crash() => super.noSuchMethod(
@@ -87,22 +79,18 @@ class MockFirebaseCrashlytics extends _i1.Mock
   );
 
   @override
-  _i4.Future<void> deleteUnsentReports() =>
-      (super.noSuchMethod(
-            Invocation.method(#deleteUnsentReports, []),
-            returnValue: _i4.Future<void>.value(),
-            returnValueForMissingStub: _i4.Future<void>.value(),
-          )
-          as _i4.Future<void>);
+  _i4.Future<void> deleteUnsentReports() => (super.noSuchMethod(
+    Invocation.method(#deleteUnsentReports, []),
+    returnValue: _i4.Future<void>.value(),
+    returnValueForMissingStub: _i4.Future<void>.value(),
+  ) as _i4.Future<void>);
 
   @override
-  _i4.Future<bool> didCrashOnPreviousExecution() =>
-      (super.noSuchMethod(
-            Invocation.method(#didCrashOnPreviousExecution, []),
-            returnValue: _i4.Future<bool>.value(false),
-            returnValueForMissingStub: _i4.Future<bool>.value(false),
-          )
-          as _i4.Future<bool>);
+  _i4.Future<bool> didCrashOnPreviousExecution() => (super.noSuchMethod(
+    Invocation.method(#didCrashOnPreviousExecution, []),
+    returnValue: _i4.Future<bool>.value(false),
+    returnValueForMissingStub: _i4.Future<bool>.value(false),
+  ) as _i4.Future<bool>);
 
   @override
   _i4.Future<void> recordError(
@@ -112,92 +100,78 @@ class MockFirebaseCrashlytics extends _i1.Mock
     Iterable<Object>? information = const [],
     bool? printDetails,
     bool? fatal = false,
-  }) =>
-      (super.noSuchMethod(
-            Invocation.method(
-              #recordError,
-              [exception, stack],
-              {
-                #reason: reason,
-                #information: information,
-                #printDetails: printDetails,
-                #fatal: fatal,
-              },
-            ),
-            returnValue: _i4.Future<void>.value(),
-            returnValueForMissingStub: _i4.Future<void>.value(),
-          )
-          as _i4.Future<void>);
+  }) => (super.noSuchMethod(
+    Invocation.method(
+      #recordError,
+      [exception, stack],
+      {
+        #reason: reason,
+        #information: information,
+        #printDetails: printDetails,
+        #fatal: fatal,
+      },
+    ),
+    returnValue: _i4.Future<void>.value(),
+    returnValueForMissingStub: _i4.Future<void>.value(),
+  ) as _i4.Future<void>);
 
   @override
   _i4.Future<void> recordFlutterError(
     _i5.FlutterErrorDetails? flutterErrorDetails, {
     bool? fatal = false,
-  }) =>
-      (super.noSuchMethod(
-            Invocation.method(
-              #recordFlutterError,
-              [flutterErrorDetails],
-              {#fatal: fatal},
-            ),
-            returnValue: _i4.Future<void>.value(),
-            returnValueForMissingStub: _i4.Future<void>.value(),
-          )
-          as _i4.Future<void>);
+  }) => (super.noSuchMethod(
+    Invocation.method(
+      #recordFlutterError,
+      [flutterErrorDetails],
+      {#fatal: fatal},
+    ),
+    returnValue: _i4.Future<void>.value(),
+    returnValueForMissingStub: _i4.Future<void>.value(),
+  ) as _i4.Future<void>);
 
   @override
   _i4.Future<void> recordFlutterFatalError(
     _i5.FlutterErrorDetails? flutterErrorDetails,
-  ) =>
-      (super.noSuchMethod(
-            Invocation.method(#recordFlutterFatalError, [flutterErrorDetails]),
-            returnValue: _i4.Future<void>.value(),
-            returnValueForMissingStub: _i4.Future<void>.value(),
-          )
-          as _i4.Future<void>);
+  ) => (super.noSuchMethod(
+    Invocation.method(#recordFlutterFatalError, [flutterErrorDetails]),
+    returnValue: _i4.Future<void>.value(),
+    returnValueForMissingStub: _i4.Future<void>.value(),
+  ) as _i4.Future<void>);
 
   @override
-  _i4.Future<void> log(String? message) =>
-      (super.noSuchMethod(
-            Invocation.method(#log, [message]),
-            returnValue: _i4.Future<void>.value(),
-            returnValueForMissingStub: _i4.Future<void>.value(),
-          )
-          as _i4.Future<void>);
+  _i4.Future<void> log(String? message) => (super.noSuchMethod(
+    Invocation.method(#log, [message]),
+    returnValue: _i4.Future<void>.value(),
+    returnValueForMissingStub: _i4.Future<void>.value(),
+  ) as _i4.Future<void>);
 
   @override
-  _i4.Future<void> sendUnsentReports() =>
-      (super.noSuchMethod(
-            Invocation.method(#sendUnsentReports, []),
-            returnValue: _i4.Future<void>.value(),
-            returnValueForMissingStub: _i4.Future<void>.value(),
-          )
-          as _i4.Future<void>);
+  _i4.Future<void> sendUnsentReports() => (super.noSuchMethod(
+    Invocation.method(#sendUnsentReports, []),
+    returnValue: _i4.Future<void>.value(),
+    returnValueForMissingStub: _i4.Future<void>.value(),
+  ) as _i4.Future<void>);
 
   @override
   _i4.Future<void> setCrashlyticsCollectionEnabled(bool? enabled) =>
       (super.noSuchMethod(
-            Invocation.method(#setCrashlyticsCollectionEnabled, [enabled]),
-            returnValue: _i4.Future<void>.value(),
-            returnValueForMissingStub: _i4.Future<void>.value(),
-          )
-          as _i4.Future<void>);
+        Invocation.method(#setCrashlyticsCollectionEnabled, [enabled]),
+        returnValue: _i4.Future<void>.value(),
+        returnValueForMissingStub: _i4.Future<void>.value(),
+      ) as _i4.Future<void>);
 
   @override
-  _i4.Future<void> setUserIdentifier(String? identifier) =>
-      (super.noSuchMethod(
-            Invocation.method(#setUserIdentifier, [identifier]),
-            returnValue: _i4.Future<void>.value(),
-            returnValueForMissingStub: _i4.Future<void>.value(),
-          )
-          as _i4.Future<void>);
+  _i4.Future<void> setUserIdentifier(String? identifier) => (super.noSuchMethod(
+    Invocation.method(#setUserIdentifier, [identifier]),
+    returnValue: _i4.Future<void>.value(),
+    returnValueForMissingStub: _i4.Future<void>.value(),
+  ) as _i4.Future<void>);
 
   @override
   _i4.Future<void> setCustomKey(String? key, Object? value) =>
       (super.noSuchMethod(
-            Invocation.method(#setCustomKey, [key, value]),
-            returnValue: _i4.Future<void>.value(),
-            returnValueForMissingStub: _i4.Future<void>.value(),
-          )
-          as _i4.Future<void>);
+        Invocation.method(#setCustomKey, [key, value]),
+        returnValue: _i4.Future<void>.value(),
+        returnValueForMissingStub: _i4.Future<void>.value(),
+      ) as _i4.Future<void>);
 }

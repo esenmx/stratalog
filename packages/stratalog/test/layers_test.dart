@@ -42,9 +42,8 @@ void main() {
     LogLayer.storage.info('x');
     const LogLayer('Payments').info('y');
 
-    check(
-      writer.records.map((r) => r.loggerName),
-    ).deepEquals(['Storage', 'Payments']);
+    check(writer.records.map((r) => r.loggerName))
+        .deepEquals(['Storage', 'Payments']);
   });
 
   test(

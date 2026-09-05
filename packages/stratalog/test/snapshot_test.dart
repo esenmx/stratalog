@@ -14,9 +14,9 @@ void main() {
       nested['attempt'] = 2;
       data['stats'] = 'replaced';
 
-      check(
-        out['stats'],
-      ).isA<Map<Object?, Object?>>().deepEquals({'attempt': 1});
+      check(out['stats'])
+          .isA<Map<Object?, Object?>>()
+          .deepEquals({'attempt': 1});
     });
 
     test('deep-copies nested lists, not just the top-level map', () {
@@ -51,9 +51,9 @@ void main() {
         final shared = <String, Object?>{'id': 7};
         final out = snapshotData({'request': shared, 'mirror': shared});
 
-        check(
-          out['request'],
-        ).isA<Map<Object?, Object?>>().deepEquals({'id': 7});
+        check(out['request'])
+            .isA<Map<Object?, Object?>>()
+            .deepEquals({'id': 7});
         check(out['mirror']).isA<Map<Object?, Object?>>().deepEquals({'id': 7});
       },
     );

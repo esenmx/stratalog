@@ -77,16 +77,14 @@ void main() {
     });
 
     test('elides a base64/binary blob to a size summary', () {
-      check(
-        _elideMap({'avatar': 'A' * 600})['avatar'],
-      ).equals('<600-char blob elided>');
+      check(_elideMap({'avatar': 'A' * 600})['avatar'])
+          .equals('<600-char blob elided>');
     });
 
     test('elides a data URI', () {
       final uri = 'data:image/png;base64,${'Z' * 80}';
-      check(
-        _elideMap({'img': uri})['img'],
-      ).equals('<${uri.length}-char blob elided>');
+      check(_elideMap({'img': uri})['img'])
+          .equals('<${uri.length}-char blob elided>');
     });
 
     test('truncates a long list with a remainder marker', () {
@@ -151,12 +149,12 @@ void main() {
         'second': shared,
       }, maxStringChars: 8);
       final elided = '${'x' * 8}…(+92 chars)';
-      check(
-        out['first'],
-      ).isA<Map<Object?, Object?>>().deepEquals({'note': elided});
-      check(
-        out['second'],
-      ).isA<Map<Object?, Object?>>().deepEquals({'note': elided});
+      check(out['first'])
+          .isA<Map<Object?, Object?>>()
+          .deepEquals({'note': elided});
+      check(out['second'])
+          .isA<Map<Object?, Object?>>()
+          .deepEquals({'note': elided});
     });
   });
 
@@ -174,12 +172,12 @@ void main() {
         '<cycle>', () {
       final shared = <String, Object?>{'status': 200};
       final out = elideData({'request': shared, 'mirror': shared});
-      check(
-        out['request'],
-      ).isA<Map<Object?, Object?>>().deepEquals({'status': 200});
-      check(
-        out['mirror'],
-      ).isA<Map<Object?, Object?>>().deepEquals({'status': 200});
+      check(out['request'])
+          .isA<Map<Object?, Object?>>()
+          .deepEquals({'status': 200});
+      check(out['mirror'])
+          .isA<Map<Object?, Object?>>()
+          .deepEquals({'status': 200});
     });
   });
 
@@ -289,9 +287,7 @@ void main() {
         MessageBuffer.file(),
       );
       check(inner.seen!.data['id']).equals(id);
-      check(
-        inner.seen!.data['note'],
-      ).equals('${'x' * 200}…(+300 chars)');
+      check(inner.seen!.data['note']).equals('${'x' * 200}…(+300 chars)');
     });
 
     test('an unlisted layer uses the instance budget', () {
@@ -333,10 +329,7 @@ void main() {
         inner,
         maxStringChars: 8,
         layerElision: const {'Auth': ElisionConfig(maxStringChars: 16)},
-      ).format(
-        layerRecord('Auth', {'note': 'x' * 100}),
-        MessageBuffer.file(),
-      );
+      ).format(layerRecord('Auth', {'note': 'x' * 100}), MessageBuffer.file());
       check(inner.seen!.data['note']).equals('${'x' * 16}…(+84 chars)');
     });
   });

@@ -23,16 +23,16 @@ import 'package:chirp/chirp.dart';
 /// access, so replacing the root (tests, reconfiguration) never strands a
 /// layer — unlike a `static final` child, which binds to whichever root
 /// existed at first touch.
-final class LogLayer {
-  /// Declares the layer named [name]; [color] paints its badge and gutter.
-  const LogLayer(this.name, {this.color});
-
+final class const LogLayer(
   /// Badge text and `LogRecord.loggerName` for records logged through this
   /// layer.
-  final String name;
+  final String name, {
 
   /// Badge/gutter color; `null` falls back to `LogPalette.colorFor(name)`.
-  final ConsoleColor? color;
+  final ConsoleColor? color,
+}) {
+  /// Declares the layer named [name]; [color] paints its badge and gutter.
+  this;
 
   /// App startup, config, DI wiring, business logic; the fallback layer.
   static const app = LogLayer('App');

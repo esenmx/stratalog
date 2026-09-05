@@ -36,38 +36,32 @@ const bool _namesStripped =
 /// and metadata — never message bodies. Trace records still reach any writer
 /// whose min level admits them; gate release sinks via
 /// `configureLogging(minLevel:)` when trace volume is unwanted.
-final class LoggerGrpcInterceptor extends ClientInterceptor {
-  /// Logs calls to [logger], typically `LogLayer.network`.
-  LoggerGrpcInterceptor({
-    this.logger = .network,
-    this.sensitiveMetadata = defaultSensitiveMetadata,
-    this.maskSensitiveValues = true,
-    this.logBodies = !_kProduct,
-    this.errorCodeTrailer = 'error-code',
-  });
-
+final class LoggerGrpcInterceptor({
   /// Destination layer.
-  final LogLayer logger;
+  final LogLayer logger = .network,
+
+  /// Metadata keys affected by [maskSensitiveValues]; when masked they are
+  /// logged presence-only as '***'.
+  final Set<String> sensitiveMetadata = defaultSensitiveMetadata,
 
   /// Whether to redact [sensitiveMetadata] values. Defaults to `true` — a
   /// bearer token or cookie must never land verbatim in a sink, even the
   /// debug console. Pass `false` to show them for local debugging.
-  final bool maskSensitiveValues;
-
-  /// Metadata keys affected by [maskSensitiveValues]; when masked they are
-  /// logged presence-only as '***'.
-  final Set<String> sensitiveMetadata;
+  final bool maskSensitiveValues = true,
 
   /// Whether request/response bodies land in trace records. Defaults to on
   /// in debug/profile and OFF in product builds: bodies push user payloads
   /// into release sinks (crash breadcrumbs stay at method/status/code
   /// shape). Opting in on a build compiled with the `protobuf.omit_*_names`
   /// defines emits the tag-keyed [protoLogShape] map instead of proto3 JSON.
-  final bool logBodies;
+  final bool logBodies = !_kProduct,
 
   /// Trailer key whose value is logged as `error_code` on failures — an
   /// app-level error code that survives protobuf name stripping.
-  final String errorCodeTrailer;
+  final String errorCodeTrailer = 'error-code',
+}) extends ClientInterceptor {
+  /// Logs calls to [logger], typically `LogLayer.network`.
+  this;
 
   /// Default for [sensitiveMetadata].
   static const Set<String> defaultSensitiveMetadata = {
@@ -231,35 +225,27 @@ Object? protoLogShape(
 // event delivery semantics of the inner stream; [single] (the seam generated
 // client-streaming stubs consume) bypasses the transformer, so it side-listens
 // on the future instead.
-final class _TerminalObservingStream<R> extends StreamView<R>
-    implements ResponseStream<R> {
-  _TerminalObservingStream(
-    this._inner, {
-    required void Function() onDone,
-    required void Function(Object error, StackTrace stackTrace) onFailure,
-    required void Function() onCancel,
-  }) : _onDone = onDone,
-       _onFailure = onFailure,
-       _onCancel = onCancel,
-       super(
-         _inner.transform(
-           StreamTransformer<R, R>.fromHandlers(
-             handleError: (error, stackTrace, sink) {
-               onFailure(error, stackTrace);
-               sink.addError(error, stackTrace);
-             },
-             handleDone: (sink) {
-               onDone();
-               sink.close();
-             },
-           ),
-         ),
-       );
-
-  final ResponseStream<R> _inner;
-  final void Function() _onDone;
-  final void Function(Object error, StackTrace stackTrace) _onFailure;
-  final void Function() _onCancel;
+final class _TerminalObservingStream<R>(
+  final ResponseStream<R> _inner, {
+  required final void Function() _onDone,
+  required final void Function(Object error, StackTrace stackTrace) _onFailure,
+  required final void Function() _onCancel,
+}) extends StreamView<R> implements ResponseStream<R> {
+  this
+    : super(
+        _inner.transform(
+          StreamTransformer<R, R>.fromHandlers(
+            handleError: (error, stackTrace, sink) {
+              _onFailure(error, stackTrace);
+              sink.addError(error, stackTrace);
+            },
+            handleDone: (sink) {
+              _onDone();
+              sink.close();
+            },
+          ),
+        ),
+      );
 
   @override
   StreamSubscription<R> listen(
@@ -297,12 +283,10 @@ final class _TerminalObservingStream<R> extends StreamView<R>
   }
 }
 
-final class _CancelObservingSubscription<R> implements StreamSubscription<R> {
-  _CancelObservingSubscription(this._inner, this._onCancel);
-
-  final StreamSubscription<R> _inner;
-  final void Function() _onCancel;
-
+final class _CancelObservingSubscription<R>(
+  final StreamSubscription<R> _inner,
+  final void Function() _onCancel,
+) implements StreamSubscription<R> {
   @override
   Future<void> cancel() {
     _onCancel();

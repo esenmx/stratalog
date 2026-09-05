@@ -6,17 +6,17 @@ import 'package:stratalog/stratalog.dart';
 /// ```dart
 /// Bloc.observer = const BlocLogger();
 /// ```
-final class BlocLogger extends BlocObserver {
-  /// Logs observer events to [logger], typically `LogLayer.state`.
-  const BlocLogger({this.logger = .state, this.maxValueLength = 800});
-
+final class const BlocLogger({
   /// Destination layer.
-  final LogLayer logger;
+  final LogLayer logger = .state,
 
   /// State/event `toString()`s beyond this length are ellipsized — a fat
   /// entity list rebuilding every frame must not drown the console. Set
   /// `null` to disable.
-  final int? maxValueLength;
+  final int? maxValueLength = 800,
+}) extends BlocObserver {
+  /// Logs observer events to [logger], typically `LogLayer.state`.
+  this;
 
   @override
   void onCreate(BlocBase<dynamic> bloc) {

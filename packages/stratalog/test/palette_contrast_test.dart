@@ -64,10 +64,7 @@ void main() {
       LogPalette.warning,
       LogPalette.errorBody,
     };
-    final layerColors = [
-      ...LogPalette.domains.values,
-      ...LogPalette.hashPool,
-    ];
+    final layerColors = [...LogPalette.domains.values, ...LogPalette.hashPool];
     for (final color in layerColors) {
       expect(severity, isNot(contains(color)));
     }

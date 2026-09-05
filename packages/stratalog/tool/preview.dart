@@ -11,9 +11,7 @@ void main() {
   Chirp.root = ChirpLogger().addConsoleWriter(
     formatter: StructuredLogFormatter(),
     output: print,
-    capabilities: const TerminalCapabilities(
-      colorSupport: .ansi256,
-    ),
+    capabilities: const TerminalCapabilities(colorSupport: .ansi256),
   );
 
   LogLayer.app.info('Startup complete', data: {'flavor': 'dev', 'ms': 412});

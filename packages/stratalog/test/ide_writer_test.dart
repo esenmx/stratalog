@@ -4,7 +4,7 @@ import 'package:stratalog/stratalog.dart';
 import 'package:test/test.dart';
 
 final class _MessageFormatter extends ChirpFormatter {
-  const _MessageFormatter();
+  const new();
 
   @override
   void format(LogRecord record, MessageBuffer buffer) =>

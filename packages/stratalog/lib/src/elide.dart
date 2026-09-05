@@ -176,7 +176,7 @@ const int _defaultMaxArrayItems = 32;
 /// Elision budget shared by [ElidingFormatter] and `configureLogging`.
 final class ElisionConfig {
   /// A budget; see [ElidingFormatter] for what each field caps.
-  const ElisionConfig({
+  const new({
     this.maxStringChars = _defaultMaxStringChars,
     this.maxArrayItems = _defaultMaxArrayItems,
     this.keepKeys = defaultKeepKeys,
@@ -184,7 +184,7 @@ final class ElisionConfig {
 
   // Budget fields are never read when disabled — format() short-circuits on
   // `enabled` before touching them.
-  const ElisionConfig._disabled()
+  const new _disabled()
     : enabled = false,
       maxStringChars = _defaultMaxStringChars,
       maxArrayItems = _defaultMaxArrayItems,
@@ -237,7 +237,7 @@ const Map<String, ElisionConfig> defaultLayerElision = {
 /// stays lean — two-tier logging without the producer choosing for everyone.
 final class ElidingFormatter extends ChirpFormatter {
   /// Elides `record.data` for [inner] using the given budget.
-  ElidingFormatter(
+  new(
     this.inner, {
     this.maxStringChars = _defaultMaxStringChars,
     this.maxArrayItems = _defaultMaxArrayItems,
@@ -248,14 +248,11 @@ final class ElidingFormatter extends ChirpFormatter {
   /// Wraps [inner] with the budget carried by [config] — including its
   /// [ElisionConfig.enabled] flag, so `.of(inner, ElisionConfig.none)`
   /// passes every unlisted layer verbatim.
-  ElidingFormatter.of(
-    this.inner,
-    ElisionConfig config, {
-    this.layerElision = const {},
-  }) : enabled = config.enabled,
-       maxStringChars = config.maxStringChars,
-       maxArrayItems = config.maxArrayItems,
-       keepKeys = config.keepKeys;
+  new of(this.inner, ElisionConfig config, {this.layerElision = const {}})
+    : enabled = config.enabled,
+      maxStringChars = config.maxStringChars,
+      maxArrayItems = config.maxArrayItems,
+      keepKeys = config.keepKeys;
 
   /// The formatter that renders the elided record.
   final ChirpFormatter inner;

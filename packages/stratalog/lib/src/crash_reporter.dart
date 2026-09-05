@@ -72,27 +72,22 @@ abstract interface class CrashReporter {
 ///
 /// Reporter exceptions are swallowed: a logging call must never take the
 /// app down because the crash SDK is unavailable.
-final class CrashReporterWriter extends ChirpWriter {
-  /// Gates itself at `breadcrumbLevel ?? reportLevel` via `setMinLogLevel`.
-  CrashReporterWriter(
-    this.reporter, {
-    this.reportLevel = .error,
-    this.breadcrumbLevel = .info,
-    bool Function(LogRecord record)? shouldReport,
-  }) : _shouldReport = shouldReport {
-    setMinLogLevel(breadcrumbLevel ?? reportLevel);
-  }
-
+final class CrashReporterWriter(
   /// Backend adapter all records are forwarded to.
-  final CrashReporter reporter;
+  final CrashReporter reporter, {
 
   /// Records at/above this become [CrashReporter.recordError] calls.
-  final ChirpLogLevel reportLevel;
+  final ChirpLogLevel reportLevel = .error,
 
   /// Records in `[breadcrumbLevel, reportLevel)` become breadcrumbs;
   /// `null` disables breadcrumbs.
-  final ChirpLogLevel? breadcrumbLevel;
-  final bool Function(LogRecord record)? _shouldReport;
+  final ChirpLogLevel? breadcrumbLevel = .info,
+  final bool Function(LogRecord record)? _shouldReport,
+}) extends ChirpWriter {
+  /// Gates itself at `breadcrumbLevel ?? reportLevel` via `setMinLogLevel`.
+  this {
+    setMinLogLevel(breadcrumbLevel ?? reportLevel);
+  }
 
   @override
   void write(LogRecord record) {

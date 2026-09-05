@@ -14,25 +14,21 @@ import 'package:stratalog/stratalog.dart';
 /// Statements trace at `trace` with duration and row/affected counts;
 /// failures log at `warning` with the statement attached and rethrow
 /// untouched. Transaction begin/commit/rollback and batches are traced too.
-final class LoggerQueryInterceptor extends QueryInterceptor {
-  /// Logs statements to [logger], typically `LogLayer.storage`.
-  LoggerQueryInterceptor({
-    this.logger = .storage,
-    this.logArgs = true,
-    this.maxStatementChars,
-  });
-
+final class LoggerQueryInterceptor({
   /// Destination layer.
-  final LogLayer logger;
+  final LogLayer logger = .storage,
 
   /// Bound arguments carry row data — set `false` when tables hold
   /// sensitive values that must not reach any sink.
-  final bool logArgs;
+  final bool logArgs = true,
 
   /// Statements beyond this length are ellipsized in the message — an
   /// opt-in clip for pathological schemas. Defaults to `null`: the full
   /// SQL stays copyable from the log.
-  final int? maxStatementChars;
+  final int? maxStatementChars,
+}) extends QueryInterceptor {
+  /// Logs statements to [logger], typically `LogLayer.storage`.
+  this;
 
   @override
   TransactionExecutor beginTransaction(QueryExecutor parent) {
