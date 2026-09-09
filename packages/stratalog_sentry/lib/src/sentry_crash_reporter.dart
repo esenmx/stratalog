@@ -27,14 +27,13 @@ final class SentryCrashReporter implements CrashReporter {
     Sentry.captureException(
       error,
       stackTrace: stackTrace,
-      hint: reason == null ? null : Hint.withMap({'reason': reason}),
-      withScope: (scope) =>
-          scope.level = fatal ? SentryLevel.fatal : SentryLevel.error,
+      hint: reason == null ? null : .withMap({'reason': reason}),
+      withScope: (scope) => scope.level = fatal ? .fatal : .error,
     ).ignore();
   }
 
   @override
   void addBreadcrumb(String message, {Map<String, Object?>? data}) {
-    Sentry.addBreadcrumb(Breadcrumb(message: message, data: data)).ignore();
+    Sentry.addBreadcrumb(.new(message: message, data: data)).ignore();
   }
 }

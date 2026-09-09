@@ -15,7 +15,7 @@ import 'package:chirp/chirp.dart';
 /// Trap: lines still buffered when the process hard-crashes before the
 /// microtask runs are lost — debug-console output only; uncaught errors
 /// surface via `FlutterError` separately.
-class IdeDebugConsoleWriter({
+final class IdeDebugConsoleWriter({
   /// Renders each record into the buffer handed to `dart:developer log()`.
   required final ChirpFormatter formatter,
 

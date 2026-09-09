@@ -191,9 +191,7 @@ void main() {
     await check(wrapped(_request())).throws<StateError>();
     final record = writer.records.last;
     check(record.level).equals(.warning);
-    check(
-      '${record.message}',
-    ).equals('✗ - /acme.foo.v1.FooService/Bar');
+    check('${record.message}').equals('✗ - /acme.foo.v1.FooService/Bar');
     check(record.data['duration_ms']).isA<int>();
   });
 

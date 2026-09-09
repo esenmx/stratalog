@@ -8,7 +8,7 @@ import 'package:stratalog/src/palette.dart';
 
 /// Draws a colored left border along every line of [child] — one visual
 /// gutter per record instead of a full box.
-class LeftBordered({
+final class LeftBordered({
   /// Gutter color; `null` renders in the terminal's default foreground.
   required final ConsoleColor? color,
   super.child,
@@ -18,9 +18,10 @@ class LeftBordered({
 
   @override
   void render(ConsoleMessageBuffer buffer) {
+    final child = this.child;
     if (child == null) return;
     final temp = buffer.createChildBuffer();
-    child!.render(temp);
+    child.render(temp);
     final content = temp.toString();
     if (content.isEmpty) return;
 
@@ -71,7 +72,7 @@ class LeftBordered({
 /// set — readable on solarized and soft-gray backgrounds, light or dark.
 /// Badge text flips black/white by background luminance; low levels render
 /// in the terminal's default color.
-class StructuredLogFormatter({
+final class StructuredLogFormatter({
   Map<String, ConsoleColor>? domainColors,
 
   /// Renders the wall-clock time in the header.
@@ -225,16 +226,13 @@ class StructuredLogFormatter({
           child: SpanSequence(
             children: [
               if (showTimestamp) Timestamp(record.wallClock),
-              if (callerInfo?.callerFileName != null) ...[
+              if (callerInfo?.callerFileName case final file?) ...[
                 if (showTimestamp) PlainText(' • '),
-                DartSourceCodeLocation(
-                  fileName: callerInfo!.callerFileName,
-                  line: callerInfo.line,
-                ),
+                DartSourceCodeLocation(fileName: file, line: callerInfo?.line),
               ],
-              if (callerInfo?.callerMethod != null) ...[
+              if (callerInfo?.callerMethod case final method?) ...[
                 PlainText(' • '),
-                MethodName(callerInfo!.callerMethod),
+                MethodName(method),
               ],
             ],
           ),
@@ -243,10 +241,7 @@ class StructuredLogFormatter({
     );
   }
 
-  static const JsonEncoder _dataEncoder = JsonEncoder.withIndent(
-    '  ',
-    _jsonFallback,
-  );
+  static const JsonEncoder _dataEncoder = .withIndent('  ', _jsonFallback);
 
   /// chirp's writer dispatch loop has no try/catch around a sink — a throw
   /// here would skip every writer queued after this one. `_jsonFallback`
