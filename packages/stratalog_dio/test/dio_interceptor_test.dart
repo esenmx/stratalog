@@ -21,7 +21,7 @@ final class _StubAdapter(final int statusCode, final String body)
     RequestOptions options,
     Stream<Uint8List>? requestStream,
     Future<void>? cancelFuture,
-  ) async => ResponseBody.fromString(
+  ) async => .fromString(
     body,
     statusCode,
     headers: {
@@ -346,7 +346,7 @@ void main() {
       // never true here — this pins the default to that flag rather than a
       // bare `true` literal.
       check(LoggerDioInterceptor().logBodies)
-          .equals(!const bool.fromEnvironment('dart.vm.product'));
+          .equals(!const .fromEnvironment('dart.vm.product'));
     });
 
     test('false strips the request and response body on success', () {

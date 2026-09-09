@@ -97,8 +97,8 @@ void configureLogging({
     );
   }
 
-  if (crashReporter != null) {
-    logger.addWriter(CrashReporterWriter(crashReporter));
+  if (crashReporter case final reporter?) {
+    logger.addWriter(CrashReporterWriter(reporter));
   }
   writers.forEach(logger.addWriter);
 

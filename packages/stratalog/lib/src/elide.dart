@@ -197,7 +197,7 @@ final class ElisionConfig {
 
   /// Tight budget for chatty layers: payloads clip hard to their vital
   /// fields — [defaultKeepKeys] stay verbatim, everything else shrinks.
-  static const ElisionConfig vital = ElisionConfig(
+  static const ElisionConfig vital = .new(
     maxStringChars: 200,
     maxArrayItems: 8,
   );

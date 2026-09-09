@@ -42,7 +42,7 @@ final class _StreamingReporter implements CrashReporter {
   Future<void> _serialize(Map<String, Object?> data) async {
     for (final e in data.entries) {
       serialized.write('${e.key}=${e.value};');
-      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(.zero);
     }
   }
 }

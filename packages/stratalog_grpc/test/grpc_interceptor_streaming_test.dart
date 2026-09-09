@@ -145,13 +145,13 @@ final class _StreamClient(
   );
 
   ResponseStream<List<int>> boomStream(List<int> request) =>
-      $createStreamingCall(_boomStream, Stream.value(request));
+      $createStreamingCall(_boomStream, .value(request));
 
   ResponseStream<List<int>> fineStream(List<int> request) =>
-      $createStreamingCall(_fineStream, Stream.value(request));
+      $createStreamingCall(_fineStream, .value(request));
 
   ResponseStream<List<int>> tickStream(List<int> request) =>
-      $createStreamingCall(_tickStream, Stream.value(request));
+      $createStreamingCall(_tickStream, .value(request));
 
   // Mirrors the protoc-generated client-streaming stub shape: the streaming
   // interceptor seam, consumed through `.single`.
@@ -265,7 +265,7 @@ void main() {
 
   test('client-streaming single logs the done line once', () async {
     final reply = await client.collect(
-      Stream.fromIterable([
+      .fromIterable([
         [1],
         [2],
         [3],
@@ -279,7 +279,7 @@ void main() {
   });
 
   test('client-streaming single logs the failure once with status', () async {
-    await check(client.collectBoom(Stream.value([0]))).throws<GrpcError>();
+    await check(client.collectBoom(.value([0]))).throws<GrpcError>();
     await settle();
 
     check(writer.records.map((r) => '${r.message}')).deepEquals([

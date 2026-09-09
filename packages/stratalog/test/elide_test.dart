@@ -187,14 +187,14 @@ void main() {
       ElidingFormatter(
         inner,
         maxStringChars: 8,
-      ).format(_record({'body': 'x' * 100}), MessageBuffer.file());
+      ).format(_record({'body': 'x' * 100}), .file());
       check(inner.seen!.data['body']).equals('${'x' * 8}…(+92 chars)');
     });
 
     test('passes an empty-data record through untouched', () {
       final inner = _CaptureFormatter();
       final record = _record({});
-      ElidingFormatter(inner).format(record, MessageBuffer.file());
+      ElidingFormatter(inner).format(record, .file());
       check(inner.seen).identicalTo(record);
     });
 
@@ -239,7 +239,7 @@ void main() {
           loggerName: 'Network',
           data: {'body': 'x' * 100},
         ),
-        MessageBuffer.file(),
+        .file(),
       );
       check(inner.seen!.caller).identicalTo(caller);
       check(inner.seen!.loggerName).equals('Network');
@@ -275,17 +275,17 @@ void main() {
       ElidingFormatter(
         inner,
         layerElision: defaultLayerElision,
-      ).format(record, MessageBuffer.file());
+      ).format(record, .file());
       check(inner.seen).identicalTo(record);
     });
 
     test('a State record clips at the vital budget, keepKeys verbatim', () {
       final inner = _CaptureFormatter();
       final id = 'A' * 600; // long + base64-ish → would normally blob-elide
-      ElidingFormatter(inner, layerElision: defaultLayerElision).format(
-        layerRecord('State', {'id': id, 'note': 'x' * 500}),
-        MessageBuffer.file(),
-      );
+      ElidingFormatter(
+        inner,
+        layerElision: defaultLayerElision,
+      ).format(layerRecord('State', {'id': id, 'note': 'x' * 500}), .file());
       check(inner.seen!.data['id']).equals(id);
       check(inner.seen!.data['note']).equals('${'x' * 200}…(+300 chars)');
     });
@@ -296,10 +296,7 @@ void main() {
         inner,
         maxStringChars: 8,
         layerElision: defaultLayerElision,
-      ).format(
-        layerRecord('Payments', {'note': 'x' * 100}),
-        MessageBuffer.file(),
-      );
+      ).format(layerRecord('Payments', {'note': 'x' * 100}), .file());
       check(inner.seen!.data['note']).equals('${'x' * 8}…(+92 chars)');
     });
 
@@ -308,18 +305,15 @@ void main() {
       final inner = _CaptureFormatter();
       final formatter = ElidingFormatter.of(
         inner,
-        ElisionConfig.none,
+        .none,
         layerElision: const {'State': .vital},
       );
 
       final untouched = layerRecord('App', {'body': 'x' * 5000});
-      formatter.format(untouched, MessageBuffer.file());
+      formatter.format(untouched, .file());
       check(inner.seen).identicalTo(untouched);
 
-      formatter.format(
-        layerRecord('State', {'note': 'x' * 500}),
-        MessageBuffer.file(),
-      );
+      formatter.format(layerRecord('State', {'note': 'x' * 500}), .file());
       check(inner.seen!.data['note']).equals('${'x' * 200}…(+300 chars)');
     });
 
@@ -328,8 +322,8 @@ void main() {
       ElidingFormatter(
         inner,
         maxStringChars: 8,
-        layerElision: const {'Auth': ElisionConfig(maxStringChars: 16)},
-      ).format(layerRecord('Auth', {'note': 'x' * 100}), MessageBuffer.file());
+        layerElision: const {'Auth': .new(maxStringChars: 16)},
+      ).format(layerRecord('Auth', {'note': 'x' * 100}), .file());
       check(inner.seen!.data['note']).equals('${'x' * 16}…(+84 chars)');
     });
   });

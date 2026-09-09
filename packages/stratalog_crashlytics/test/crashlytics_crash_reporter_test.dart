@@ -121,7 +121,7 @@ void main() {
 
       await runZonedGuarded(() async {
         LogLayer.app.error('boom', error: Exception('x'));
-        await Future<void>.delayed(Duration.zero);
+        await Future<void>.delayed(.zero);
       }, (error, stackTrace) => uncaught.add(error));
 
       check(uncaught).isEmpty();
@@ -135,7 +135,7 @@ void main() {
 
     await runZonedGuarded(() async {
       LogLayer.network.info('token refreshed');
-      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(.zero);
     }, (error, stackTrace) => uncaught.add(error));
 
     check(uncaught).isEmpty();

@@ -6,7 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:stratalog/stratalog.dart';
 import 'package:stratalog_viewer/src/memory_log_writer.dart';
 
-const JsonEncoder _pretty = JsonEncoder.withIndent('  ', _stringify);
+const JsonEncoder _pretty = .withIndent('  ', _stringify);
 
 Object? _stringify(Object? o) => o.toString();
 
@@ -46,7 +46,7 @@ String _haystack(LogRecord r) {
 /// Navigator.push(context,
 ///     MaterialPageRoute(builder: (_) => LogViewerPage(writer: memoryWriter)));
 /// ```
-class const LogViewerPage({
+final class const LogViewerPage({
   /// The buffer to browse.
   required final MemoryLogWriter writer,
 
@@ -62,7 +62,7 @@ class const LogViewerPage({
   State<LogViewerPage> createState() => _LogViewerPageState();
 }
 
-class _LogViewerPageState extends State<LogViewerPage> {
+final class _LogViewerPageState extends State<LogViewerPage> {
   ChirpLogLevel _minLevel = .trace;
   String _query = '';
   bool _expandAll = false;
@@ -236,7 +236,7 @@ Color _onBadge(Color background) {
   return luma > 140 ? Colors.black : Colors.white;
 }
 
-class const _RecordTile({
+final class const _RecordTile({
   required final LogRecord record,
   required final Set<String> keepKeys,
   required final VoidCallback onCopy,
@@ -384,7 +384,7 @@ class const _RecordTile({
   static const _maxHitChars = 32;
 }
 
-class const _MonoBlock(
+final class const _MonoBlock(
   final String text, {
 
   /// Lowercased search query; hits get a highlight when non-empty.

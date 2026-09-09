@@ -34,15 +34,16 @@ Object? _snapshot(Object? value, Set<Object?> seen) {
       // String-keyed maps keep their reified key type so downcasts on
       // retained records (`data['body'] as Map<String, Object?>`) survive
       // the copy; nested lists come back as List<Object?>.
-      final copy = map is Map<String, Object?>
-          ? <String, Object?>{
-              for (final MapEntry(:key, :value) in map.entries)
-                key: _snapshot(value, seen),
-            }
-          : <Object?, Object?>{
-              for (final MapEntry(:key, :value) in map.entries)
-                key: _snapshot(value, seen),
-            };
+      final copy = switch (map) {
+        final Map<String, Object?> stringMap => <String, Object?>{
+          for (final MapEntry(:key, :value) in stringMap.entries)
+            key: _snapshot(value, seen),
+        },
+        _ => <Object?, Object?>{
+          for (final MapEntry(:key, :value) in map.entries)
+            key: _snapshot(value, seen),
+        },
+      };
       seen.remove(map);
       return copy;
     case final Iterable<Object?> iterable:
