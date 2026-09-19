@@ -6,6 +6,6 @@ FirebaseAuth integration for [stratalog](https://pub.dev/packages/stratalog) —
 FirebaseAuthLogger(FirebaseAuth.instance).attach(); // after Firebase.initializeApp
 ```
 
-Sign-in/out with uid and identity providers — OAuth2 sign-ins (Google, Apple, OIDC) surface as their canonical provider IDs — plus ID-token refreshes at `trace`. Emails are masked; display names and photo URLs never logged.
+Sign-in/out with uid and identity providers — OAuth2 sign-ins (Google, Apple, OIDC) surface as their canonical provider IDs — plus ID-token refreshes at `trace`. Emails, display names and photo URLs are never logged — a masked address still names the person through its domain.
 
 See the [stratalog README](https://github.com/esenmx/stratalog) for the layer taxonomy, theming, and crash-reporting setup.
