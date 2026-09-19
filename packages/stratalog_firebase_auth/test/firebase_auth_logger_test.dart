@@ -62,7 +62,7 @@ void main() {
     expect(messages().where((m) => m == 'Signed out').length, 1);
   });
 
-  test('email is masked, never verbatim', () async {
+  test('email is never logged, masked or verbatim', () async {
     final auth = MockFirebaseAuth(
       mockUser: MockUser(uid: 'u1', email: 'jane.doe@example.com'),
     );
@@ -77,8 +77,8 @@ void main() {
     final signIn = writer.records.firstWhere(
       (r) => '${r.message}' == 'Signed in',
     );
-    expect(signIn.data['email'], 'j***@example.com');
-    expect('${signIn.data}', isNot(contains('jane.doe@')));
+    expect(signIn.data, isNot(contains('email')));
+    expect('${signIn.data}', isNot(contains('example.com')));
   });
 
   test('cold start while signed out logs nothing', () async {
@@ -87,11 +87,5 @@ void main() {
     await Future<void>.delayed(.zero);
 
     expect(messages().where((m) => m == 'Signed out'), isEmpty);
-  });
-
-  test('maskEmail handles degenerate inputs', () {
-    expect(FirebaseAuthLogger.maskEmail('a@b.c'), 'a***@b.c');
-    expect(FirebaseAuthLogger.maskEmail('no-at-sign'), '***');
-    expect(FirebaseAuthLogger.maskEmail('@lead'), '***');
   });
 }

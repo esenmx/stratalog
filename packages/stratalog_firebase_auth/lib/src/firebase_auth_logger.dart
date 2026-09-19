@@ -22,10 +22,11 @@ import 'package:stratalog/stratalog.dart';
 /// `userChanges` is deliberately not subscribed: it is a superset of both
 /// streams and would double-log every event.
 ///
-/// PII discipline: emails are masked (`j***@example.com`), display names
-/// and photo URLs never logged. Sign-in *failures* throw at the call site
-/// (`FirebaseAuthException`) before any stream fires — log those where you
-/// catch them, e.g. `LogLayer.auth.warning(...)`.
+/// PII discipline: no email (masked or not — the domain alone names the
+/// person on a personal or company address), no display name, no photo URL;
+/// the uid and provider ids are the identity. Sign-in *failures* throw at
+/// the call site (`FirebaseAuthException`) before any stream fires — log
+/// those where you catch them, e.g. `LogLayer.auth.warning(...)`.
 final class FirebaseAuthLogger(
   /// The tapped FirebaseAuth instance.
   final FirebaseAuth auth, {
@@ -84,15 +85,7 @@ final class FirebaseAuthLogger(
       // OAuth2/OIDC providers surface here: google.com, apple.com, oidc.*
       'providers': [for (final info in user.providerData) info.providerId],
       if (user.isAnonymous) 'anonymous': true,
-      if (user.email case final email?) 'email': maskEmail(email),
       if (user.emailVerified) 'email_verified': true,
     };
-  }
-
-  /// `jane.doe@example.com` → `j***@example.com`. Visible for tests.
-  static String maskEmail(String email) {
-    final at = email.indexOf('@');
-    if (at <= 0) return '***';
-    return '${email[0]}***${email.substring(at)}';
   }
 }
