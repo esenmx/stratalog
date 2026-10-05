@@ -18,7 +18,8 @@ environment:
 
 dependencies:
   sentry: ^9.23.0
-  stratalog: ^0.1.0
+  stratalog:
+    path: ../stratalog
 
 dev_dependencies:
   checks: ^0.3.1

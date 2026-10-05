@@ -21,7 +21,8 @@ dependencies:
   auto_route: ^11.1.0
   flutter:
     sdk: flutter
-  stratalog: ^0.1.0
+  stratalog:
+    path: ../stratalog
 
 dev_dependencies:
   very_good_analysis: ^11.0.0

@@ -17,7 +17,8 @@ environment:
 
 dependencies:
   dio: ^5.10.0
-  stratalog: ^0.1.0
+  stratalog:
+    path: ../stratalog
 
 dev_dependencies:
   checks: ^0.3.1

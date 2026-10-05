@@ -21,7 +21,8 @@ dependencies:
   chirp: ^0.9.0
   flutter:
     sdk: flutter
-  stratalog: ^0.1.0
+  stratalog:
+    path: ../stratalog
 
 dev_dependencies:
   flutter_test:
