@@ -1,6 +1,7 @@
+import 'dart:async';
+
 import 'package:chirp/chirp.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_auth_mocks/firebase_auth_mocks.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:stratalog_firebase_auth/stratalog_firebase_auth.dart';
 
@@ -10,6 +11,75 @@ final class _CapturingWriter extends ChirpWriter {
   @override
   void write(LogRecord record) => records.add(record);
 }
+
+/// Identity equality, as the real `User`. Unlisted members throw (`Fake`).
+final class _FakeUser({
+  @override required final String uid,
+  @override final String? email,
+  @override final List<UserInfo> providerData = const [],
+}) extends Fake implements User {
+  @override
+  bool get isAnonymous => false;
+
+  @override
+  bool get emailVerified => false;
+}
+
+/// Starts signed out; any sign-in signs in [signsInAs]. [currentUser] flips
+/// on sign-in/out, each flip emitted on [authStateChanges] and
+/// [idTokenChanges], which, as the plugin does, first deliver the current
+/// user to each new listener. Unlisted members throw (`Fake`).
+final class _FakeFirebaseAuth({final User? signsInAs})
+    extends Fake
+    implements FirebaseAuth {
+  final _authStateChanges = StreamController<User?>.broadcast();
+  final _idTokenChanges = StreamController<User?>.broadcast();
+  User? _currentUser;
+
+  @override
+  User? get currentUser => _currentUser;
+
+  @override
+  Stream<User?> authStateChanges() => _replayed(_authStateChanges.stream);
+
+  @override
+  Stream<User?> idTokenChanges() => _replayed(_idTokenChanges.stream);
+
+  @override
+  Future<UserCredential> signInWithCredential(
+    AuthCredential credential,
+  ) async => _signIn();
+
+  @override
+  Future<UserCredential> signInWithEmailAndPassword({
+    required String email,
+    required String password,
+  }) async => _signIn();
+
+  @override
+  Future<void> signOut() async => _emit(null);
+
+  UserCredential _signIn() {
+    final user = signsInAs ?? (throw StateError('No user to sign in.'));
+    _emit(user);
+    return _FakeUserCredential(user);
+  }
+
+  void _emit(User? user) {
+    _currentUser = user;
+    _authStateChanges.add(user);
+    _idTokenChanges.add(user);
+  }
+
+  Stream<User?> _replayed(Stream<User?> changes) => .multi((listener) {
+    listener.add(_currentUser);
+    listener.onCancel = changes.listen(listener.add).cancel;
+  });
+}
+
+final class _FakeUserCredential(@override final User user)
+    extends Fake
+    implements UserCredential;
 
 void main() {
   late _CapturingWriter writer;
@@ -24,7 +94,7 @@ void main() {
   Iterable<String> messages() => writer.records.map((r) => '${r.message}');
 
   test('sign-in logs uid and OAuth provider ids, sign-out logs once', () async {
-    final user = MockUser(
+    final user = _FakeUser(
       uid: 'u1',
       email: 'jane.doe@example.com',
       providerData: [
@@ -42,7 +112,7 @@ void main() {
         }),
       ],
     );
-    final auth = MockFirebaseAuth(mockUser: user);
+    final auth = _FakeFirebaseAuth(signsInAs: user);
     FirebaseAuthLogger(auth).attach();
 
     await auth.signInWithCredential(
@@ -63,8 +133,8 @@ void main() {
   });
 
   test('email is never logged, masked or verbatim', () async {
-    final auth = MockFirebaseAuth(
-      mockUser: MockUser(uid: 'u1', email: 'jane.doe@example.com'),
+    final auth = _FakeFirebaseAuth(
+      signsInAs: _FakeUser(uid: 'u1', email: 'jane.doe@example.com'),
     );
     FirebaseAuthLogger(auth).attach();
 
@@ -82,7 +152,7 @@ void main() {
   });
 
   test('cold start while signed out logs nothing', () async {
-    final auth = MockFirebaseAuth();
+    final auth = _FakeFirebaseAuth();
     FirebaseAuthLogger(auth).attach();
     await Future<void>.delayed(.zero);
 

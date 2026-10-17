@@ -18,7 +18,7 @@ environment:
   flutter: ">=3.47.0"
 
 dependencies:
-  firebase_auth: ^6.1.0
+  firebase_auth: ">=6.1.0 <8.0.0"
   flutter:
     sdk: flutter
   stratalog:
@@ -26,7 +26,6 @@ dependencies:
 
 dev_dependencies:
   chirp: ^0.9.0
-  firebase_auth_mocks: ^0.15.2
   flutter_test:
     sdk: flutter
   very_good_analysis: ^11.0.0
