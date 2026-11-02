@@ -37,6 +37,7 @@ final class MemoryLogWriter({
 
   @override
   void write(LogRecord record) {
+    if (_disposed) return;
     final stored = record.data.isEmpty
         ? record
         : record.copyWith(data: snapshotData(record.data));
@@ -47,6 +48,7 @@ final class MemoryLogWriter({
 
   /// Empties the buffer.
   void clear() {
+    if (_disposed) return;
     _records.clear();
     _scheduleNotify();
   }
@@ -66,6 +68,7 @@ final class MemoryLogWriter({
   @override
   void dispose() {
     _disposed = true;
+    _records.clear();
     super.dispose();
   }
 }

@@ -1,6 +1,6 @@
 # stratalog_viewer
 
-in-app viewer integration for [stratalog](https://pub.dev/packages/stratalog).
+in-app viewer integration for [stratalog](https://github.com/esenmx/stratalog).
 
 ```dart
 final memoryWriter = MemoryLogWriter();

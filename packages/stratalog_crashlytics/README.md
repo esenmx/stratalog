@@ -1,6 +1,6 @@
 # stratalog_crashlytics
 
-Firebase Crashlytics `CrashReporter` adapter for [stratalog](https://pub.dev/packages/stratalog).
+Firebase Crashlytics `CrashReporter` adapter for [stratalog](https://github.com/esenmx/stratalog).
 
 ```dart
 configureLogging(crashReporter: const CrashlyticsCrashReporter());

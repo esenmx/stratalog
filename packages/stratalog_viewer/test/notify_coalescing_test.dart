@@ -158,4 +158,14 @@ void main() {
       expect(notifications, 0);
     },
   );
+
+  test('writes after dispose are ignored and buffer is cleared', () async {
+    LogLayer.app.info('before dispose');
+    writer.dispose();
+    LogLayer.app.info('after dispose');
+
+    await Future<void>.value();
+
+    expect(writer.records, isEmpty);
+  });
 }

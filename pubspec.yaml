@@ -20,7 +20,7 @@ workspace:
   - packages/stratalog_viewer
 
 dev_dependencies:
-  melos: 8.0.0
+  melos: ^8.10.0
 
 melos:
   ide:

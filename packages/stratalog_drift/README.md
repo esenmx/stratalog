@@ -1,6 +1,6 @@
 # stratalog_drift
 
-Drift integration for [stratalog](https://pub.dev/packages/stratalog).
+Drift integration for [stratalog](https://github.com/esenmx/stratalog).
 
 ```dart
 AppDatabase(NativeDatabase.createInBackground(file)

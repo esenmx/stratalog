@@ -1,14 +1,8 @@
-import 'dart:convert';
-
 import 'package:chirp/chirp.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:stratalog/stratalog.dart';
 import 'package:stratalog_viewer/src/memory_log_writer.dart';
-
-const JsonEncoder _pretty = .withIndent('  ', _stringify);
-
-Object? _stringify(Object? o) => o.toString();
 
 final Expando<String> _jsonOf = Expando();
 final Expando<String> _lowerJsonOf = Expando();
@@ -17,9 +11,13 @@ final Expando<String> _haystackOf = Expando();
 String _prettyJson(LogRecord r) {
   return _jsonOf[r] ??= () {
     try {
-      return _pretty.convert(r.data);
+      return StructuredLogFormatter.formatJson(r.data);
     } on Object {
-      return '${r.data}'; // Non-encodable payload must not kill the list.
+      try {
+        return '${r.data}'; // Non-encodable payload must not kill the list.
+      } on Object {
+        return '<unencodable: ${r.data.runtimeType}>';
+      }
     }
   }();
 }
@@ -33,6 +31,7 @@ String _haystack(LogRecord r) {
     '${r.message}',
     r.loggerName ?? 'App',
     '${r.error ?? ''}',
+    '${r.stackTrace ?? ''}',
     if (r.data.isNotEmpty) _prettyJson(r),
   ].join('\n').toLowerCase();
 }
@@ -73,8 +72,11 @@ final class _LogViewerPageState extends State<LogViewerPage> {
     .debug,
     .info,
     .notice,
+    .success,
     .warning,
     .error,
+    .critical,
+    .wtf,
   ];
 
   Set<String> _layersPresent() => {
@@ -173,11 +175,11 @@ final class _LogViewerPageState extends State<LogViewerPage> {
         height: _chipBarHeight,
         child: ListView(
           scrollDirection: .horizontal,
-          padding: const EdgeInsets.symmetric(horizontal: 12),
+          padding: const .symmetric(horizontal: 12),
           children: [
             for (final name in names)
               Padding(
-                padding: const EdgeInsets.only(right: 8),
+                padding: const .only(right: 8),
                 child: FilterChip(
                   avatar: CircleAvatar(
                     radius: 6,
@@ -279,10 +281,16 @@ final class const _RecordTile({
         ],
       ),
     );
-    Widget subtitle = Text(
-      '${record.message}',
-      style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
-    );
+    const messageStyle = TextStyle(fontFamily: 'monospace', fontSize: 13);
+    final messageText = '${record.message}';
+    Widget subtitle = query.isEmpty
+        ? Text(messageText, style: messageStyle)
+        : Text.rich(
+            TextSpan(
+              style: messageStyle,
+              children: _highlitSpans(context, messageText, query),
+            ),
+          );
     if (record.data.isNotEmpty) {
       subtitle = Column(
         mainAxisSize: .min,
@@ -312,43 +320,48 @@ final class const _RecordTile({
     final hitInBody =
         query.isNotEmpty &&
         ((record.data.isNotEmpty && _lowerJson(record).contains(query)) ||
-            (record.error?.toString().toLowerCase().contains(query) ?? false));
+            (record.error?.toString().toLowerCase().contains(query) ?? false) ||
+            (record.stackTrace?.toString().toLowerCase().contains(query) ??
+                false));
     final expanded = hitInBody || expandAll;
-    return ExpansionTile(
-      // Keying on the record + desired state re-applies initiallyExpanded
-      // exactly when it changes; manual toggles survive otherwise.
-      key: ValueKey((record, expanded)),
-      initiallyExpanded: expanded,
-      dense: true,
-      title: title,
-      subtitle: subtitle,
-      childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-      expandedCrossAxisAlignment: .start,
-      children: [
-        if (record.data.isNotEmpty)
-          _MonoBlock(_prettyJson(record), query: query),
-        if (record.error case final error?)
-          _MonoBlock('Error: $error', query: query),
-        if (record.stackTrace case final stack?)
-          _MonoBlock('$stack', query: query),
-        OverflowBar(
-          alignment: .end,
-          overflowAlignment: .end,
-          children: [
-            if (record.data.isNotEmpty)
+    return GestureDetector(
+      onLongPress: onCopy,
+      child: ExpansionTile(
+        // Keying on the record + desired state re-applies initiallyExpanded
+        // exactly when it changes; manual toggles survive otherwise.
+        key: ValueKey((record, expanded)),
+        initiallyExpanded: expanded,
+        dense: true,
+        title: title,
+        subtitle: subtitle,
+        childrenPadding: const .fromLTRB(16, 0, 16, 12),
+        expandedCrossAxisAlignment: .start,
+        children: [
+          if (record.data.isNotEmpty)
+            _MonoBlock(_prettyJson(record), query: query),
+          if (record.error case final error?)
+            _MonoBlock('Error: $error', query: query),
+          if (record.stackTrace case final stack?)
+            _MonoBlock('$stack', query: query),
+          OverflowBar(
+            alignment: .end,
+            overflowAlignment: .end,
+            children: [
+              if (record.data.isNotEmpty)
+                TextButton.icon(
+                  onPressed: onCopyJson,
+                  icon: const Icon(Icons.data_object, size: 16),
+                  label: const Text('Copy JSON'),
+                ),
               TextButton.icon(
-                onPressed: onCopyJson,
-                icon: const Icon(Icons.data_object, size: 16),
-                label: const Text('Copy JSON'),
+                onPressed: onCopy,
+                icon: const Icon(Icons.copy, size: 16),
+                label: const Text('Copy record'),
               ),
-            TextButton.icon(
-              onPressed: onCopy,
-              icon: const Icon(Icons.copy, size: 16),
-              label: const Text('Copy record'),
-            ),
-          ],
-        ),
-      ],
+            ],
+          ),
+        ],
+      ),
     );
   }
 
@@ -395,33 +408,32 @@ final class const _MonoBlock(
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
+      padding: const .only(bottom: 8),
       child: query.isEmpty
           ? SelectableText(text, style: _style)
           : SelectableText.rich(
-              TextSpan(style: _style, children: _highlit(context)),
+              TextSpan(
+                style: _style,
+                children: _highlitSpans(context, text, query),
+              ),
             ),
     );
   }
+}
 
-  List<TextSpan> _highlit(BuildContext context) {
-    final hit = TextStyle(
-      backgroundColor: ColorScheme.of(context).tertiaryContainer,
-    );
-    final lower = text.toLowerCase();
-    final spans = <TextSpan>[];
-    var start = 0;
-    for (
-      var i = lower.indexOf(query);
-      i >= 0;
-      i = lower.indexOf(query, start)
-    ) {
-      if (i > start) spans.add(TextSpan(text: text.substring(start, i)));
-      final end = i + query.length;
-      spans.add(TextSpan(text: text.substring(i, end), style: hit));
-      start = end;
-    }
-    if (start < text.length) spans.add(TextSpan(text: text.substring(start)));
-    return spans;
+List<TextSpan> _highlitSpans(BuildContext context, String text, String query) {
+  final hit = TextStyle(
+    backgroundColor: ColorScheme.of(context).tertiaryContainer,
+  );
+  final lower = text.toLowerCase();
+  final spans = <TextSpan>[];
+  var start = 0;
+  for (var i = lower.indexOf(query); i >= 0; i = lower.indexOf(query, start)) {
+    if (i > start) spans.add(TextSpan(text: text.substring(start, i)));
+    final end = i + query.length;
+    spans.add(TextSpan(text: text.substring(i, end), style: hit));
+    start = end;
   }
+  if (start < text.length) spans.add(TextSpan(text: text.substring(start)));
+  return spans;
 }

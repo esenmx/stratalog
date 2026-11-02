@@ -358,4 +358,61 @@ void main() {
     expect(find.text('Copy record'), findsOneWidget);
     expect(find.text('Copy JSON'), findsNothing);
   });
+
+  testWidgets('a leaf whose toString throws does not crash the viewer', (
+    tester,
+  ) async {
+    LogLayer.app.info('poison leaf', data: {'bad': _ThrowsOnToString()});
+
+    await tester.pumpWidget(MaterialApp(home: LogViewerPage(writer: writer)));
+    await tester.tap(find.text('poison leaf'));
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(
+      find.textContaining('<unencodable: _ThrowsOnToString>'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('search matches stackTrace and auto-expands the tile', (
+    tester,
+  ) async {
+    LogLayer.app.error(
+      'crash',
+      error: StateError('bad'),
+      stackTrace: .fromString('#0      myUniqueFrame (file.dart:42:7)'),
+    );
+    LogLayer.app.info('unrelated');
+
+    await tester.pumpWidget(MaterialApp(home: LogViewerPage(writer: writer)));
+    await tester.enterText(find.byType(TextField), 'myUniqueFrame');
+    await tester.pumpAndSettle();
+
+    expect(find.text('crash'), findsOneWidget);
+    expect(find.text('unrelated'), findsNothing);
+    expect(
+      find.textContaining('myUniqueFrame (file.dart:42:7)'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('long-press copies expandable tiles with data too', (
+    tester,
+  ) async {
+    final copied = mockClipboard(tester);
+    LogLayer.network.info('with-data', data: {'id': 99});
+
+    await tester.pumpWidget(MaterialApp(home: LogViewerPage(writer: writer)));
+    await tester.longPress(find.text('with-data'));
+    await tester.pump();
+
+    expect(copied, hasLength(1));
+    expect(copied.single, contains('"id": 99'));
+  });
+}
+
+final class _ThrowsOnToString {
+  @override
+  String toString() => throw StateError('poison');
 }

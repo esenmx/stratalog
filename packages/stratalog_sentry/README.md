@@ -1,6 +1,6 @@
 # stratalog_sentry
 
-Sentry `CrashReporter` adapter for [stratalog](https://pub.dev/packages/stratalog).
+Sentry `CrashReporter` adapter for [stratalog](https://github.com/esenmx/stratalog).
 
 ```dart
 configureLogging(crashReporter: const SentryCrashReporter());

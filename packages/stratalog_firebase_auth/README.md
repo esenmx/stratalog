@@ -1,6 +1,6 @@
 # stratalog_firebase_auth
 
-FirebaseAuth integration for [stratalog](https://pub.dev/packages/stratalog) — taps FirebaseAuth into stratalog's colored, contrast-verified log layers.
+FirebaseAuth integration for [stratalog](https://github.com/esenmx/stratalog) — taps FirebaseAuth into stratalog's colored, contrast-verified log layers.
 
 ```dart
 FirebaseAuthLogger(FirebaseAuth.instance).attach(); // after Firebase.initializeApp
