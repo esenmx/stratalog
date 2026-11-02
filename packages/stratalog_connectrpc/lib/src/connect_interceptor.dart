@@ -2,10 +2,6 @@ import 'package:connectrpc/connect.dart';
 import 'package:protobuf/protobuf.dart';
 import 'package:stratalog/stratalog.dart';
 
-// Mirrors Flutter's kReleaseMode without a Flutter dependency: dart2js/VM
-// AOT release builds define dart.vm.product.
-const bool _kProduct = .fromEnvironment('dart.vm.product');
-
 // The app's release dart-defines that tree-shake protobuf name metadata.
 // Any of them degrades name-based output: proto3 JSON needs field/enum/
 // message names, so body capture must fall back to tag-keyed classic JSON.
@@ -35,30 +31,38 @@ const bool _namesStripped =
 /// completion, the failure line on any error — Connect or not — rethrown
 /// untouched. A subscription the caller cancels logs no terminal line.
 ///
-/// Release discipline: with [logBodies] at its default, product builds emit
-/// only the literal procedure path (a stub string that survives protobuf
-/// name stripping), the Connect code name (a plain Dart enum, unaffected by
-/// stripping), the [errorCodeTrailer] value, duration, and headers — never
+/// With [logBodies] at its default (`false`), records emit only the literal
+/// procedure path (a stub string that survives protobuf name stripping), the
+/// Connect code name (a plain Dart enum, unaffected by stripping), the
+/// [errorCodeTrailer] value, duration, and allowlisted headers — never
 /// message bodies. Trace records still reach any writer whose min level
 /// admits them; gate release sinks via `configureLogging(minLevel:)` when
 /// trace volume is unwanted.
 ///
-/// [logBodies] defaults to on in debug/profile and OFF in product builds:
-/// bodies push user payloads into release sinks (crash breadcrumbs stay at
-/// method/status/code shape). Opting in on a build compiled with the
-/// `protobuf.omit_*_names` defines emits the tag-keyed [protoLogShape] map
-/// instead of proto3 JSON.
+/// [logBodies] defaults to `false`: bodies are stripped out of the box so
+/// large payloads never flood the console or reach release sinks (crash
+/// breadcrumbs stay at method/status/code shape). Opting in (`true`) on a
+/// build compiled with the `protobuf.omit_*_names` defines emits the
+/// tag-keyed [protoLogShape] map instead of proto3 JSON.
 ///
-/// [sensitiveHeaders] values are redacted per [maskSensitiveValues], which
-/// defaults to `true` (masks tokens and cookies as '***' out of the box).
-/// Pass `false` to show them for local debugging.
+/// [headerAllowlist] restricts which non-sensitive headers are logged
+/// verbatim; [sensitiveHeaders] values are redacted per
+/// [maskSensitiveValues], which defaults to `true` (masks tokens and cookies
+/// as '***' out of the box). Both sets are matched case-insensitively.
 Interceptor loggerConnectInterceptor({
   LogLayer logger = .network,
+  Set<String> headerAllowlist = defaultHeaderAllowlist,
   Set<String> sensitiveHeaders = defaultSensitiveHeaders,
   bool maskSensitiveValues = true,
-  bool logBodies = !_kProduct,
+  bool logBodies = false,
   String errorCodeTrailer = 'error-code',
 }) {
+  final normalizedAllowlist = {
+    for (final key in headerAllowlist) key.toLowerCase(),
+  };
+  final normalizedSensitive = {
+    for (final key in sensitiveHeaders) key.toLowerCase(),
+  };
   return <I extends Object, O extends Object>(AnyFn<I, O> next) {
     return (Request<I, O> request) async {
       final watch = Stopwatch()..start();
@@ -68,7 +72,8 @@ Interceptor loggerConnectInterceptor({
         '$arrow $procedure',
         data: _requestData(
           request,
-          sensitiveHeaders: sensitiveHeaders,
+          headerAllowlist: normalizedAllowlist,
+          sensitiveHeaders: normalizedSensitive,
           maskSensitiveValues: maskSensitiveValues,
           logBodies: logBodies,
         ),
@@ -118,6 +123,7 @@ Interceptor loggerConnectInterceptor({
 
 Map<String, Object?> _requestData<I extends Object, O extends Object>(
   Request<I, O> request, {
+  required Set<String> headerAllowlist,
   required Set<String> sensitiveHeaders,
   required bool maskSensitiveValues,
   required bool logBodies,
@@ -125,6 +131,7 @@ Map<String, Object?> _requestData<I extends Object, O extends Object>(
   return {
     'headers': _safeHeaders(
       request.headers,
+      headerAllowlist,
       sensitiveHeaders,
       maskSensitiveValues,
     ),
@@ -194,6 +201,15 @@ void _logFailure(
   );
 }
 
+/// Default for `loggerConnectInterceptor(headerAllowlist:)`.
+const Set<String> defaultHeaderAllowlist = {
+  'content-type',
+  'accept',
+  'accept-language',
+  'content-language',
+  'x-request-id',
+};
+
 /// Default for `loggerConnectInterceptor(sensitiveHeaders:)`.
 const Set<String> defaultSensitiveHeaders = {
   'authorization',
@@ -203,16 +219,25 @@ const Set<String> defaultSensitiveHeaders = {
 
 Map<String, Object?> _safeHeaders(
   Headers headers,
+  Set<String> allowlist,
   Set<String> sensitive,
   bool maskSensitiveValues,
 ) {
-  return {
-    // Connect lowercases header names already.
-    for (final (:name, :value) in headers.entries)
-      name: sensitive.contains(name)
-          ? (maskSensitiveValues ? '***' : value)
-          : value,
-  };
+  final safe = <String, String>{};
+  for (final (:name, :value) in headers.entries) {
+    final k = name.toLowerCase();
+    if (sensitive.contains(k)) {
+      final existing = safe[k];
+      final rendered = maskSensitiveValues ? '***' : value;
+      safe[k] = maskSensitiveValues || existing == null
+          ? rendered
+          : '$existing, $rendered';
+    } else if (allowlist.contains(k)) {
+      final existing = safe[k];
+      safe[k] = existing == null ? value : '$existing, $value';
+    }
+  }
+  return safe;
 }
 
 // A best-effort mapping to structure so ElidingFormatter can clip the leaves.

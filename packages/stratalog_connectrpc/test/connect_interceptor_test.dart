@@ -94,7 +94,8 @@ void main() {
     check(writer.records.last.data['duration_ms']).isA<int>();
   });
 
-  test('large message lands in record data verbatim — no clipping', () async {
+  test('large message lands in record data verbatim when logBodies is true — '
+      'no clipping', () async {
     final message = _BigMessage()
       ..text = 'a' * 5000
       ..items.addAll(List.generate(150, (i) => 'item_$i'));
@@ -110,7 +111,9 @@ void main() {
       Request<_BigMessage, _BigMessage> request,
     ) async => UnaryResponse(request.spec, Headers(), message, Headers());
 
-    final wrapped = loggerConnectInterceptor()<_BigMessage, _BigMessage>(okBig);
+    final wrapped = loggerConnectInterceptor(
+      logBodies: true,
+    )<_BigMessage, _BigMessage>(okBig);
     await wrapped(
       UnaryRequest(
         const Spec(
@@ -132,10 +135,12 @@ void main() {
         .deepEquals(expectedBody());
   });
 
-  test('sensitive headers masked by default, others verbatim', () async {
+  test('sensitive headers masked by default, unlisted dropped, allowlisted '
+      'kept', () async {
     final headers = Headers()
       ..add('authorization', 'Bearer secret-token')
-      ..add('x-request-id', 'r1');
+      ..add('x-request-id', 'r1')
+      ..add('x-internal-envelope', 'noise');
     final wrapped = loggerConnectInterceptor()<String, String>(ok);
 
     await wrapped(_request(headers: headers));
@@ -144,8 +149,28 @@ void main() {
         writer.records.first.data['headers']! as Map<String, Object?>;
     check(logged['authorization']).equals('***');
     check(logged['x-request-id']).equals('r1');
+    check(logged).not((it) => it.containsKey('x-internal-envelope'));
     check('${writer.records.first.data}')
         .not((it) => it.contains('secret-token'));
+  });
+
+  test('custom sensitiveHeaders and headerAllowlist match regardless of '
+      'caller casing and combine multi-value headers', () async {
+    final headers = Headers()
+      ..add('x-firebase-appcheck', 'secret-appcheck')
+      ..add('x-trace-id', 't1')
+      ..add('x-trace-id', 't2');
+    final wrapped = loggerConnectInterceptor(
+      sensitiveHeaders: {'X-Firebase-AppCheck'},
+      headerAllowlist: {'X-Trace-Id'},
+    )<String, String>(ok);
+
+    await wrapped(_request(headers: headers));
+
+    final logged =
+        writer.records.first.data['headers']! as Map<String, Object?>;
+    check(logged['x-firebase-appcheck']).equals('***');
+    check(logged['x-trace-id']).equals('t1, t2');
   });
 
   test('sensitive headers verbatim when opted out', () async {
@@ -195,15 +220,14 @@ void main() {
     check(record.data['duration_ms']).isA<int>();
   });
 
-  test('logBodies false pins the release shape — no body keys ever', () async {
+  test('logBodies defaults to false and pins the release shape — no body keys '
+      'ever', () async {
     final message = _BigMessage()..text = 'user-payload';
     Future<Response<_BigMessage, _BigMessage>> okBig(
       Request<_BigMessage, _BigMessage> request,
     ) async => UnaryResponse(request.spec, Headers(), message, Headers());
 
-    final wrapped = loggerConnectInterceptor(
-      logBodies: false,
-    )<_BigMessage, _BigMessage>(okBig);
+    final wrapped = loggerConnectInterceptor()<_BigMessage, _BigMessage>(okBig);
     await wrapped(
       UnaryRequest(
         const Spec(

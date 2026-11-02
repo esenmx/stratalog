@@ -202,7 +202,12 @@ void main() {
     check(record.data['duration_ms']).isA<int>();
   });
 
-  test('large message lands in record data verbatim — no clipping', () async {
+  test('large message lands in record data verbatim when logBodies is true — '
+      'no clipping', () async {
+    final bodyClient = _EchoClient(
+      channel,
+      interceptors: [LoggerGrpcInterceptor(logBodies: true)],
+    );
     final message = _BigMessage()
       ..text = 'a' * 5000
       ..items.addAll(List.generate(150, (i) => 'item_$i'));
@@ -214,7 +219,7 @@ void main() {
       'items': List.generate(150, (i) => 'item_$i'),
     };
 
-    final reply = await client.echoBig(message);
+    final reply = await bodyClient.echoBig(message);
     await settle();
 
     check(reply.text).length.equals(5000);
@@ -224,14 +229,12 @@ void main() {
         .deepEquals(expectedBody());
   });
 
-  test('logBodies false pins the release shape — no body keys ever', () async {
-    final quiet = _EchoClient(
-      channel,
-      interceptors: [LoggerGrpcInterceptor(logBodies: false)],
-    );
+  test('logBodies defaults to false and pins the release shape — no body keys '
+      'ever', () async {
+    check(LoggerGrpcInterceptor().logBodies).isFalse();
 
-    await quiet.echoBig(_BigMessage()..text = 'user-payload');
-    await check(quiet.boom([0])).throws<GrpcError>();
+    await client.echoBig(_BigMessage()..text = 'user-payload');
+    await check(client.boom([0])).throws<GrpcError>();
     await settle();
 
     check(writer.records.map((r) => '${r.message}')).deepEquals([
@@ -262,13 +265,15 @@ void main() {
         });
   });
 
-  test('sensitive metadata masked by default, others verbatim', () async {
+  test('sensitive metadata masked by default, unlisted dropped, allowlisted '
+      'kept', () async {
     await client.echo(
       [0],
       options: CallOptions(
         metadata: {
           'Authorization': 'Bearer secret-token',
           'x-request-id': 'r1',
+          'x-internal-envelope': 'noise',
         },
       ),
     );
@@ -278,8 +283,37 @@ void main() {
         writer.records.first.data['metadata']! as Map<String, Object?>;
     check(metadata['authorization']).equals('***');
     check(metadata['x-request-id']).equals('r1');
+    check(metadata).not((it) => it.containsKey('x-internal-envelope'));
     check('${writer.records.first.data}')
         .not((it) => it.contains('secret-token'));
+  });
+
+  test('custom sensitiveMetadata and metadataAllowlist match regardless of '
+      'caller casing', () async {
+    final customClient = _EchoClient(
+      channel,
+      interceptors: [
+        LoggerGrpcInterceptor(
+          sensitiveMetadata: {'X-Firebase-AppCheck'},
+          metadataAllowlist: {'X-Trace-Id'},
+        ),
+      ],
+    );
+    await customClient.echo(
+      [0],
+      options: CallOptions(
+        metadata: {
+          'x-firebase-appcheck': 'secret-appcheck',
+          'x-trace-id': 'tr-42',
+        },
+      ),
+    );
+    await settle();
+
+    final metadata =
+        writer.records.first.data['metadata']! as Map<String, Object?>;
+    check(metadata['x-firebase-appcheck']).equals('***');
+    check(metadata['x-trace-id']).equals('tr-42');
   });
 
   test('sensitive metadata verbatim when opted out', () async {

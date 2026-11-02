@@ -4,10 +4,6 @@ import 'package:grpc/grpc.dart';
 import 'package:protobuf/protobuf.dart';
 import 'package:stratalog/stratalog.dart';
 
-// Mirrors Flutter's kReleaseMode without a Flutter dependency: dart2js/VM
-// AOT release builds define dart.vm.product.
-const bool _kProduct = .fromEnvironment('dart.vm.product');
-
 // The app's release dart-defines that tree-shake protobuf name metadata.
 // Any of them degrades name-based output: proto3 JSON needs field/enum/
 // message names, so body capture must fall back to tag-keyed classic JSON.
@@ -30,18 +26,23 @@ const bool _namesStripped =
 /// non-OK status is expected control flow that the repository boundary maps
 /// to a typed failure, not a crash.
 ///
-/// Release discipline: with [logBodies] at its default, product builds emit
-/// only the literal method path (a stub string that survives protobuf name
-/// stripping), the status code name, the [errorCodeTrailer] value, duration,
-/// and metadata — never message bodies. Trace records still reach any writer
+/// With [logBodies] at its default (`false`), records emit only the literal
+/// method path (a stub string that survives protobuf name stripping), the
+/// status code name, the [errorCodeTrailer] value, duration, and allowlisted
+/// metadata — never message bodies. Trace records still reach any writer
 /// whose min level admits them; gate release sinks via
 /// `configureLogging(minLevel:)` when trace volume is unwanted.
 final class LoggerGrpcInterceptor({
   /// Destination layer.
   final LogLayer logger = .network,
 
+  /// Only these metadata keys are logged verbatim — a full metadata dump
+  /// drowns the log and leaks unlisted credentials attached by interceptors.
+  /// Matched case-insensitively.
+  final Set<String> metadataAllowlist = defaultMetadataAllowlist,
+
   /// Metadata keys affected by [maskSensitiveValues]; when masked they are
-  /// logged presence-only as '***'.
+  /// logged presence-only as '***'. Matched case-insensitively.
   final Set<String> sensitiveMetadata = defaultSensitiveMetadata,
 
   /// Whether to redact [sensitiveMetadata] values. Defaults to `true` — a
@@ -49,12 +50,13 @@ final class LoggerGrpcInterceptor({
   /// debug console. Pass `false` to show them for local debugging.
   final bool maskSensitiveValues = true,
 
-  /// Whether request/response bodies land in trace records. Defaults to on
-  /// in debug/profile and OFF in product builds: bodies push user payloads
-  /// into release sinks (crash breadcrumbs stay at method/status/code
-  /// shape). Opting in on a build compiled with the `protobuf.omit_*_names`
-  /// defines emits the tag-keyed [protoLogShape] map instead of proto3 JSON.
-  final bool logBodies = !_kProduct,
+  /// Whether request/response bodies land in trace records. Defaults to
+  /// `false`: bodies are stripped out of the box so large payloads never
+  /// flood the console or reach release sinks (crash breadcrumbs stay at
+  /// method/status/code shape). Opting in (`true`) on a build compiled with
+  /// the `protobuf.omit_*_names` defines emits the tag-keyed [protoLogShape]
+  /// map instead of proto3 JSON.
+  final bool logBodies = false,
 
   /// Trailer key whose value is logged as `error_code` on failures — an
   /// app-level error code that survives protobuf name stripping.
@@ -62,6 +64,23 @@ final class LoggerGrpcInterceptor({
 }) extends ClientInterceptor {
   /// Logs calls to [logger], typically `LogLayer.network`.
   this;
+
+  final Set<String> _metadataAllowlist = {
+    for (final key in metadataAllowlist) key.toLowerCase(),
+  };
+
+  final Set<String> _sensitiveMetadata = {
+    for (final key in sensitiveMetadata) key.toLowerCase(),
+  };
+
+  /// Default for [metadataAllowlist].
+  static const Set<String> defaultMetadataAllowlist = {
+    'content-type',
+    'accept',
+    'accept-language',
+    'content-language',
+    'x-request-id',
+  };
 
   /// Default for [sensitiveMetadata].
   static const Set<String> defaultSensitiveMetadata = {
@@ -101,7 +120,14 @@ final class LoggerGrpcInterceptor({
             logger.trace('← OK ${method.path}', data: resData);
           },
           onError: (Object error, StackTrace stackTrace) {
-            _logFailure(method.path, error, stackTrace, watch);
+            if (error case GrpcError(code: StatusCode.cancelled)) {
+              logger.trace(
+                '→ cancelled ${method.path}',
+                data: {'duration_ms': watch.elapsedMilliseconds},
+              );
+            } else {
+              _logFailure(method.path, error, stackTrace, watch);
+            }
           },
         )
         .ignore();
@@ -188,12 +214,16 @@ final class LoggerGrpcInterceptor({
 
   Map<String, Object?> _safeMetadata(Map<String, String>? metadata) {
     if (metadata == null || metadata.isEmpty) return const {};
-    return {
-      for (final MapEntry(:key, :value) in metadata.entries)
-        key.toLowerCase(): sensitiveMetadata.contains(key.toLowerCase())
-            ? (maskSensitiveValues ? '***' : value)
-            : value,
-    };
+    final safe = <String, Object?>{};
+    metadata.forEach((key, value) {
+      final k = key.toLowerCase();
+      if (_sensitiveMetadata.contains(k)) {
+        safe[k] = maskSensitiveValues ? '***' : value;
+      } else if (_metadataAllowlist.contains(k)) {
+        safe[k] = value;
+      }
+    });
+    return safe;
   }
 
   // A best-effort mapping to structure so ElidingFormatter can clip the
@@ -266,7 +296,18 @@ final class _TerminalObservingStream<R>(
   @override
   ResponseFuture<R> get single {
     final response = _inner.single;
-    response.then<void>((_) => _onDone(), onError: _onFailure).ignore();
+    response
+        .then<void>(
+          (_) => _onDone(),
+          onError: (Object error, StackTrace stackTrace) {
+            if (error case GrpcError(code: StatusCode.cancelled)) {
+              _onCancel();
+            } else {
+              _onFailure(error, stackTrace);
+            }
+          },
+        )
+        .ignore();
     return response;
   }
 

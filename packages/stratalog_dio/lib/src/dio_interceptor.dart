@@ -3,10 +3,6 @@ import 'dart:typed_data';
 import 'package:dio/dio.dart';
 import 'package:stratalog/stratalog.dart';
 
-// Mirrors Flutter's kReleaseMode without a Flutter dependency: dart2js/VM
-// AOT release builds define dart.vm.product.
-const bool _kProduct = .fromEnvironment('dart.vm.product');
-
 /// Pure HTTP-wire logger — add it FIRST in the chain. Dio runs all hooks in
 /// list order AND attaches every onError hook after every onResponse hook,
 /// so first position sees the raw server response before any other
@@ -21,25 +17,28 @@ const bool _kProduct = .fromEnvironment('dart.vm.product');
 /// **`trace` is not release-gated.** `configureLogging` filters by level only
 /// when handed an explicit `minLevel`, and chirp's default is no floor at all,
 /// so in a release build these lines reach the console writer and land in
-/// logcat / os_log. Bodies and query strings are therefore redacted at this
-/// seam rather than left to the sink — see [redactKeys] and
+/// logcat / os_log. Query strings and opted-in bodies are therefore redacted
+/// at this seam rather than left to the sink — see [redactKeys] and
 /// [redactBodyPaths]. Not a chirp record interceptor either: only the tap
 /// sees [RequestOptions], which the path rules and the FormData case need.
 /// Pass `configureLogging(minLevel: …)` if a level floor is wanted as well.
 ///
-/// [logBodies] defaults to on in debug/profile and OFF in product builds:
-/// request, response and failure bodies push user payloads into release
-/// sinks (crash breadcrumbs stay at method/status/duration shape).
+/// [logBodies] defaults to `false`: request, response and failure bodies are
+/// stripped by default so large JSON payloads never flood the console or
+/// reach release sinks (crash breadcrumbs stay at method/status/duration
+/// shape). Pass `logBodies: true` to include redacted bodies.
 final class LoggerDioInterceptor({
   /// Destination layer.
   final LogLayer logger = .network,
 
   /// Only these header values are ever logged verbatim — a full header dump
   /// drowns the log and leaks anything a downstream interceptor attaches.
+  /// Matched case-insensitively.
   final Set<String> headerAllowlist = defaultHeaderAllowlist,
 
   /// Logged presence-only as '***': the value (a bearer token, cookie,
   /// app-check token) must never land in a sink — even the debug console.
+  /// Matched case-insensitively.
   final Set<String> sensitiveHeaders = defaultSensitiveHeaders,
 
   /// Keys whose values are replaced with '***' wherever they appear: at any
@@ -69,13 +68,22 @@ final class LoggerDioInterceptor({
   final bool maskSensitiveValues = true,
 
   /// Whether request/response/failure bodies land in trace and warning
-  /// records. Defaults to on in debug/profile and OFF in product builds:
-  /// bodies push user payloads into release sinks (crash breadcrumbs stay at
-  /// method/status/duration shape).
-  final bool logBodies = !_kProduct,
+  /// records. Defaults to `false`: bodies are stripped out of the box so
+  /// large JSON payloads never flood the console or reach release sinks
+  /// (crash breadcrumbs stay at method/status/duration shape). Pass `true`
+  /// to include redacted bodies.
+  final bool logBodies = false,
 }) extends Interceptor {
   /// Logs traffic to [logger], typically `LogLayer.network`.
   this;
+
+  final Set<String> _headerAllowlist = {
+    for (final key in headerAllowlist) key.toLowerCase(),
+  };
+
+  final Set<String> _sensitiveHeaders = {
+    for (final key in sensitiveHeaders) key.toLowerCase(),
+  };
 
   /// [redactKeys], normalized once so the hot path only normalizes the
   /// body's own keys.
@@ -140,7 +148,7 @@ final class LoggerDioInterceptor({
     if (options.queryParameters.isNotEmpty) {
       logData['query'] = _redactKeys.isEmpty
           ? options.queryParameters
-          : _redactBody(options.queryParameters);
+          : _redactBody(options.queryParameters, .identity());
     }
     if (logBodies && options.data != null) {
       logData['body'] = _formatData(options.data, options);
@@ -201,9 +209,9 @@ final class LoggerDioInterceptor({
     final safe = <String, Object?>{};
     headers.forEach((key, value) {
       final k = key.toLowerCase();
-      if (sensitiveHeaders.contains(k)) {
+      if (_sensitiveHeaders.contains(k)) {
         safe[k] = maskSensitiveValues ? '***' : value;
-      } else if (headerAllowlist.contains(k)) {
+      } else if (_headerAllowlist.contains(k)) {
         safe[k] = value;
       }
     });
@@ -218,40 +226,52 @@ final class LoggerDioInterceptor({
 
   // Passes the body through as structured data with no clipping; the sink's
   // ElidingFormatter clips oversized leaves without collapsing the JSON
-  // shape. FormData never carries a readable body, so it stays a summary.
+  // shape. FormData and TypedData never carry a readable JSON body, so they
+  // stay summaries regardless of _redactKeys.
   Object? _formatData(Object? data, RequestOptions request) {
     if (redactBodyPaths.any(request.uri.path.contains)) return _maskedBody;
     if (data is FormData) {
       return 'FormData(${data.fields.length} fields, '
           '${data.files.length} files)';
     }
+    if (data case final TypedData bytes) {
+      return '<${bytes.lengthInBytes}-byte body>';
+    }
     if (_redactKeys.isEmpty) return data;
-    return _redactBody(data);
+    return _redactBody(data, .identity());
   }
 
   // Rebuilds string-keyed so a `Map<String, Object?>` stays one for readers,
   // and so the record holds a snapshot the caller can no longer mutate.
   //
-  // TypedData (Uint8List, ByteData, …) is guarded before the List case: it
+  // TypedData (Uint8List, ByteData, …) is guarded before the Iterable case: it
   // implements List<int>, so without this an N-byte binary body would be
   // boxed element-by-element into an N-entry growable list synchronously on
-  // the request/response hook.
-  Object? _redactBody(Object? data) {
-    if (data case final TypedData bytes) {
-      return '<${bytes.lengthInBytes}-byte body>';
+  // the request/response hook. Cycle-safe via path-based `seen` tracking.
+  Object? _redactBody(Object? data, Set<Object?> seen) {
+    switch (data) {
+      case final TypedData bytes:
+        return '<${bytes.lengthInBytes}-byte body>';
+      case final Map<Object?, Object?> map:
+        if (!seen.add(map)) return '<cycle>';
+        final out = <String, Object?>{
+          for (final MapEntry(:key, :value) in map.entries)
+            '$key': _redactKeys.contains(_normalizeKey('$key'))
+                ? _mask
+                : _redactBody(value, seen),
+        };
+        seen.remove(map);
+        return out;
+      case final Iterable<Object?> iterable:
+        if (!seen.add(iterable)) return '<cycle>';
+        final out = [
+          for (final element in iterable) _redactBody(element, seen),
+        ];
+        seen.remove(iterable);
+        return out;
+      default:
+        return data;
     }
-    if (data case final Map<Object?, Object?> map) {
-      return <String, Object?>{
-        for (final MapEntry(:key, :value) in map.entries)
-          '$key': _redactKeys.contains(_normalizeKey('$key'))
-              ? _mask
-              : _redactBody(value),
-      };
-    }
-    if (data case final List<Object?> list) {
-      return [for (final element in list) _redactBody(element)];
-    }
-    return data;
   }
 
   // Only rebuilds when a query key actually matches — `Uri.replace`

@@ -83,6 +83,28 @@ void main() {
         .not((it) => it.contains('secret-token'));
   });
 
+  test('custom sensitiveHeaders and headerAllowlist match regardless of '
+      'caller casing', () {
+    LoggerDioInterceptor(
+      sensitiveHeaders: {'X-Firebase-AppCheck'},
+      headerAllowlist: {'X-Trace-Id'},
+    ).onRequest(
+      RequestOptions(
+        path: 'https://api.example.com/users',
+        headers: {
+          'x-firebase-appcheck': 'secret-appcheck',
+          'x-trace-id': 'tr-99',
+        },
+      ),
+      RequestInterceptorHandler(),
+    );
+
+    final headers =
+        writer.records.single.data['headers']! as Map<String, Object?>;
+    check(headers['x-firebase-appcheck']).equals('***');
+    check(headers['x-trace-id']).equals('tr-99');
+  });
+
   test('sensitive header values pass through verbatim when opted out', () {
     LoggerDioInterceptor(maskSensitiveValues: false)
         .onRequest(request(), RequestInterceptorHandler());
@@ -93,10 +115,11 @@ void main() {
     check(headers['cookie']).equals('session=abc');
   });
 
-  test('body is logged as full structured data, not truncated here', () {
+  test('body is logged as full structured data when logBodies is true, not '
+      'truncated here', () {
     // Elision is the sink's job (ElidingFormatter). The interceptor keeps the
     // JSON shape and the full payload so no downstream sink is forced to.
-    LoggerDioInterceptor().onResponse(
+    LoggerDioInterceptor(logBodies: true).onResponse(
       Response<Object?>(
         requestOptions: request(),
         statusCode: 200,
@@ -109,11 +132,10 @@ void main() {
     check(body['blob']).equals('x' * 200);
   });
 
-  // The console guarantee — full copyable JSON payloads — rests on the
-  // producer passing bodies verbatim into `record.data`. Elision, when any,
-  // is the sink's call (ElidingFormatter); a clip here would silently cap
-  // every downstream sink.
-  group('full-payload contract', () {
+  // When opted in via logBodies: true, the producer passes bodies verbatim
+  // into `record.data`. Elision, when any, is the sink's call
+  // (ElidingFormatter); a clip here would silently cap every downstream sink.
+  group('full-payload contract (when logBodies: true)', () {
     Map<String, Object?> largeBody() => {
       'blob': 'x' * 5000,
       'items': [for (var i = 0; i < 150; i++) 'item-$i'],
@@ -131,14 +153,15 @@ void main() {
         ..method = 'POST'
         ..data = largeBody();
 
-      LoggerDioInterceptor().onRequest(options, RequestInterceptorHandler());
+      LoggerDioInterceptor(logBodies: true)
+          .onRequest(options, RequestInterceptorHandler());
 
       final body = writer.records.single.data['body']! as Map<String, Object?>;
       check(body).deepEquals(largeBody());
     });
 
     test('large response body reaches record.data unclipped', () {
-      LoggerDioInterceptor().onResponse(
+      LoggerDioInterceptor(logBodies: true).onResponse(
         Response<Object?>(
           requestOptions: request(),
           statusCode: 200,
@@ -164,6 +187,7 @@ void main() {
 
     test('redacted-path bodies never reach the record, in any direction', () {
       final interceptor = LoggerDioInterceptor(
+        logBodies: true,
         redactBodyPaths: {'/checkout/pay'},
       );
       final options = payment();
@@ -208,7 +232,10 @@ void main() {
     });
 
     test('path matching is scoped — an unlisted endpoint still logs', () {
-      LoggerDioInterceptor(redactBodyPaths: {'/checkout/pay'}).onRequest(
+      LoggerDioInterceptor(
+        logBodies: true,
+        redactBodyPaths: {'/checkout/pay'},
+      ).onRequest(
         request()
           ..method = 'POST'
           ..data = {'query': 'concerts'},
@@ -220,8 +247,10 @@ void main() {
     });
 
     test('sensitive keys are masked at any depth, siblings kept', () {
-      LoggerDioInterceptor(redactKeys: {'cvv'})
-          .onRequest(payment(), RequestInterceptorHandler());
+      LoggerDioInterceptor(
+        logBodies: true,
+        redactKeys: {'cvv'},
+      ).onRequest(payment(), RequestInterceptorHandler());
 
       final body = writer.records.single.data['body']! as Map<String, Object?>;
       final card = body['card']! as Map<String, Object?>;
@@ -231,7 +260,10 @@ void main() {
     });
 
     test('key matching ignores case and word separators', () {
-      LoggerDioInterceptor(redactKeys: {'new_password'}).onRequest(
+      LoggerDioInterceptor(
+        logBodies: true,
+        redactKeys: {'new_password'},
+      ).onRequest(
         request()
           ..method = 'POST'
           ..data = {
@@ -248,15 +280,15 @@ void main() {
       check(body['passwords']).equals('not-a-match');
     });
 
-    test('masking reaches inside lists', () {
-      LoggerDioInterceptor(redactKeys: {'cvv'}).onRequest(
+    test('masking reaches inside lists and non-List Iterables', () {
+      LoggerDioInterceptor(logBodies: true, redactKeys: {'cvv'}).onRequest(
         request()
           ..method = 'POST'
           ..data = {
-            'cards': [
+            'cards': {
               {'cvv': '123'},
               {'cvv': '456'},
-            ],
+            },
           },
         RequestInterceptorHandler(),
       );
@@ -264,8 +296,25 @@ void main() {
       check('${writer.records.single.data}').not((it) => it.contains('123'));
     });
 
-    test('defaults mask a password without any configuration', () {
-      LoggerDioInterceptor().onRequest(
+    test('cyclic body renders <cycle> instead of overflowing the stack', () {
+      final cyclic = <String, Object?>{'password': 'hunter2'};
+      cyclic['self'] = cyclic;
+
+      LoggerDioInterceptor(logBodies: true).onRequest(
+        request()
+          ..method = 'POST'
+          ..data = cyclic,
+        RequestInterceptorHandler(),
+      );
+
+      final body = writer.records.single.data['body']! as Map<String, Object?>;
+      check(body['password']).equals('***');
+      check(body['self']).equals('<cycle>');
+    });
+
+    test('defaults mask a password without any configuration when logBodies '
+        'is opted in', () {
+      LoggerDioInterceptor(logBodies: true).onRequest(
         request()
           ..method = 'POST'
           ..data = {'password': 'hunter2'},
@@ -306,10 +355,10 @@ void main() {
       check('${writer.records.single.message}').endsWith('${options.uri}');
     });
 
-    test('an empty key set passes the body through by identity', () {
+    test('an empty key set passes a JSON map body through by identity', () {
       final data = {'password': 'hunter2'};
 
-      LoggerDioInterceptor(redactKeys: const {}).onRequest(
+      LoggerDioInterceptor(logBodies: true, redactKeys: const {}).onRequest(
         request()
           ..method = 'POST'
           ..data = data,
@@ -319,13 +368,14 @@ void main() {
       check(writer.records.single.data['body']).identicalTo(data);
     });
 
-    test('a TypedData body is summarized, never boxed element-by-element', () {
+    test('a TypedData body is summarized even when redactKeys is empty, '
+        'never boxed element-by-element', () {
       // Uint8List implements List<int>, so a naive List match would rebuild
       // it as an N-entry growable list of boxed ints. 8 MB is large enough
       // that element-wise boxing would be conspicuously slow.
       final bytes = Uint8List(8 * 1024 * 1024);
 
-      LoggerDioInterceptor().onResponse(
+      LoggerDioInterceptor(logBodies: true, redactKeys: const {}).onResponse(
         Response<Object?>(
           requestOptions: request(),
           statusCode: 200,
@@ -341,16 +391,12 @@ void main() {
   });
 
   group('logBodies', () {
-    test('defaults to on outside a product build', () {
-      // dart test always runs the VM in JIT mode, so dart.vm.product is
-      // never true here — this pins the default to that flag rather than a
-      // bare `true` literal.
-      check(LoggerDioInterceptor().logBodies)
-          .equals(!const .fromEnvironment('dart.vm.product'));
+    test('defaults to false — bodies are stripped out of the box', () {
+      check(LoggerDioInterceptor().logBodies).isFalse();
     });
 
-    test('false strips the request and response body on success', () {
-      final interceptor = LoggerDioInterceptor(logBodies: false);
+    test('default strips the request and response body on success', () {
+      final interceptor = LoggerDioInterceptor();
       final options = request()
         ..method = 'POST'
         ..data = {'q': 'concerts'};
@@ -371,11 +417,11 @@ void main() {
       }
     });
 
-    test('false strips the response body on failure', () {
+    test('default strips the response body on failure', () {
       final options = request();
 
       runZonedGuarded(
-        () => LoggerDioInterceptor(logBodies: false).onError(
+        () => LoggerDioInterceptor().onError(
           DioException(
             requestOptions: options,
             response: Response<Object?>(
@@ -428,7 +474,7 @@ void main() {
     final dio = Dio(BaseOptions(baseUrl: 'https://api.example.com'))
       ..httpClientAdapter = _StubAdapter(200, '{"data":{"id":1}}');
     dio.interceptors
-      ..add(LoggerDioInterceptor())
+      ..add(LoggerDioInterceptor(logBodies: true))
       ..add(
         InterceptorsWrapper(
           onResponse: (response, handler) =>
@@ -483,7 +529,7 @@ void main() {
     final dio = Dio(BaseOptions(baseUrl: 'https://api.example.com'))
       ..httpClientAdapter = _StubAdapter(500, '{"data":{"message":"boom"}}');
     dio.interceptors
-      ..add(LoggerDioInterceptor())
+      ..add(LoggerDioInterceptor(logBodies: true))
       ..add(
         InterceptorsWrapper(
           onError: (err, handler) => handler.resolve(

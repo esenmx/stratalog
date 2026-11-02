@@ -290,4 +290,20 @@ void main() {
     check(record.level).equals(.warning);
     check(record.data['error_code']).equals('geo.507');
   });
+
+  test('cancelling client-streaming single logs cancelled at trace, never '
+      'warning', () async {
+    final controller = StreamController<List<int>>();
+    final call = client.collect(controller.stream);
+    await call.cancel();
+    unawaited(controller.close());
+    await check(call).throws<GrpcError>();
+    await settle();
+
+    check(writer.records.map((r) => '${r.message}')).deepEquals([
+      '⇄ /test.Stream/Collect',
+      '⇄ cancelled /test.Stream/Collect',
+    ]);
+    check(writer.records.last.level).equals(.trace);
+  });
 }
