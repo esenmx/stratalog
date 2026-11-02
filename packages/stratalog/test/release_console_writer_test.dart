@@ -20,13 +20,35 @@ import 'package:test/test.dart';
 /// the default print() writer would have torn it.
 const int androidPrintChunkLength = 1024 - 100;
 
+String _dartExecutable() {
+  final exec = Platform.resolvedExecutable;
+  if (exec.endsWith('flutter_tester') || exec.endsWith('flutter_tester.exe')) {
+    if (Platform.environment['FLUTTER_ROOT'] case final root?
+        when root.isNotEmpty) {
+      final suffix = Platform.isWindows ? '.bat' : '';
+      return '$root/bin/dart$suffix';
+    }
+    final sep = Platform.pathSeparator;
+    final cacheIdx = exec.indexOf('${sep}bin${sep}cache$sep');
+    if (cacheIdx != -1) {
+      final root = exec.substring(0, cacheIdx);
+      final suffix = Platform.isWindows ? '.bat' : '';
+      return '$root${sep}bin${sep}dart$suffix';
+    }
+  }
+  return exec;
+}
+
 void main() {
   test('release branch wires a line-atomic stdout JSON writer', () async {
-    final result = await Process.run(Platform.resolvedExecutable, [
+    final packageRoot = Directory('packages/stratalog').existsSync()
+        ? 'packages/stratalog'
+        : '.';
+    final result = await Process.run(_dartExecutable(), [
       '-Ddart.vm.product=true',
       'run',
       'test/release_branch_probe.dart',
-    ]);
+    ], workingDirectory: packageRoot);
     check(because: 'probe stderr: ${result.stderr}', result.exitCode).equals(0);
     final out = result.stdout as String;
     check(out).contains('writerType=PrintConsoleWriter');

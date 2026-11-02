@@ -169,6 +169,14 @@ final class const LogLayer(
     Map<String, Object?>? data,
   }) => _log(.error, message, error, stackTrace, data);
 
+  /// Logs at `critical` (fatal uncaught errors).
+  void critical(
+    Object? message, {
+    Object? error,
+    StackTrace? stackTrace,
+    Map<String, Object?>? data,
+  }) => _log(.critical, message, error, stackTrace, data);
+
   /// Logs at `wtf` (What a Terrible Failure).
   void wtf(
     Object? message, {

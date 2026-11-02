@@ -71,4 +71,14 @@ void main() {
     check(LogPalette.colorFor('Shipping')).equals(color); // stable
     check(LogPalette.colorFor('Auth')).equals(LogPalette.auth); // listed
   });
+
+  test('critical logs at ChirpLogLevel.critical', () {
+    final writer = _CapturingWriter();
+    Chirp.root = ChirpLogger().addWriter(writer);
+
+    LogLayer.app.critical('uncaught zone error');
+
+    check(writer.records.single.level).equals(.critical);
+    check('${writer.records.single.message}').equals('uncaught zone error');
+  });
 }
