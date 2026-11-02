@@ -56,8 +56,8 @@ WHERE id = ?''',
     LogLayer.app.error('Flow failed', error: e, stackTrace: s);
   }
 
-  // Per-layer elision: Network JSON is a copy-out artifact → full payload;
-  // the same oversized data on an unlisted layer (App) still elides.
+  // Elision: oversized leaves clip to the global budget (1024 chars, 32 array
+  // items) while State clips tighter at ElisionConfig.vital.
   final bigBody = {
     'id': 'ord_8123',
     'note': 'n' * 1200, // past the 1024-char default budget
@@ -67,5 +67,5 @@ WHERE id = ?''',
     ),
   };
   LogLayer.network.info('POST /orders → 201', data: {'body': bigBody});
-  LogLayer.app.info('Same payload through App', data: {'body': bigBody});
+  LogLayer.state.info('Same payload through State', data: {'body': bigBody});
 }

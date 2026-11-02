@@ -161,15 +161,45 @@ WHERE id = ?''',
     check(labelIdx).isGreaterThan(1);
 
     final jsonLines = lines.sublist(labelIdx + 1);
-    // Flush-left: braces at column 0, inner indentation is JSON's own.
-    check(jsonLines.first).equals('{');
-    check(jsonLines.last).equals('}');
+    // Flush-left: braces at column 0, inner indentation is JSON's own, and
+    // deepest leaf objects (`body`) collapse onto one line when they fit.
+    check(jsonLines).deepEquals([
+      '{',
+      '  "status": 200,',
+      '  "body": {"id": 42, "name": "Jane"}',
+      '}',
+    ]);
     check(jsonDecode(jsonLines.join('\n')))
         .isA<Map<String, Object?>>()
         .deepEquals({
           'status': 200,
           'body': {'id': 42, 'name': 'Jane'},
         });
+  });
+
+  test('deepest objects and arrays collapse onto one line when they fit and '
+      'wrap when they exceed maxInlineDataWidth', () {
+    check(StructuredLogFormatter.formatJson({'duration_ms': 132}))
+        .equals('{"duration_ms": 132}');
+
+    const longDesc =
+        'A long leaf value that pushes this deepest object past 80 characters';
+    check(
+      StructuredLogFormatter.formatJson({
+        'args': [42, 'ok'],
+        'user': {'id': 42, 'name': 'Jane'},
+        'wide': {'id': 42, 'description': longDesc},
+      }),
+    ).equals(
+      '{\n'
+      '  "args": [42, "ok"],\n'
+      '  "user": {"id": 42, "name": "Jane"},\n'
+      '  "wide": {\n'
+      '    "id": 42,\n'
+      '    "description": "$longDesc"\n'
+      '  }\n'
+      '}',
+    );
   });
 
   test('rawDataLayers: const {} restores the gutter for Network', () {

@@ -15,7 +15,9 @@ void main() {
   );
 
   LogLayer.app.info('Startup complete', data: {'flavor': 'dev', 'ms': 412});
-  LogLayer.state.trace('~ userProvider | AsyncLoading ➔ AsyncData(User(42))');
+  LogLayer.state.trace(
+    '↻ update userProvider | AsyncLoading ➔ AsyncData(User(42))',
+  );
   LogLayer.route.trace('push{SplashRoute{} => HomeRoute{tab: feed}}');
   LogLayer.ui.debug('Hero animation skipped: image not yet decoded');
   LogLayer.network.trace(

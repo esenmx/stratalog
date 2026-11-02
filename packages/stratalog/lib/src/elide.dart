@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:chirp/chirp.dart';
 
 /// Field names whose values [elideJson] / [elideData] keep verbatim — small,
@@ -91,6 +93,8 @@ Object? _elideJson(
       };
       seen.remove(map);
       return out;
+    case final TypedData bytes:
+      return '<${bytes.lengthInBytes}-byte blob elided>';
     case final Iterable<Object?> iterable:
       if (!seen.add(iterable)) return '<cycle>';
       final out = <Object?>[
@@ -216,17 +220,11 @@ final class ElisionConfig {
 }
 
 /// Per-layer elision defaults for `configureLogging`, keyed by
-/// `record.loggerName` (precedent: `LogPalette.domains`): Network and Storage
-/// payloads are copy-out artifacts — JSON you paste into tools — so they pass
-/// verbatim; State is chatty, so it clips to vital fields. Trade-off:
-/// verbatim payloads enlarge the batched `dart:developer log()` messages, and
-/// bigger messages take the IDE's async fetch longer — widening the window in
-/// which separate batches can reach the debug console out of order.
-const Map<String, ElisionConfig> defaultLayerElision = {
-  'Network': .none,
-  'Storage': .none,
-  'State': .vital,
-};
+/// `record.loggerName` (precedent: `LogPalette.domains`): State is chatty, so
+/// it clips to vital fields; all other layers (Network and Storage included)
+/// use the global [ElisionConfig] budget. Opt a layer into verbatim output
+/// with `ElisionConfig.none` when needed.
+const Map<String, ElisionConfig> defaultLayerElision = {'State': .vital};
 
 /// Wraps any [ChirpFormatter] to elide `record.data` before it renders — the
 /// single place structure-aware truncation lives, composable over the

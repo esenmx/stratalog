@@ -44,10 +44,9 @@ const bool _kReleaseMode = .fromEnvironment('dart.vm.product');
 ///   are left untouched; wrap them in [ElidingFormatter] yourself if wanted
 ///   (an in-app viewer typically keeps the full body — two-tier logging).
 /// - [layerElision] overrides the budget per `loggerName` on the *debug*
-///   console only — by default Network/Storage payloads print verbatim
-///   (their JSON is a copy-out artifact) while State clips to vital fields.
-///   Release output keeps the single [elision] budget everywhere: full
-///   network bodies in prod log pipelines would be a volume regression.
+///   console only — by default State clips to vital fields while all other
+///   layers (Network and Storage included) use the global [elision] budget.
+///   Release output keeps the single [elision] budget everywhere.
 ///   `elision: null` removes the wrapper entirely, so it also drops
 ///   [layerElision]; to keep per-layer budgets with no global one, pass
 ///   `elision: ElisionConfig.none` instead.

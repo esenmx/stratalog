@@ -11,7 +11,7 @@ Opinionated structured logging for Dart & Flutter, built on [chirp](https://pub.
 - **Layer loggers** — nine pre-defined, non-overlapping domains (`LogLayer.network`, `LogLayer.auth`, …), each a `const` value rendering as a colored badge with a matching left gutter. Declare your own the same way: `const payments = LogLayer('Payments', color: Ansi256.springGreen4_29)` — omit `color` for a stable contrast-verified hash pick.
 - **Theme-adaptive colors** — every hue passes WCAG ≥ 3.0 contrast on solarized light/dark *and* soft-gray light/dark backgrounds, enforced by a test. Red/orange/hot-pink are reserved for severity, so hue always separates *where* from *how bad*.
 - **Pluggable crash reporting** — implement the 2-method `CrashReporter` against Crashlytics, Sentry, or anything else; stratalog carries no vendor dependency.
-- **Stack taps** — Dio, gRPC, ConnectRPC, Riverpod, auto_route, and FirebaseAuth integrations, each a separate `stratalog_*` package so unused dependencies stay out of your graph.
+- **Stack taps** — Dio, Drift, gRPC, ConnectRPC, Riverpod, bloc, auto_route, FirebaseAuth, FirebaseAnalytics, Crashlytics, Sentry, and an in-app viewer, each a separate `stratalog_*` package so unused dependencies stay out of your graph.
 - Debug builds log via `dart:developer` (no garbled ANSI from the daemon's `print` chunker); release builds emit single-line JSON for pipelines.
 
 ## Setup
@@ -76,11 +76,11 @@ Do **not** forward to `FlutterError.presentError` (or chain the previous handler
 Data ▼
 {
   "status": 200,
-  "body": { "id": 42, "name": "Jane" }
+  "body": {"id": 42, "name": "Jane"}
 }
 ```
 
-The same layers skip elision by default — `defaultLayerElision` maps `Network`/`Storage` to `ElisionConfig.none` (payload verbatim) and `State` to `ElisionConfig.vital` (200-char strings, 8 array items, `keepKeys` verbatim). Both defaults apply to the debug console path only.
+Elision runs on every layer by default (`ElisionConfig`: 1024-char strings, 32 array items, `keepKeys` verbatim), while `defaultLayerElision` maps `State` to `ElisionConfig.vital` (200-char strings, 8 array items). Network taps omit request/response bodies by default (`logBodies: false`) so large JSON payloads never flood the console; opt in with `logBodies: true` or `ElisionConfig.none` when needed:
 
 ```dart
 // Restore the gutter everywhere:
@@ -89,8 +89,8 @@ configureLogging(debugFormatter: StructuredLogFormatter(rawDataLayers: const {})
 // Drop per-layer elision — the global `elision` budget applies to every layer:
 configureLogging(layerElision: const {});
 
-// Tune one layer:
-configureLogging(layerElision: {'Network': ElisionConfig(maxStringChars: 4096)});
+// Opt Network into untruncated payloads:
+configureLogging(layerElision: {'Network': ElisionConfig.none});
 
 // Opt a custom layer into raw output:
 StructuredLogFormatter(
@@ -120,7 +120,7 @@ There is deliberately no `lifecycle` or `background` layer: an `AppLifecycleStat
 
 ## Crash reporting
 
-Ready-made adapters: [`stratalog_crashlytics`](https://pub.dev/packages/stratalog_crashlytics) and [`stratalog_sentry`](https://pub.dev/packages/stratalog_sentry).
+Ready-made adapters: [`stratalog_crashlytics`](../stratalog_crashlytics) and [`stratalog_sentry`](../stratalog_sentry).
 
 ```dart
 configureLogging(crashReporter: const CrashlyticsCrashReporter());
@@ -147,6 +147,9 @@ Each lives in its own package, so its dependency stays out of your graph:
 // stratalog_dio
 dio.interceptors.add(LoggerDioInterceptor()); // add FIRST
 
+// stratalog_drift
+AppDatabase(executor.interceptWith(LoggerQueryInterceptor()));
+
 // stratalog_grpc
 FooServiceClient(channel, interceptors: [LoggerGrpcInterceptor()]);
 
@@ -156,11 +159,22 @@ Transport(..., interceptors: [loggerConnectInterceptor()]);
 // stratalog_riverpod
 ProviderScope(observers: [const RiverpodLogger()], child: app);
 
+// stratalog_bloc
+Bloc.observer = const BlocLogger();
+
 // stratalog_auto_route
 router.config(navigatorObservers: () => [AppRouterObserver()]);
 
 // stratalog_firebase_auth — OAuth2 providers (Google/Apple/OIDC) included
 FirebaseAuthLogger(FirebaseAuth.instance).attach();
+
+// stratalog_firebase_analytics
+final analytics = LoggerAnalytics(FirebaseAnalytics.instance);
+
+// stratalog_viewer
+final memoryWriter = MemoryLogWriter();
+configureLogging(writers: [memoryWriter]);
+// later: LogViewerPage(writer: memoryWriter)
 ```
 
 ## Changing colors

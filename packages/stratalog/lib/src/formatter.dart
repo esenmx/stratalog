@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:chirp/chirp.dart';
 import 'package:chirp/chirp_spans.dart';
@@ -241,7 +242,20 @@ final class StructuredLogFormatter({
     );
   }
 
-  static const JsonEncoder _dataEncoder = .withIndent('  ', _jsonFallback);
+  /// Maximum line width (including indentation and `"key": ` prefix) for
+  /// collapsing a deepest (leaf) object or array onto a single line.
+  static const int maxInlineDataWidth = 80;
+
+  /// Formats [data] as indented JSON while collapsing deepest (leaf) objects
+  /// and arrays — those containing no non-empty [Map] or [Iterable] children —
+  /// onto a single line when they fit within [maxInlineWidth].
+  ///
+  /// Throws [JsonUnsupportedObjectError] if a map contains non-[String] keys
+  /// or [JsonCyclicError] on cyclic structures.
+  static String formatJson(
+    Map<String, Object?> data, {
+    int maxInlineWidth = maxInlineDataWidth,
+  }) => _formatJsonValue(data, 0, 0, .identity(), maxInlineWidth);
 
   /// chirp's writer dispatch loop has no try/catch around a sink — a throw
   /// here would skip every writer queued after this one. `_jsonFallback`
@@ -249,13 +263,121 @@ final class StructuredLogFormatter({
   /// data throwing from the encoder's own walk before any leaf is reached.
   static String _encodeData(Map<String, Object?> data) {
     try {
-      return _dataEncoder.convert(data);
+      return formatJson(data);
     } on Object catch (_) {
       return '<unencodable: ${data.runtimeType}>';
     }
   }
 
+  static bool _isCompound(Object? v) => switch (v) {
+    TypedData() => false,
+    final Map<Object?, Object?> m => m.isNotEmpty,
+    final Iterable<Object?> it => it.isNotEmpty,
+    _ => false,
+  };
+
+  static String _formatJsonValue(
+    Object? value,
+    int depth,
+    int prefixWidth,
+    Set<Object> active,
+    int maxInlineWidth,
+  ) {
+    switch (value) {
+      case null || bool() || String():
+        return jsonEncode(value);
+      case final num n when n.isFinite:
+        return jsonEncode(n);
+      case final TypedData bytes:
+        return jsonEncode('<${bytes.lengthInBytes}-byte blob elided>');
+      case final Map<Object?, Object?> map:
+        if (map.isEmpty) return '{}';
+        if (!active.add(map)) throw JsonCyclicError(map);
+        try {
+          final indent = '  ' * depth;
+          final childIndent = '  ' * (depth + 1);
+          if (!map.values.any(_isCompound)) {
+            final inlineParts = <String>[];
+            for (final entry in map.entries) {
+              final key = entry.key;
+              if (key is! String) throw JsonUnsupportedObjectError(map);
+              final v = _formatJsonValue(
+                entry.value,
+                depth + 1,
+                0,
+                active,
+                maxInlineWidth,
+              );
+              inlineParts.add('${jsonEncode(key)}: $v');
+            }
+            final inline = '{${inlineParts.join(', ')}}';
+            if (prefixWidth + inline.length <= maxInlineWidth) {
+              return inline;
+            }
+            final body = inlineParts.map((p) => '$childIndent$p').join(',\n');
+            return '{\n$body\n$indent}';
+          }
+          final lines = <String>[];
+          for (final entry in map.entries) {
+            final key = entry.key;
+            if (key is! String) throw JsonUnsupportedObjectError(map);
+            final encodedKey = jsonEncode(key);
+            final childPrefix = childIndent.length + encodedKey.length + 2;
+            final v = _formatJsonValue(
+              entry.value,
+              depth + 1,
+              childPrefix,
+              active,
+              maxInlineWidth,
+            );
+            lines.add('$childIndent$encodedKey: $v');
+          }
+          return '{\n${lines.join(',\n')}\n$indent}';
+        } finally {
+          active.remove(map);
+        }
+      case final Iterable<Object?> list:
+        if (list.isEmpty) return '[]';
+        if (!active.add(list)) throw JsonCyclicError(list);
+        try {
+          final indent = '  ' * depth;
+          final childIndent = '  ' * (depth + 1);
+          if (!list.any(_isCompound)) {
+            final inlineParts = [
+              for (final item in list)
+                _formatJsonValue(item, depth + 1, 0, active, maxInlineWidth),
+            ];
+            final inline = '[${inlineParts.join(', ')}]';
+            if (prefixWidth + inline.length <= maxInlineWidth) {
+              return inline;
+            }
+            final body = inlineParts.map((p) => '$childIndent$p').join(',\n');
+            return '[\n$body\n$indent]';
+          }
+          final lines = <String>[];
+          for (final item in list) {
+            final v = _formatJsonValue(
+              item,
+              depth + 1,
+              childIndent.length,
+              active,
+              maxInlineWidth,
+            );
+            lines.add('$childIndent$v');
+          }
+          return '[\n${lines.join(',\n')}\n$indent]';
+        } finally {
+          active.remove(list);
+        }
+      default:
+        return jsonEncode(_jsonFallback(value));
+    }
+  }
+
   static Object? _jsonFallback(Object? o) {
+    if (o case final TypedData bytes) {
+      return '<${bytes.lengthInBytes}-byte blob elided>';
+    }
     try {
       return o.toString();
     } on Object catch (_) {

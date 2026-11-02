@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:checks/checks.dart';
 import 'package:chirp/chirp.dart';
 import 'package:stratalog/stratalog.dart';
@@ -85,6 +87,11 @@ void main() {
       final uri = 'data:image/png;base64,${'Z' * 80}';
       check(_elideMap({'img': uri})['img'])
           .equals('<${uri.length}-char blob elided>');
+    });
+
+    test('summarizes TypedData instead of boxing bytes as an Iterable', () {
+      final bytes = Uint8List.fromList(.filled(64, 7));
+      check(_elideMap({'raw': bytes})['raw']).equals('<64-byte blob elided>');
     });
 
     test('truncates a long list with a remainder marker', () {
@@ -268,15 +275,26 @@ void main() {
       data: data,
     );
 
-    test('a Network record passes to inner verbatim — the identical '
-        'instance, no copy', () {
+    test('a layer configured with ElisionConfig.none passes to inner '
+        'verbatim — the identical instance, no copy', () {
       final inner = _CaptureFormatter();
       final record = layerRecord('Network', {'body': 'x' * 5000});
       ElidingFormatter(
         inner,
-        layerElision: defaultLayerElision,
+        layerElision: const {'Network': .none},
       ).format(record, .file());
       check(inner.seen).identicalTo(record);
+    });
+
+    test('defaultLayerElision elides Network and Storage with the instance '
+        'budget while clipping State at vital', () {
+      final inner = _CaptureFormatter();
+      ElidingFormatter(
+        inner,
+        maxStringChars: 8,
+        layerElision: defaultLayerElision,
+      ).format(layerRecord('Network', {'body': 'x' * 100}), .file());
+      check(inner.seen!.data['body']).equals('${'x' * 8}…(+92 chars)');
     });
 
     test('a State record clips at the vital budget, keepKeys verbatim', () {
