@@ -37,9 +37,15 @@ void main() {
         screenName: anyNamed('screenName'),
         screenClass: anyNamed('screenClass'),
         parameters: anyNamed('parameters'),
+        callOptions: anyNamed('callOptions'),
       ),
     ).thenAnswer((_) async {});
-    when(firebase.setUserId(id: anyNamed('id'))).thenAnswer((_) async {});
+    when(
+      firebase.setUserId(
+        id: anyNamed('id'),
+        callOptions: anyNamed('callOptions'),
+      ),
+    ).thenAnswer((_) async {});
     analytics = LoggerAnalytics(firebase);
   });
 
@@ -60,10 +66,13 @@ void main() {
     ).called(1);
   });
 
-  test('logScreenView mirrors the screen name', () async {
-    await analytics.logScreenView(screenName: 'Home');
-    check('${writer.records.single.message}').equals('screen: Home');
-    verify(firebase.logScreenView(screenName: 'Home')).called(1);
+  test('logScreenView mirrors screenName and screenClass', () async {
+    await analytics.logScreenView(screenName: 'Home', screenClass: 'HomePage');
+    final record = writer.records.single;
+    check('${record.message}').equals('screen: Home');
+    check(record.data['screen_class']).equals('HomePage');
+    verify(firebase.logScreenView(screenName: 'Home', screenClass: 'HomePage'))
+        .called(1);
   });
 
   test('setUserId logs presence only, never the id value', () async {

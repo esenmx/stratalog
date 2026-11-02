@@ -1,6 +1,6 @@
 # stratalog_firebase_analytics
 
-FirebaseAnalytics integration for [stratalog](https://pub.dev/packages/stratalog).
+FirebaseAnalytics integration for [stratalog](https://github.com/esenmx/stratalog).
 
 ```dart
 final analytics = LoggerAnalytics(FirebaseAnalytics.instance);

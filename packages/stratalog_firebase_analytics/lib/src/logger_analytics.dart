@@ -44,24 +44,42 @@ final class const LoggerAnalytics(
     String? screenName,
     String? screenClass,
     Map<String, Object>? parameters,
+    AnalyticsCallOptions? callOptions,
   }) {
-    logger.trace('screen: ${screenName ?? screenClass}', data: parameters);
+    final data = <String, Object?>{
+      if (screenName != null && screenClass != null)
+        'screen_class': screenClass,
+      ...?parameters,
+    };
+    logger.trace(
+      'screen: ${screenName ?? screenClass ?? 'unknown'}',
+      data: data.isEmpty ? null : data,
+    );
     return analytics.logScreenView(
       screenName: screenName,
       screenClass: screenClass,
       parameters: parameters,
+      callOptions: callOptions,
     );
   }
 
   /// Mirrors [FirebaseAnalytics.setUserId].
-  Future<void> setUserId(String? id) {
+  Future<void> setUserId(String? id, {AnalyticsCallOptions? callOptions}) {
     logger.trace(id == null ? 'user id cleared' : 'user id set');
-    return analytics.setUserId(id: id);
+    return analytics.setUserId(id: id, callOptions: callOptions);
   }
 
   /// Mirrors [FirebaseAnalytics.setUserProperty].
-  Future<void> setUserProperty({required String name, String? value}) {
+  Future<void> setUserProperty({
+    required String name,
+    required String? value,
+    AnalyticsCallOptions? callOptions,
+  }) {
     logger.trace('user property: $name', data: {'value': value});
-    return analytics.setUserProperty(name: name, value: value);
+    return analytics.setUserProperty(
+      name: name,
+      value: value,
+      callOptions: callOptions,
+    );
   }
 }

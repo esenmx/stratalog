@@ -23,7 +23,7 @@ final class const RiverpodLogger({
 
   @override
   void didAddProvider(ProviderObserverContext context, Object? value) {
-    logger.trace('✚ add ${context.name} | initial: ${_short(value)}');
+    logger.trace('✚ add ${_name(context)} | initial: ${_short(value)}');
   }
 
   @override
@@ -33,14 +33,14 @@ final class const RiverpodLogger({
     Object? newValue,
   ) {
     logger.trace(
-      '↻ update ${context.name} | '
+      '↻ update ${_name(context)} | '
       '${_short(previousValue)} ➔ ${_short(newValue)}',
     );
   }
 
   @override
   void didDisposeProvider(ProviderObserverContext context) {
-    logger.trace('⊘ dispose ${context.name}');
+    logger.trace('⊘ dispose ${_name(context)}');
   }
 
   @override
@@ -51,9 +51,13 @@ final class const RiverpodLogger({
   ) {
     // Exception = expected/recoverable -> warning; Error = programming bug.
     if (error is Exception) {
-      logger.warning('✗ ${context.name}', error: error, stackTrace: stackTrace);
+      logger.warning(
+        '✗ ${_name(context)}',
+        error: error,
+        stackTrace: stackTrace,
+      );
     } else {
-      logger.error('✗ ${context.name}', error: error, stackTrace: stackTrace);
+      logger.error('✗ ${_name(context)}', error: error, stackTrace: stackTrace);
     }
   }
 
@@ -62,7 +66,9 @@ final class const RiverpodLogger({
     ProviderObserverContext context,
     Mutation<Object?> mutation,
   ) {
-    logger.trace('⚡ ${mutation.key} | mutation start: ${_describe(mutation)}');
+    logger.trace(
+      '⚡ ${_name(context)} | mutation start: ${_describe(mutation)}',
+    );
   }
 
   @override
@@ -72,7 +78,7 @@ final class const RiverpodLogger({
     Object? result,
   ) {
     logger.trace(
-      '⚡ ${mutation.key} | mutation success: '
+      '⚡ ${_name(context)} | mutation success: '
       '${_describe(mutation)} ➔ ${_short(result)}',
     );
   }
@@ -84,7 +90,7 @@ final class const RiverpodLogger({
     Object error,
     StackTrace stackTrace,
   ) {
-    final desc = '⚡ ${mutation.key} | mutation error: ${_describe(mutation)}';
+    final desc = '⚡ ${_name(context)} | mutation error: ${_describe(mutation)}';
     if (error is Exception) {
       logger.warning(desc, error: error, stackTrace: stackTrace);
     } else {
@@ -97,8 +103,13 @@ final class const RiverpodLogger({
     ProviderObserverContext context,
     Mutation<Object?> mutation,
   ) {
-    logger.trace('⚡ ${mutation.key} | mutation reset: ${_describe(mutation)}');
+    logger.trace(
+      '⚡ ${_name(context)} | mutation reset: ${_describe(mutation)}',
+    );
   }
+
+  static String _name(ProviderObserverContext context) =>
+      context.provider.name ?? '${context.provider.runtimeType}';
 
   String _describe(Mutation<Object?> mutation) {
     final label = mutation.label ?? mutation.runtimeType;
@@ -111,8 +122,4 @@ final class const RiverpodLogger({
     final s = '$value';
     return max == null ? s : clipString(s, max);
   }
-}
-
-extension on ProviderObserverContext {
-  String get name => provider.name ?? '${provider.runtimeType}';
 }

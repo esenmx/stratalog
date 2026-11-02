@@ -1,5 +1,6 @@
 import 'package:checks/checks.dart';
 import 'package:chirp/chirp.dart';
+import 'package:riverpod/experimental/mutation.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:stratalog_riverpod/stratalog_riverpod.dart';
 import 'package:test/test.dart';
@@ -73,6 +74,36 @@ void main() {
     final throwsError = Provider<int>((ref) => throw StateError('y'));
     check(() => container.read(throwsError)).throws<Object>();
     check(writer.records.last.level).equals(.error);
+
+    container.dispose();
+  });
+
+  test('mutation lifecycle logs provider name and label without literal null '
+      'or duplicate keys', () async {
+    final container = ProviderContainer(observers: [const RiverpodLogger()]);
+    final save = Mutation<String>(label: 'saveUser');
+
+    await save.run(container, (tsx) async => 'ok');
+    save.reset(container);
+
+    final keyed = save('42');
+    await check(
+      keyed.run(container, (tsx) async => throw Exception('conflict')),
+    ).throws<Exception>();
+
+    final mutLines = messages().where((m) => m.startsWith('⚡')).toList();
+    check(mutLines).any(
+      (it) => it
+        ..contains('mutation start: saveUser')
+        ..not((m) => m.contains('null')),
+    );
+    check(mutLines).any((it) => it.contains('mutation success: saveUser ➔ ok'));
+    check(mutLines).any((it) => it.contains('mutation reset: saveUser'));
+    check(mutLines).any(
+      (it) => it
+        ..contains('mutation error: saveUser(key: 42)')
+        ..not((m) => m.startsWith('⚡ 42 |')),
+    );
 
     container.dispose();
   });

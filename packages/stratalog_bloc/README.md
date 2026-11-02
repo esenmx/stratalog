@@ -1,11 +1,11 @@
 # stratalog_bloc
 
-bloc integration for [stratalog](https://pub.dev/packages/stratalog).
+bloc integration for [stratalog](https://github.com/esenmx/stratalog).
 
 ```dart
 Bloc.observer = const BlocLogger();
 ```
 
-Create/change/transition/close for every bloc and cubit, mirroring `stratalog_riverpod`'s format (`+`, `~`, `-`, `⚡`). Blocs log transitions with the event; the duplicate `onChange` line is suppressed. `Exception` failures log at `warning`, `Error`s at `error`; fat states are ellipsized.
+Create/change/transition/close for every bloc and cubit, mirroring `stratalog_riverpod`'s format (`✚`, `↻`, `⊘`, `⚡`, `✗`). Blocs log transitions with the event; the duplicate `onChange` line is suppressed. `Exception` failures log at `warning`, `Error`s at `error`; fat states are ellipsized (default 800 chars).
 
 See the [stratalog README](https://github.com/esenmx/stratalog) for the layer taxonomy and theming.

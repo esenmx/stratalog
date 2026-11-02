@@ -1,6 +1,6 @@
 # stratalog_auto_route
 
-auto_route integration for [stratalog](https://pub.dev/packages/stratalog) — taps auto_route into stratalog's colored, contrast-verified log layers.
+auto_route integration for [stratalog](https://github.com/esenmx/stratalog) — taps auto_route into stratalog's colored, contrast-verified log layers.
 
 ```dart
 router.config(navigatorObservers: () => [AppRouterObserver()]);
