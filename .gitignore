@@ -2,3 +2,6 @@
 build/
 pubspec.lock
 .claude/
+
+# strata binary built in place
+tools/strata/strata

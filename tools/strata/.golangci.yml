@@ -1,0 +1,15 @@
+version: "2"
+
+linters:
+  enable:
+    - modernize
+    - thelper
+    - tparallel
+    - usetesting
+  settings:
+    usetesting:
+      context-background: true
+
+formatters:
+  enable:
+    - gofmt
