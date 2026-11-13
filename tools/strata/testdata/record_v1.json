@@ -1,0 +1,16 @@
+{
+  "v": 1,
+  "seq": 1,
+  "time": "2026-01-02T03:04:05.678Z",
+  "level": "info",
+  "severity": 200,
+  "layer": "Network",
+  "color": "#875fff",
+  "onColor": "#ffffff",
+  "message": "← 200 GET https://api.example.com/users/42",
+  "data": {
+    "status": 200,
+    "body": {"id": 42, "name": "Jane", "tags": ["a", "b"]},
+    "duration_ms": 12
+  }
+}

@@ -6,6 +6,7 @@ import 'package:stratalog/src/crash_reporter.dart';
 import 'package:stratalog/src/elide.dart';
 import 'package:stratalog/src/formatter.dart';
 import 'package:stratalog/src/ide_writer.dart';
+import 'package:stratalog/src/vm_stream_writer.dart';
 
 // Mirrors Flutter's kReleaseMode without a Flutter dependency: dart2js/VM
 // AOT release builds define dart.vm.product.
@@ -50,6 +51,11 @@ const bool _kReleaseMode = .fromEnvironment('dart.vm.product');
 ///   `elision: null` removes the wrapper entirely, so it also drops
 ///   [layerElision]; to keep per-layer budgets with no global one, pass
 ///   `elision: ElisionConfig.none` instead.
+/// - [vmStream] (debug/profile only) adds a [VmStreamWriter] next to the
+///   console writer — [console] override included — posting every record,
+///   payload unelided, as JSON on the `stratalog` VM service stream for the
+///   `strata` terminal viewer. Pass `false` to leave it out. Release builds
+///   never add it.
 void configureLogging({
   List<ChirpWriter> writers = const [],
   ChirpWriter? console,
@@ -60,6 +66,7 @@ void configureLogging({
   ChirpFormatter? releaseFormatter,
   ElisionConfig? elision = const ElisionConfig(),
   Map<String, ElisionConfig> layerElision = defaultLayerElision,
+  bool vmStream = true,
 }) {
   final logger = ChirpLogger();
   if (minLevel != null) logger.setMinLogLevel(minLevel);
@@ -94,6 +101,12 @@ void configureLogging({
         ),
       ),
     );
+  }
+
+  // Its own guarded statement, not part of the chain above: `console` wins
+  // that chain even in release, and release must never post records.
+  if (vmStream && !_kReleaseMode) {
+    logger.addWriter(VmStreamWriter(domainColors: domainColors));
   }
 
   if (crashReporter case final reporter?) {

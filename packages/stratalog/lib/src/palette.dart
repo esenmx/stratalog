@@ -1,5 +1,7 @@
 import 'package:chirp/chirp.dart';
 
+import 'package:stratalog/src/layers.dart';
+
 /// Contrast-verified ANSI palette.
 ///
 /// Chirp bakes colors to fixed 256-color codes (no terminal-palette remap),
@@ -125,6 +127,32 @@ abstract final class LogPalette {
     if (listed != null) return listed;
     return hashPool[_fnv1a(name) % hashPool.length];
   }
+
+  /// Badge/gutter color for the layer [name]: `null` → [app], then
+  /// [overrides], then the color declared on the `LogLayer`, then [colorFor].
+  ///
+  /// The one resolution every sink shares — `StructuredLogFormatter` passes
+  /// its merged domain map, `VmStreamWriter` the same merge.
+  static ConsoleColor resolve(
+    String? name, {
+    Map<String, ConsoleColor> overrides = const {},
+  }) {
+    if (name == null) return app;
+    return overrides[name] ?? LogLayer.declaredColorOf(name) ?? colorFor(name);
+  }
+
+  /// Badge text on [bg]: pure black/white (silver washes out on mid-tone
+  /// badges), flipped by perceived luminance so any badge stays legible.
+  static ConsoleColor onColor(ConsoleColor bg) {
+    final luma = 0.299 * bg.r + 0.587 * bg.g + 0.114 * bg.b;
+    return luma > 140 ? Ansi256.grey0_16 : Ansi256.grey100_231;
+  }
+
+  /// [c] as a `#rrggbb` hex string (lowercase, zero-padded).
+  static String hex(ConsoleColor c) =>
+      '#${_hex2(c.r)}${_hex2(c.g)}${_hex2(c.b)}';
+
+  static String _hex2(int v) => v.toRadixString(16).padLeft(2, '0');
 
   static int _fnv1a(String s) {
     var hash = 0x811c9dc5;

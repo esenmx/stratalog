@@ -4,7 +4,6 @@ import 'dart:typed_data';
 import 'package:chirp/chirp.dart';
 import 'package:chirp/chirp_spans.dart';
 
-import 'package:stratalog/src/layers.dart';
 import 'package:stratalog/src/palette.dart';
 
 /// Draws a colored left border along every line of [child] — one visual
@@ -210,7 +209,7 @@ final class StructuredLogFormatter({
     return SpanSequence(
       children: [
         AnsiStyled(
-          foreground: _badgeTextOn(themeColor),
+          foreground: LogPalette.onColor(themeColor),
           background: themeColor,
           bold: true,
           child: PlainText(' ${record.loggerName ?? "App"} '),
@@ -385,17 +384,6 @@ final class StructuredLogFormatter({
     }
   }
 
-  /// Pure black/white (silver washes out on mid-tone badges), flipped by
-  /// perceived background luminance so any badge color stays legible.
-  static ConsoleColor _badgeTextOn(ConsoleColor bg) {
-    final luma = 0.299 * bg.r + 0.587 * bg.g + 0.114 * bg.b;
-    return luma > 140 ? Ansi256.grey0_16 : Ansi256.grey100_231;
-  }
-
-  ConsoleColor _colorForLogger(String? name) {
-    if (name == null) return LogPalette.app;
-    return domainColors[name] ??
-        LogLayer.declaredColorOf(name) ?? // color declared on the LogLayer
-        LogPalette.colorFor(name); // stable hash for unlisted layers
-  }
+  ConsoleColor _colorForLogger(String? name) =>
+      LogPalette.resolve(name, overrides: domainColors);
 }

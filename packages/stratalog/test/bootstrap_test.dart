@@ -9,14 +9,43 @@ import 'package:test/test.dart';
 void main() {
   test('default debug console is the IDE writer', () {
     configureLogging();
-    check(Chirp.root.writers.single).isA<IdeDebugConsoleWriter>();
+    final writers = Chirp.root.writers;
+    check(writers.whereType<IdeDebugConsoleWriter>()).length.equals(1);
+    check(writers.whereType<PrintConsoleWriter>()).isEmpty();
+  });
+
+  test('debug adds one VmStreamWriter by default', () {
+    configureLogging();
+    final writers = Chirp.root.writers;
+    check(writers.whereType<VmStreamWriter>()).length.equals(1);
+    check(writers.length).equals(2);
+  });
+
+  test('vmStream: false leaves the VmStreamWriter out', () {
+    configureLogging(vmStream: false);
+    final writers = Chirp.root.writers;
+    check(writers.whereType<VmStreamWriter>()).isEmpty();
+    check(writers.single).isA<IdeDebugConsoleWriter>();
+  });
+
+  test('console: override still gets the VmStreamWriter', () {
+    final console = _StubWriter();
+    configureLogging(console: console);
+    check(Chirp.root.writers.whereType<VmStreamWriter>()).length.equals(1);
+  });
+
+  test('configureLogging runs repeatedly without throwing', () {
+    for (var i = 0; i < 3; i++) {
+      configureLogging();
+    }
+    check(Chirp.root.writers.whereType<VmStreamWriter>()).length.equals(1);
   });
 
   test('console: replaces the default console writer instead of appending', () {
     final console = _StubWriter();
     configureLogging(console: console);
 
-    final writers = Chirp.root.writers;
+    final writers = Chirp.root.writers.where((w) => w is! VmStreamWriter);
     check(writers.single).identicalTo(console);
     check(writers.whereType<IdeDebugConsoleWriter>()).isEmpty();
     check(writers.whereType<PrintConsoleWriter>()).isEmpty();
@@ -27,7 +56,7 @@ void main() {
     final extra = _StubWriter();
     configureLogging(console: console, writers: [extra]);
 
-    final writers = Chirp.root.writers;
+    final writers = Chirp.root.writers.where((w) => w is! VmStreamWriter);
     check(writers.length).equals(2);
     check(writers).contains(console);
     check(writers).contains(extra);
