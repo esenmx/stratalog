@@ -55,20 +55,45 @@ func Decode(b []byte) (Record, error) {
 	return r, nil
 }
 
-// FirstLine is the message's first line, suffixed " …" when more follow.
+// FirstLine is the message's first line, [Printable], suffixed " …" when
+// more follow.
 func (r Record) FirstLine() string {
 	first, _, multi := strings.Cut(r.Message, "\n")
+	first = Printable(strings.TrimSuffix(first, "\r"))
 	if multi {
 		return first + " …"
 	}
 	return first
 }
 
+// Printable makes one line of record text safe to print: control
+// characters (ESC, CR, C1) become visible \xNN escapes so a record can't
+// drive the terminal, and a tab becomes a space.
+func Printable(s string) string {
+	if !strings.ContainsFunc(s, isControl) {
+		return s
+	}
+	var b strings.Builder
+	for _, c := range s {
+		switch {
+		case c == '\t':
+			b.WriteByte(' ')
+		case isControl(c):
+			fmt.Fprintf(&b, `\x%02x`, c)
+		default:
+			b.WriteRune(c)
+		}
+	}
+	return b.String()
+}
+
+func isControl(c rune) bool { return c < 0x20 || c == 0x7f || (c >= 0x80 && c < 0xa0) }
+
 // Plain renders `HH:MM:SS.mmm Layer [level] message {data}` in local time,
 // without ANSI.
 func (r Record) Plain() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s %s [%s] %s", r.Time.Local().Format("15:04:05.000"), r.Layer, r.Level, r.FirstLine())
+	fmt.Fprintf(&b, "%s %s [%s] %s", r.Time.Local().Format("15:04:05.000"), Printable(r.Layer), Printable(r.Level), r.FirstLine())
 	if len(r.Data) > 0 {
 		var data bytes.Buffer
 		if err := json.Compact(&data, r.Data); err == nil {

@@ -260,7 +260,7 @@ func TestRestartInsertsDivider(t *testing.T) {
 	}
 }
 
-func TestReconnectInsertsDivider(t *testing.T) {
+func TestReconnectKeepsRecordsAndDividesOnlyOnRestart(t *testing.T) {
 	m := newModel(t)
 	send(m, ConnMsg(Connected, "ws://a/ws", 0), RecordMsg(vmservice.Item{Rec: appBoot()}, 0))
 	send(m, ConnMsg(Disconnected, "connection lost", 0))
@@ -268,11 +268,16 @@ func TestReconnectInsertsDivider(t *testing.T) {
 		t.Errorf("disconnect lost records or state:\n%s", s)
 	}
 
-	send(m, ConnMsg(Connected, "ws://b/ws", 2))
+	send(m, ConnMsg(Connected, "ws://a/ws", 2))
+	if s := screen(m); strings.Contains(s, restartedLabel) || !strings.Contains(s, "malformed 2") {
+		t.Errorf("same-app reconnect drew a divider or lost the malformed count:\n%s", s)
+	}
 
-	s := screen(m)
-	if !strings.Contains(s, "── session restarted") || !strings.Contains(s, "malformed 2") {
-		t.Errorf("reconnect lacks divider or malformed count:\n%s", s)
+	relaunched := appBoot()
+	relaunched.IsolateID = "isolates/2"
+	send(m, RecordMsg(vmservice.Item{Rec: relaunched, Restarted: true}, 2))
+	if n := strings.Count(screen(m), restartedLabel); n != 1 {
+		t.Errorf("relaunch drew %d dividers, want 1:\n%s", n, screen(m))
 	}
 }
 

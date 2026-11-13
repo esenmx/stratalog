@@ -100,6 +100,10 @@ func TestPlain(t *testing.T) {
 			rec:  Record{Time: at, Layer: "Network", Level: "debug", Message: "GET", Data: json.RawMessage("{\n  \"a\": [1, 2],\n  \"b\": {\"c\": 1.0}\n}")},
 			want: clock + ` Network [debug] GET {"a":[1,2],"b":{"c":1.0}}`,
 		},
+		"control characters escaped, CRLF trimmed": {
+			rec:  Record{Time: at, Layer: "App\x1b[2J", Level: "info", Message: "a\x1b[31mb\tc\r\nnext"},
+			want: clock + ` App\x1b[2J [info] a\x1b[31mb c …`,
+		},
 		"multi-line message keeps the first line": {
 			rec:  Record{Time: at, Layer: "Database", Level: "trace", Message: "SELECT *\nFROM users\nWHERE id = 1"},
 			want: clock + " Database [trace] SELECT * …",

@@ -120,7 +120,6 @@ type Model struct {
 
 	state       ConnState
 	stateDetail string
-	connections int
 	records     int // entries that are not dividers
 	dropped     int
 	malformed   int64
@@ -152,12 +151,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.addRecord(msg.item)
 	case connMsg:
 		m.malformed = msg.malformed
-		if msg.state == Connected {
-			if m.connections > 0 && len(m.entries) > 0 {
-				m.addEntry(&Entry{Divider: restartedLabel})
-			}
-			m.connections++
-		}
+		// No divider here: a relaunch reaches the model as a Restarted
+		// record (new isolate), a blip to the same app as no restart at all.
 		m.state, m.stateDetail = msg.state, msg.detail
 	case tea.KeyPressMsg:
 		if m.filtering {
@@ -471,6 +466,7 @@ func (m *Model) appendEntryRows(rows []row, e *Entry) []row {
 		return rows
 	}
 	child := func(kind rowKind, text string, parent int) row {
+		text = record.Printable(strings.TrimSuffix(text, "\r"))
 		return row{kind: kind, entry: e, text: text, index: -1, parent: len(rows) - parent}
 	}
 	if e.Rec.File != "" {
@@ -722,11 +718,11 @@ func header(e *Entry) string {
 	if r.OnColor != "" {
 		badge = badge.Foreground(lipgloss.Color(r.OnColor))
 	}
-	level := "[" + r.Level + "]"
+	level := "[" + record.Printable(r.Level) + "]"
 	if r.LevelColor != "" {
 		level = lipgloss.NewStyle().Foreground(lipgloss.Color(r.LevelColor)).Render(level)
 	}
-	return mark + badge.Render(" "+r.Layer+" ") + " " + level + " " +
+	return mark + badge.Render(" "+record.Printable(r.Layer)+" ") + " " + level + " " +
 		dimStyle.Render(r.Time.Local().Format("15:04:05.000")) + " " + r.FirstLine()
 }
 

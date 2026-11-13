@@ -77,6 +77,19 @@ func TestDedup(t *testing.T) {
 			{r: rec("a", 1, 1), keep: true, restarted: true},
 			{live: true, r: rec("a", 1, 2), keep: true},
 		},
+		"history seq going back with newer times is a restart": {
+			{r: rec("a", 0, 2001), keep: true},
+			{r: rec("a", 0, 3000), keep: true},
+			{r: rec("a", 1, 1), keep: true, restarted: true},
+			{r: rec("a", 1, 2), keep: true},
+			{live: true, r: rec("a", 1, 3), keep: true},
+			{r: rec("a", 1, 1)},
+		},
+		"live seq going back with older times is not a restart": {
+			{r: rec("a", 0, 5), keep: true},
+			{live: true, r: rec("a", 0, 3), keep: true},
+			{live: true, r: rec("a", 0, 5)},
+		},
 		"new isolate in history after another is a restart": {
 			{live: true, r: rec("a", 0, 1), keep: true},
 			{r: rec("b", 0, 1), keep: true, restarted: true},
@@ -117,7 +130,16 @@ func wireRecord(seq int64) map[string]any {
 // fakeVM serves just enough VM service protocol for Stream: one isolate
 // whose history response is withheld until two live events were sent, so
 // live records arrive while history is in flight.
-func fakeVM(t *testing.T, history []int64, live []int64) string {
+// fakeOpts shapes [fakeVM]'s one isolate. Live events are sent when the
+// history call arrives, before its reply, so they are in flight together.
+type fakeOpts struct {
+	history, live []int64
+	abrupt        bool // close right after the history reply
+	hang          bool // never reply to the history call
+}
+
+// fakeVM serves just enough VM service protocol for Stream.
+func fakeVM(t *testing.T, o fakeOpts) string {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, nil)
@@ -166,17 +188,22 @@ func fakeVM(t *testing.T, history []int64, live []int64) string {
 			case "getIsolate":
 				reply(map[string]any{"extensionRPCs": []string{HistoryExtension}})
 			case HistoryExtension:
-				for _, seq := range live {
+				for _, seq := range o.live {
 					event(seq)
 				}
-				recs := make([]any, 0, len(history)+1)
-				for _, seq := range history {
+				if o.hang {
+					continue
+				}
+				recs := make([]any, 0, len(o.history)+1)
+				for _, seq := range o.history {
 					recs = append(recs, wireRecord(seq))
 				}
 				recs = append(recs, map[string]any{"not": "a record"})
 				reply(map[string]any{"records": recs})
-				// Let the client read everything, then drop the connection.
-				time.Sleep(50 * time.Millisecond)
+				if !o.abrupt {
+					// Let the client read everything, then drop the connection.
+					time.Sleep(50 * time.Millisecond)
+				}
 				return
 			}
 		}
@@ -185,29 +212,44 @@ func fakeVM(t *testing.T, history []int64, live []int64) string {
 	return "ws" + strings.TrimPrefix(srv.URL, "http")
 }
 
+// label is an emitted item as "seq N", suffixed " (R)" when Restarted.
+func label(it Item) string {
+	if it.Restarted {
+		return it.Rec.Message + " (R)"
+	}
+	return it.Rec.Message
+}
+
 func TestStreamOrdersHistoryAndLive(t *testing.T) {
 	for name, tc := range map[string]struct {
-		history, live []int64 // live events are sent before the history reply
-		want          []string
+		opts fakeOpts
+		want []string
 	}{
 		"live after history": {
-			history: []int64{1, 2, 3},
-			live:    []int64{4, 5},
-			want:    []string{"seq 1", "seq 2", "seq 3", "seq 4", "seq 5"},
+			opts: fakeOpts{history: []int64{1, 2, 3}, live: []int64{4, 5}},
+			want: []string{"seq 1", "seq 2", "seq 3", "seq 4", "seq 5"},
 		},
 		"live overlaps history tail": {
-			history: []int64{1, 2, 3},
-			live:    []int64{3, 4},
-			want:    []string{"seq 1", "seq 2", "seq 3", "seq 4"},
+			opts: fakeOpts{history: []int64{1, 2, 3}, live: []int64{3, 4}},
+			want: []string{"seq 1", "seq 2", "seq 3", "seq 4"},
 		},
 		"history newer than a held live record": {
-			history: []int64{1, 2, 3, 4},
-			live:    []int64{3},
-			want:    []string{"seq 1", "seq 2", "seq 3", "seq 4"},
+			opts: fakeOpts{history: []int64{1, 2, 3, 4}, live: []int64{3}},
+			want: []string{"seq 1", "seq 2", "seq 3", "seq 4"},
+		},
+		// More records than the ring between streamListen and the snapshot:
+		// the oldest held ones were evicted from history.
+		"burst overflows the ring": {
+			opts: fakeOpts{history: []int64{3, 4, 5}, live: []int64{1, 2, 3, 4, 5}},
+			want: []string{"seq 1", "seq 2", "seq 3", "seq 4", "seq 5"},
+		},
+		"connection closes right after the history reply": {
+			opts: fakeOpts{history: []int64{1, 2}, live: []int64{3}, abrupt: true},
+			want: []string{"seq 1", "seq 2", "seq 3"},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			url := fakeVM(t, tc.history, tc.live)
+			url := fakeVM(t, tc.opts)
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
 			c, err := Dial(ctx, url)
@@ -217,7 +259,7 @@ func TestStreamOrdersHistoryAndLive(t *testing.T) {
 			defer c.Close()
 
 			var got []string
-			err = Stream(ctx, c, NewDedup(), func(it Item) { got = append(got, it.Rec.Message) })
+			err = Stream(ctx, c, NewDedup(), func(it Item) { got = append(got, label(it)) })
 
 			if err == nil || ctx.Err() != nil {
 				t.Fatalf("Stream returned %v (ctx %v), want a connection-closed error", err, ctx.Err())
@@ -229,6 +271,31 @@ func TestStreamOrdersHistoryAndLive(t *testing.T) {
 				t.Errorf("Malformed() = %d, want 1", got)
 			}
 		})
+	}
+}
+
+func TestStreamReleasesLiveWhenHistoryHangs(t *testing.T) {
+	defer func(d time.Duration) { historyTimeout = d }(historyTimeout)
+	historyTimeout = 100 * time.Millisecond
+
+	url := fakeVM(t, fakeOpts{live: []int64{1, 2, 3}, hang: true})
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	c, err := Dial(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	var got []string
+	_ = Stream(ctx, c, NewDedup(), func(it Item) {
+		if got = append(got, label(it)); len(got) == 3 {
+			cancel()
+		}
+	})
+
+	if want := []string{"seq 1", "seq 2", "seq 3"}; !slices.Equal(got, want) {
+		t.Errorf("emitted %q, want %q", got, want)
 	}
 }
 

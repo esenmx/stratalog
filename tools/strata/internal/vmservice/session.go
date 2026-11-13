@@ -9,8 +9,8 @@ import (
 )
 
 // Item is one record ready to show. Restarted marks the first record of a
-// restarted writer: a seq that repeats or goes back in its isolate, or a new
-// isolate appearing live after others were seen.
+// restarted writer: a new writer generation in its isolate, or a new isolate
+// after others were seen.
 type Item struct {
 	Rec       record.Record
 	Restarted bool
@@ -19,16 +19,20 @@ type Item struct {
 // Dedup tracks every record seen, across connections, by isolate and seq.
 //
 // A seq seen before with the same time is the same record — history and
-// live overlap, in either order, since a history response can be handled
-// before live events that preceded it on the wire. A seq seen before with a
-// different time is a new writer generation, never dropped.
+// live overlap in either order. A new writer generation (configureLogging
+// run again, or a hot restart in the same isolate) restarts seq at 1 with
+// newer times: a seq seen before with a different time, or an unseen seq
+// below the newest but timed after it. An unseen older seq timed before the
+// newest is just an older record — one the ring evicted before a history
+// snapshot — and is kept as-is.
 type Dedup struct {
 	isolates map[string]*isolateSeen
 }
 
 type isolateSeen struct {
-	last int64
-	seen map[int64]time.Time // seq → record time, current generation
+	last     int64
+	lastTime time.Time           // time of the record at last
+	seen     map[int64]time.Time // seq → record time, current generation
 }
 
 // NewDedup returns an empty tracker.
@@ -36,48 +40,34 @@ func NewDedup() *Dedup { return &Dedup{isolates: map[string]*isolateSeen{}} }
 
 // Live records a live record: keep is false for one already seen, and
 // restarted marks a new writer generation.
-func (d *Dedup) Live(r record.Record) (keep, restarted bool) {
-	iso, known := d.isolates[r.IsolateID]
-	if !known {
-		restarted = len(d.isolates) > 0
-		iso = d.track(r.IsolateID)
-	} else if at, seen := iso.seen[r.Seq]; seen && at.Equal(r.Time) {
-		return false, false
-	} else if r.Seq <= iso.last {
-		restarted = true
-		iso.reset()
-	}
-	iso.add(r)
-	return true, restarted
-}
+func (d *Dedup) Live(r record.Record) (keep, restarted bool) { return d.observe(r) }
 
-// History records a history record: keep is false for one already seen, and
-// restarted marks a writer that restarted while nobody was listening — a
-// repeated seq with a new time, or a new isolate after others were seen.
-func (d *Dedup) History(r record.Record) (keep, restarted bool) {
+// History records a history record, by the same rules as [Dedup.Live].
+func (d *Dedup) History(r record.Record) (keep, restarted bool) { return d.observe(r) }
+
+func (d *Dedup) observe(r record.Record) (keep, restarted bool) {
 	iso, known := d.isolates[r.IsolateID]
-	if !known {
+	switch {
+	case !known:
 		restarted = len(d.isolates) > 0
-		iso = d.track(r.IsolateID)
-	} else if at, seen := iso.seen[r.Seq]; seen {
-		if at.Equal(r.Time) {
+		iso = &isolateSeen{seen: map[int64]time.Time{}}
+		d.isolates[r.IsolateID] = iso
+	default:
+		at, seen := iso.seen[r.Seq]
+		switch {
+		case seen && at.Equal(r.Time):
 			return false, false
+		case seen, r.Seq < iso.last && r.Time.After(iso.lastTime):
+			restarted = true
+			iso.reset()
 		}
-		restarted = true
-		iso.reset()
 	}
 	iso.add(r)
 	return true, restarted
-}
-
-func (d *Dedup) track(isolateID string) *isolateSeen {
-	iso := &isolateSeen{seen: map[int64]time.Time{}}
-	d.isolates[isolateID] = iso
-	return iso
 }
 
 func (s *isolateSeen) reset() {
-	s.last = 0
+	s.last, s.lastTime = 0, time.Time{}
 	clear(s.seen)
 }
 
@@ -87,16 +77,16 @@ const seenWindow = 2000
 
 func (s *isolateSeen) add(r record.Record) {
 	s.seen[r.Seq] = r.Time
-	s.last = max(s.last, r.Seq)
+	if r.Seq > s.last {
+		s.last, s.lastTime = r.Seq, r.Time
+	}
 	if len(s.seen) > 2*seenWindow {
 		maps.DeleteFunc(s.seen, func(seq int64, _ time.Time) bool { return seq <= s.last-seenWindow })
 	}
 }
 
-type historyResult struct {
-	recs []record.Record
-	err  error
-}
+// historyTimeout bounds one history fetch; a paused isolate never replies.
+var historyTimeout = 5 * time.Second
 
 // Stream subscribes c to the stratalog stream and emits its records until
 // ctx ends or the connection drops, returning why it stopped.
@@ -104,7 +94,8 @@ type historyResult struct {
 // History from every isolate serving [HistoryExtension] is emitted ahead of
 // live records: live records arriving while history is in flight are held
 // back, never dropped. An isolate without the extension at connect (the app
-// still booting) is retried on its first live record.
+// still booting) is retried on its first live record. A fetch that fails or
+// outlives [historyTimeout] only costs that isolate's history.
 func Stream(ctx context.Context, c *Client, d *Dedup, emit func(Item)) error {
 	if err := c.Listen(ctx); err != nil {
 		return err
@@ -114,7 +105,7 @@ func Stream(ctx context.Context, c *Client, d *Dedup, emit func(Item)) error {
 		return err
 	}
 
-	results := make(chan historyResult)
+	results := make(chan []record.Record)
 	stop := make(chan struct{})
 	defer close(stop)
 	fetched := map[string]bool{}
@@ -123,9 +114,11 @@ func Stream(ctx context.Context, c *Client, d *Dedup, emit func(Item)) error {
 		fetched[isolateID] = true
 		inflight++
 		go func() {
-			recs, err := c.History(ctx, isolateID)
+			fctx, cancel := context.WithTimeout(ctx, historyTimeout)
+			defer cancel()
+			recs, _ := c.History(fctx, isolateID)
 			select {
-			case results <- historyResult{recs, err}:
+			case results <- recs:
 			case <-stop:
 			}
 		}()
@@ -134,26 +127,57 @@ func Stream(ctx context.Context, c *Client, d *Dedup, emit func(Item)) error {
 		fetch(id)
 	}
 
-	// Held records go through Dedup only when emitted, after the history
-	// that precedes them: judged on arrival, a held seq would be emitted
-	// after newer history records.
-	var held []record.Record
+	// Records go through Dedup only when emitted, in emit order: judged on
+	// arrival, a held seq would be emitted after newer history records.
+	var held, history []record.Record
 	live := func(r record.Record) {
 		if keep, restarted := d.Live(r); keep {
 			emit(Item{Rec: r, Restarted: restarted})
 		}
 	}
+	flush := func() {
+		// Held records older than their isolate's oldest history record were
+		// evicted from the ring before the snapshot: they come first.
+		oldest := map[string]time.Time{}
+		for _, r := range history {
+			if t, ok := oldest[r.IsolateID]; !ok || r.Time.Before(t) {
+				oldest[r.IsolateID] = r.Time
+			}
+		}
+		var after []record.Record
+		for _, r := range held {
+			if t, ok := oldest[r.IsolateID]; ok && r.Time.Before(t) {
+				live(r)
+			} else {
+				after = append(after, r)
+			}
+		}
+		for _, r := range history {
+			if keep, restarted := d.History(r); keep {
+				emit(Item{Rec: r, Restarted: restarted})
+			}
+		}
+		for _, r := range after {
+			live(r)
+		}
+		held, history = nil, nil
+	}
+
 	records := c.Records()
 	for {
+		// After a drop, in-flight fetches still finish (their replies may
+		// have arrived just before it) before the final flush.
+		if records == nil && inflight == 0 {
+			flush()
+			return c.Err()
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case r, ok := <-records:
 			if !ok {
-				for _, r := range held {
-					live(r)
-				}
-				return c.Err()
+				records = nil
+				continue
 			}
 			if !fetched[r.IsolateID] {
 				fetch(r.IsolateID)
@@ -163,19 +187,11 @@ func Stream(ctx context.Context, c *Client, d *Dedup, emit func(Item)) error {
 			} else {
 				live(r)
 			}
-		case h := <-results:
+		case recs := <-results:
 			inflight--
-			// A failed fetch only costs history; live records still flow.
-			for _, r := range h.recs {
-				if keep, restarted := d.History(r); keep {
-					emit(Item{Rec: r, Restarted: restarted})
-				}
-			}
+			history = append(history, recs...)
 			if inflight == 0 {
-				for _, r := range held {
-					live(r)
-				}
-				held = nil
+				flush()
 			}
 		}
 	}

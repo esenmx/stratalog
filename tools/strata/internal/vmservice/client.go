@@ -171,7 +171,16 @@ func (c *Client) Call(ctx context.Context, method string, params any) (json.RawM
 		}
 		return resp.Result, nil
 	case <-c.done:
-		return nil, c.Err()
+		// The reply may have landed just before the drop.
+		select {
+		case resp := <-ch:
+			if resp.Error != nil {
+				return nil, fmt.Errorf("%s: %w", method, resp.Error)
+			}
+			return resp.Result, nil
+		default:
+			return nil, c.Err()
+		}
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
