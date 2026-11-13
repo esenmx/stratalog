@@ -77,6 +77,11 @@ func TestDedup(t *testing.T) {
 			{r: rec("a", 1, 1), keep: true, restarted: true},
 			{live: true, r: rec("a", 1, 2), keep: true},
 		},
+		"new isolate in history after another is a restart": {
+			{live: true, r: rec("a", 0, 1), keep: true},
+			{r: rec("b", 0, 1), keep: true, restarted: true},
+			{r: rec("b", 0, 2), keep: true},
+		},
 		"new isolate live after another is a restart": {
 			{live: true, r: rec("a", 0, 1), keep: true},
 			{live: true, r: rec("b", 0, 1), keep: true, restarted: true},
@@ -180,28 +185,64 @@ func fakeVM(t *testing.T, history []int64, live []int64) string {
 	return "ws" + strings.TrimPrefix(srv.URL, "http")
 }
 
-func TestStreamEmitsHistoryBeforeLiveAndDropsRepeats(t *testing.T) {
-	url := fakeVM(t, []int64{1, 2, 3}, []int64{3, 4})
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	c, err := Dial(ctx, url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.Close()
+func TestStreamOrdersHistoryAndLive(t *testing.T) {
+	for name, tc := range map[string]struct {
+		history, live []int64 // live events are sent before the history reply
+		want          []string
+	}{
+		"live after history": {
+			history: []int64{1, 2, 3},
+			live:    []int64{4, 5},
+			want:    []string{"seq 1", "seq 2", "seq 3", "seq 4", "seq 5"},
+		},
+		"live overlaps history tail": {
+			history: []int64{1, 2, 3},
+			live:    []int64{3, 4},
+			want:    []string{"seq 1", "seq 2", "seq 3", "seq 4"},
+		},
+		"history newer than a held live record": {
+			history: []int64{1, 2, 3, 4},
+			live:    []int64{3},
+			want:    []string{"seq 1", "seq 2", "seq 3", "seq 4"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			url := fakeVM(t, tc.history, tc.live)
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			c, err := Dial(ctx, url)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
 
-	var got []string
-	err = Stream(ctx, c, NewDedup(), func(it Item) { got = append(got, it.Rec.Message) })
+			var got []string
+			err = Stream(ctx, c, NewDedup(), func(it Item) { got = append(got, it.Rec.Message) })
 
-	if err == nil || ctx.Err() != nil {
-		t.Fatalf("Stream returned %v (ctx %v), want a connection-closed error", err, ctx.Err())
+			if err == nil || ctx.Err() != nil {
+				t.Fatalf("Stream returned %v (ctx %v), want a connection-closed error", err, ctx.Err())
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("emitted %q, want %q", got, tc.want)
+			}
+			if got := c.Malformed(); got != 1 {
+				t.Errorf("Malformed() = %d, want 1", got)
+			}
+		})
 	}
-	// seq 3 arrived live before history: history's copy is dropped, the live
-	// one kept, and both live records follow history.
-	if want := []string{"seq 1", "seq 2", "seq 3", "seq 4"}; !slices.Equal(got, want) {
-		t.Errorf("emitted %q, want %q", got, want)
+}
+
+func TestDedupPrunesBeyondWindowOnly(t *testing.T) {
+	d := NewDedup()
+	const n = 3*seenWindow + 1
+	for seq := int64(1); seq <= n; seq++ {
+		d.Live(rec("a", 0, seq))
 	}
-	if got := c.Malformed(); got != 1 {
-		t.Errorf("Malformed() = %d, want 1", got)
+
+	if got := len(d.isolates["a"].seen); got > 2*seenWindow+1 {
+		t.Errorf("seen holds %d seqs, want at most %d", got, 2*seenWindow+1)
+	}
+	if keep, _ := d.History(rec("a", 0, n-seenWindow+1)); keep {
+		t.Error("a repeat inside the window was kept")
 	}
 }

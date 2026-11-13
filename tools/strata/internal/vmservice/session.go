@@ -2,6 +2,7 @@ package vmservice
 
 import (
 	"context"
+	"maps"
 	"time"
 
 	"github.com/esenmx/stratalog/tools/strata/internal/record"
@@ -51,10 +52,12 @@ func (d *Dedup) Live(r record.Record) (keep, restarted bool) {
 }
 
 // History records a history record: keep is false for one already seen, and
-// restarted marks a writer that restarted while nobody was listening.
+// restarted marks a writer that restarted while nobody was listening — a
+// repeated seq with a new time, or a new isolate after others were seen.
 func (d *Dedup) History(r record.Record) (keep, restarted bool) {
 	iso, known := d.isolates[r.IsolateID]
 	if !known {
+		restarted = len(d.isolates) > 0
 		iso = d.track(r.IsolateID)
 	} else if at, seen := iso.seen[r.Seq]; seen {
 		if at.Equal(r.Time) {
@@ -78,9 +81,16 @@ func (s *isolateSeen) reset() {
 	clear(s.seen)
 }
 
+// seenWindow bounds the seqs kept per isolate behind the newest: twice the
+// writer's 1000-record ring, so no history repeat escapes dedup.
+const seenWindow = 2000
+
 func (s *isolateSeen) add(r record.Record) {
 	s.seen[r.Seq] = r.Time
 	s.last = max(s.last, r.Seq)
+	if len(s.seen) > 2*seenWindow {
+		maps.DeleteFunc(s.seen, func(seq int64, _ time.Time) bool { return seq <= s.last-seenWindow })
+	}
 }
 
 type historyResult struct {
@@ -124,7 +134,15 @@ func Stream(ctx context.Context, c *Client, d *Dedup, emit func(Item)) error {
 		fetch(id)
 	}
 
-	var held []Item
+	// Held records go through Dedup only when emitted, after the history
+	// that precedes them: judged on arrival, a held seq would be emitted
+	// after newer history records.
+	var held []record.Record
+	live := func(r record.Record) {
+		if keep, restarted := d.Live(r); keep {
+			emit(Item{Rec: r, Restarted: restarted})
+		}
+	}
 	records := c.Records()
 	for {
 		select {
@@ -132,23 +150,18 @@ func Stream(ctx context.Context, c *Client, d *Dedup, emit func(Item)) error {
 			return ctx.Err()
 		case r, ok := <-records:
 			if !ok {
-				for _, it := range held {
-					emit(it)
+				for _, r := range held {
+					live(r)
 				}
 				return c.Err()
 			}
 			if !fetched[r.IsolateID] {
 				fetch(r.IsolateID)
 			}
-			keep, restarted := d.Live(r)
-			if !keep {
-				continue
-			}
-			it := Item{Rec: r, Restarted: restarted}
 			if inflight > 0 {
-				held = append(held, it)
+				held = append(held, r)
 			} else {
-				emit(it)
+				live(r)
 			}
 		case h := <-results:
 			inflight--
@@ -159,8 +172,8 @@ func Stream(ctx context.Context, c *Client, d *Dedup, emit func(Item)) error {
 				}
 			}
 			if inflight == 0 {
-				for _, it := range held {
-					emit(it)
+				for _, r := range held {
+					live(r)
 				}
 				held = nil
 			}
