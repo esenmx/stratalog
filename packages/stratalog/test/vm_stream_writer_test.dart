@@ -133,6 +133,13 @@ void main() {
         .deepEquals(['r2', 'r3', 'r4']);
   });
 
+  test('a non-positive capacity keeps no history but still posts', () {
+    final posted = <Map<String, Object?>>[];
+    VmStreamWriter(capacity: -1, post: posted.add).write(_record());
+
+    check(posted).length.equals(1);
+  });
+
   test('seq is monotonic per writer, starting at 1', () {
     final posted = <Map<String, Object?>>[];
     final writer = VmStreamWriter(post: posted.add);

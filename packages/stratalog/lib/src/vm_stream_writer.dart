@@ -76,7 +76,7 @@ final class VmStreamWriter({
     try {
       final json = toRecordJson(record, seq);
       _ring.addLast(json);
-      while (_ring.length > capacity) {
+      while (_ring.isNotEmpty && _ring.length > capacity) {
         _ring.removeFirst();
       }
       _post(json);
@@ -145,10 +145,10 @@ final class VmStreamWriter({
       developer.postEvent(eventKind, record, stream: streamId);
 
   // registerExtension throws on a second registration, and configureLogging
-  // may run many times — the handler reads _current instead.
+  // may run many times — the handler reads _current instead. A failed
+  // registration is retried by the next writer.
   static void _registerHistory() {
     if (_registered) return;
-    _registered = true;
     try {
       developer.registerExtension(
         historyExtension,
@@ -156,6 +156,7 @@ final class VmStreamWriter({
           jsonEncode({'records': _current?.history ?? const []}),
         ),
       );
+      _registered = true;
     } on Object catch (_) {
       // Never fail boot: the writer is on by default.
     }
