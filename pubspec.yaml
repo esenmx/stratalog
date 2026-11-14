@@ -28,9 +28,9 @@ melos:
 
   scripts:
     analyze:
-      description: Run `dart analyze` across every workspace member.
+      description: Run `dart analyze --fatal-infos` across every workspace member.
       exec:
-        command: dart analyze .
+        command: dart analyze --fatal-infos .
         concurrency: 4
 
     format:
@@ -47,7 +47,7 @@ melos:
       packageFilters:
         dirExists: test
     shorthand:
-      description: Rewrite Type.member to dot-shorthand via `dotsan` across every workspace member. Pair with `melos format`.
+      description: Rewrite Type.member to dot-shorthand via `shorthand` across every workspace member. Pair with `melos format`.
       exec:
-        command: dotsan .
+        command: shorthand .
         concurrency: 4

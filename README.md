@@ -39,13 +39,16 @@ strata ws://127.0.0.1:PORT/TOKEN=/ws
 strata --once --json > run.jsonl # snapshot buffered history as lossless NDJSON and exit
 strata run.jsonl                 # open a saved .jsonl/.ndjson capture in the TUI (or `-` for stdin)
 strata --plain -l warning -L Network,Storage -g timeout   # script/agent CLI filtering (auto-plain when piped)
+strata --plain --wait             # CLI modes fail at once on a missing target; --wait polls for it
 ```
+
+A `--plain`/`--json` stream ends with exit 0 and `strata: target disconnected` on stderr when the app goes away. `--once` exits 1 when no isolate serves buffered history.
 
 When the app hot-restarts or relaunches, `strata` keeps its records, reconnects once the target holds the new URI, and marks the restart with a divider (worker isolates log inline with `@isolate` badges).
 
 | Key | Action |
 |---|---|
-| `↑`/`↓`, `j`/`k`, `PgUp`/`PgDn`, `Ctrl-U`/`Ctrl-D` | move / page |
+| `↑`/`↓`, `j`/`k`, mouse wheel, `PgUp`/`PgDn`, `Ctrl-B`/`Ctrl-F`, `Ctrl-U`/`Ctrl-D` | move / scroll / page / half page; under wrap, `↑`/`↓` and the wheel scroll through a row taller than the screen first (status shows `line a-b/n`) |
 | `[`/`]`, `K`/`J` | jump to previous / next record header |
 | `Enter`/`Space` | open or close the record, JSON node, multi-line string, or stack trace |
 | `→`/`l`, `←`/`h` | open; close, or jump to parent |
@@ -53,7 +56,7 @@ When the app hot-restarts or relaunches, `strata` keeps its records, reconnects 
 | `w` | toggle soft-wrapping for long messages, URLs, and scalar strings |
 | `y` / `Y` | copy focused value/node/error/stack (`y`) or raw `record_v1` JSON (`Y`) to clipboard |
 | `/` (`n`/`N`, `Esc`) | substring filter with match highlighting (`n`/`N` next/prev hit; `Esc` clears anchored on current record) |
-| `f` / `F` | toggle layer filter chips (`1`–`9` / `Space`, `a` all); `F` clears layer filter |
+| `f` / `F` | toggle layer filter chips (`←`/`→` move, `1`–`9` / `Space` toggle, `a` all); `F` clears layer filter |
 | `L` | cycle minimum chirp level (`trace` → `debug` → `info` → `notice` → `success` → `warning` → `error` → `critical` → `wtf`) |
 | `G`/`End`, `g`/`Home` | jump to the end and follow; jump to the top |
 | `c`, `?`, `q`/`Ctrl-C` | clear, toggle key help bar, quit |
