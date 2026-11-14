@@ -10,7 +10,8 @@ import 'package:stratalog/stratalog.dart';
 /// ```
 ///
 /// Reports become Sentry events (`fatal` maps to [SentryLevel.fatal]) with
-/// the record's layer/message as an attached hint; breadcrumbs land on the
+/// the record's layer/message under the `stratalog` context's `reason` key
+/// (also passed as a hint for `beforeSend`); breadcrumbs land on the
 /// current scope. Before `Sentry.init` the hub is disabled and every call
 /// no-ops — safe in any order.
 final class SentryCrashReporter implements CrashReporter {
@@ -28,7 +29,12 @@ final class SentryCrashReporter implements CrashReporter {
       error,
       stackTrace: stackTrace,
       hint: reason == null ? null : .withMap({'reason': reason}),
-      withScope: (scope) => scope.level = fatal ? .fatal : .error,
+      withScope: (scope) async {
+        scope.level = fatal ? .fatal : .error;
+        if (reason != null) {
+          await scope.setContexts('stratalog', {'reason': reason});
+        }
+      },
     ).ignore();
   }
 

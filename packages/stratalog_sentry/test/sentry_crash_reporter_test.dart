@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:checks/checks.dart';
 import 'package:chirp/chirp.dart';
@@ -42,6 +43,25 @@ void main() {
     check(captured).length.equals(1);
     check(captured.single.throwable).equals(boom);
     check(captured.single.level).equals(.error);
+  });
+
+  group('serialized event carries layer and message', () {
+    for (final (label, error) in [
+      ('with error', Exception('boom')),
+      ('message-only', null),
+    ]) {
+      test(label, () async {
+        LogLayer.auth.error('Refresh failed', error: error);
+        await settle();
+
+        final Object? sent = jsonDecode(jsonEncode(captured.single.toJson()));
+        check(sent)
+            .isA<Map<String, Object?>>()['contexts']
+            .isA<Map<String, Object?>>()['stratalog']
+            .isA<Map<String, Object?>>()
+            .deepEquals({'reason': '[Auth] Refresh failed'});
+      });
+    }
   });
 
   test('above-error records are fatal', () async {
