@@ -1,0 +1,245 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/coder/websocket"
+
+	"github.com/esenmx/stratalog/tools/strata/internal/vmservice"
+)
+
+func TestParseCLIPermutationAndModes(t *testing.T) {
+	cfg, err := parseCLI([]string{"session.jsonl", "--once", "-l", "warning", "-L", "Network,Storage", "-g", "timeout"}, true, io.Discard)
+	if err != nil {
+		t.Fatalf("parseCLI: %v", err)
+	}
+	if cfg.target != "session.jsonl" || !cfg.explicit || !cfg.once || cfg.mode != modePlain {
+		t.Fatalf("unexpected cfg: %+v", cfg)
+	}
+	if !cfg.layers["network"] || !cfg.layers["storage"] {
+		t.Fatalf("layers = %v, want network+storage", cfg.layers)
+	}
+
+	// Non-TTY stdout auto-selects plain mode even without --plain.
+	nonTTY, err := parseCLI(nil, false, io.Discard)
+	if err != nil {
+		t.Fatalf("parseCLI non-TTY: %v", err)
+	}
+	if nonTTY.mode != modePlain {
+		t.Errorf("non-TTY mode = %v, want modePlain", nonTTY.mode)
+	}
+
+	// TTY stdout with no CLI output flags selects TUI mode.
+	ttyCfg, err := parseCLI(nil, true, io.Discard)
+	if err != nil {
+		t.Fatalf("parseCLI TTY: %v", err)
+	}
+	if ttyCfg.mode != modeTUI {
+		t.Errorf("TTY mode = %v, want modeTUI", ttyCfg.mode)
+	}
+
+	// Stdin "-" after or before flags remains positional.
+	stdinCfg, err := parseCLI([]string{"-", "--json"}, true, io.Discard)
+	if err != nil {
+		t.Fatalf("parseCLI stdin: %v", err)
+	}
+	if stdinCfg.target != "-" || stdinCfg.mode != modeJSON {
+		t.Errorf("stdin cfg = %+v", stdinCfg)
+	}
+
+	if _, err := parseCLI([]string{"--plain", "--json"}, false, io.Discard); err == nil {
+		t.Error("expected error combining --plain and --json")
+	}
+	if _, err := parseCLI([]string{"-l", "bogus"}, false, io.Discard); err == nil {
+		t.Error("expected error on unknown level")
+	}
+}
+
+func TestOnceJSONAndReplayFiltering(t *testing.T) {
+	srv := fakeVMServer(t, []map[string]any{
+		{
+			"v": 1, "seq": 1, "time": "2026-04-14T06:04:05Z",
+			"level": "trace", "severity": 0, "layer": "State",
+			"message": "cart tick",
+		},
+		{
+			"v": 1, "seq": 2, "time": "2026-04-14T06:04:06Z",
+			"level": "info", "severity": 200, "layer": "Network",
+			"message": "GET /users/42",
+			"data":    map[string]any{"status": 200, "name": "Jane"},
+		},
+		{
+			"v": 1, "seq": 3, "time": "2026-04-14T06:04:07Z",
+			"level": "error", "severity": 500, "layer": "Storage",
+			"message": "insert failed",
+			"error":   "SqliteException(787): FOREIGN KEY constraint failed",
+		},
+	}, false)
+
+	var jsonBuf, errBuf bytes.Buffer
+	env := runEnv{stdout: &jsonBuf, stderr: &errBuf, isTTY: false}
+	// Flags intentionally placed AFTER target to verify end-to-end arg permutation.
+	if err := env.run(t.Context(), []string{srv, "--once", "--json"}); err != nil {
+		t.Fatalf("run --once --json: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(jsonBuf.String()), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("got %d JSON lines, want 3:\n%s", len(lines), jsonBuf.String())
+	}
+
+	// Save capture to .jsonl (plus one malformed line) and replay with filters.
+	capture := filepath.Join(t.TempDir(), "capture.jsonl")
+	raw := jsonBuf.String() + "{malformed\n"
+	if err := os.WriteFile(capture, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var plainBuf, replayErr bytes.Buffer
+	replayEnv := runEnv{stdout: &plainBuf, stderr: &replayErr, isTTY: false}
+	if err := replayEnv.run(t.Context(), []string{capture, "-l", "info"}); err != nil {
+		t.Fatalf("replay .jsonl: %v", err)
+	}
+	out := plainBuf.String()
+	if strings.Contains(out, "cart tick") {
+		t.Errorf("trace record leaked past -l info:\n%s", out)
+	}
+	if !strings.Contains(out, "GET /users/42") || !strings.Contains(out, "FOREIGN KEY constraint failed") {
+		t.Errorf("expected info + error with inline error text:\n%s", out)
+	}
+	if !strings.Contains(replayErr.String(), "skipped 1 malformed") {
+		t.Errorf("stderr = %q, want malformed notice", replayErr.String())
+	}
+
+	// Replay from stdin "-" with -L Storage and -g foreign.
+	plainBuf.Reset()
+	stdinEnv := runEnv{
+		stdin:  strings.NewReader(jsonBuf.String()),
+		stdout: &plainBuf,
+		stderr: io.Discard,
+		isTTY:  true, // --plain forces CLI even on TTY
+	}
+	if err := stdinEnv.run(t.Context(), []string{"-", "--plain", "-L", "storage", "-g", "foreign"}); err != nil {
+		t.Fatalf("stdin replay: %v", err)
+	}
+	if got := strings.TrimSpace(plainBuf.String()); !strings.Contains(got, "insert failed") || strings.Contains(got, "GET /users/42") {
+		t.Errorf("stdin filtered output = %q", got)
+	}
+}
+
+func TestWaitPollsUntilTargetFileAppears(t *testing.T) {
+	srv := fakeVMServer(t, []map[string]any{
+		{
+			"v": 1, "seq": 1, "time": "2026-04-14T06:04:05Z",
+			"level": "info", "severity": 200, "layer": "App",
+			"message": "booted after wait",
+		},
+	}, false)
+
+	targetFile := filepath.Join(t.TempDir(), ".flutter.vmservice")
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		_ = os.WriteFile(targetFile, []byte(srv+"\n"), 0o600)
+	}()
+
+	var out bytes.Buffer
+	env := runEnv{stdout: &out, stderr: io.Discard, poll: 10 * time.Millisecond}
+	if err := env.run(t.Context(), []string{"--wait", "--once", targetFile}); err != nil {
+		t.Fatalf("run --wait --once: %v", err)
+	}
+	if !strings.Contains(out.String(), "booted after wait") {
+		t.Errorf("out = %q, want 'booted after wait'", out.String())
+	}
+}
+
+type epipeAfterOneWriter struct {
+	calls atomic.Int32
+}
+
+func (w *epipeAfterOneWriter) Write(p []byte) (int, error) {
+	if w.calls.Add(1) > 1 {
+		return 0, syscall.EPIPE
+	}
+	return len(p), nil
+}
+
+func TestStreamBrokenPipeCancelsCleanly(t *testing.T) {
+	srv := fakeVMServer(t, []map[string]any{
+		{"v": 1, "seq": 1, "time": "2026-04-14T06:04:05Z", "level": "info", "severity": 200, "layer": "App", "message": "one"},
+		{"v": 1, "seq": 2, "time": "2026-04-14T06:04:06Z", "level": "info", "severity": 200, "layer": "App", "message": "two"},
+	}, true /* keepOpen */)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+
+	env := runEnv{stdout: &epipeAfterOneWriter{}, stderr: io.Discard}
+	if err := env.run(ctx, []string{"--plain", srv}); err != nil {
+		t.Fatalf("broken pipe returned error %v, want nil", err)
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		t.Fatal("broken pipe hung until context deadline instead of canceling stream")
+	}
+}
+
+func fakeVMServer(t *testing.T, history []map[string]any, keepOpen bool) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.CloseNow() }()
+		ctx := r.Context()
+		for {
+			_, raw, err := conn.Read(ctx)
+			if err != nil {
+				return
+			}
+			var req struct {
+				ID     string `json:"id"`
+				Method string `json:"method"`
+			}
+			if json.Unmarshal(raw, &req) != nil {
+				continue
+			}
+			reply := func(res any) {
+				b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": res})
+				_ = conn.Write(ctx, websocket.MessageText, b)
+			}
+			switch req.Method {
+			case "streamListen":
+				reply(map[string]any{"type": "Success"})
+			case "getVM":
+				reply(map[string]any{
+					"startTime": 1000,
+					"pid":       42,
+					"isolates":  []map[string]any{{"id": "isolates/1", "name": "main"}},
+				})
+			case "getIsolate":
+				reply(map[string]any{
+					"extensionRPCs": []string{vmservice.HistoryExtension},
+				})
+			case vmservice.HistoryExtension:
+				reply(map[string]any{"records": history})
+				if !keepOpen {
+					_ = conn.Close(websocket.StatusNormalClosure, "done")
+					return
+				}
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
+}

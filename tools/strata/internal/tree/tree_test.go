@@ -153,3 +153,81 @@ func TestParseRejectsMalformed(t *testing.T) {
 		})
 	}
 }
+
+func TestSanitizesControlCharsInKeysAndLiterals(t *testing.T) {
+	root := mustParse(t, "{\"a\\u001b[2J\\nb\": \"x\u009b2J\u007fy\"}")
+	child := root.Children[0]
+	for _, s := range []string{child.Key, child.Literal} {
+		for _, c := range s {
+			if c < 0x20 || c == 0x7f || (c >= 0x80 && c < 0xa0) {
+				t.Fatalf("control rune %U leaked in %q", c, s)
+			}
+		}
+	}
+	// CopyText on the root still preserves valid JSON with original key.
+	var decoded map[string]string
+	if err := json.Unmarshal([]byte(root.PrettyJSON()), &decoded); err != nil {
+		t.Fatalf("PrettyJSON invalid: %v\n%s", err, root.PrettyJSON())
+	}
+	if _, ok := decoded["a\x1b[2J\nb"]; !ok {
+		t.Errorf("PrettyJSON lost original key: %v", decoded)
+	}
+}
+
+func TestMultiLineScalarIsFoldableAndCopiesRaw(t *testing.T) {
+	root := mustParse(t, `{"sql":"SELECT *\nFROM users\nWHERE id = 1","id":42}`)
+	sqlNode := root.Children[0]
+	if !sqlNode.Foldable() || len(sqlNode.Lines) != 3 {
+		t.Fatalf("sqlNode Foldable=%v len(Lines)=%d, want true, 3", sqlNode.Foldable(), len(sqlNode.Lines))
+	}
+	if got := sqlNode.CopyText(); got != "SELECT *\nFROM users\nWHERE id = 1" {
+		t.Errorf("CopyText() = %q", got)
+	}
+	if got := root.Children[1].CopyText(); got != "42" {
+		t.Errorf("number CopyText() = %q, want 42", got)
+	}
+}
+
+func TestVitalPreview(t *testing.T) {
+	root := mustParse(t, `{"headers":{"x":"1"},"status":200,"body":{"id":42,"name":"Jane","extra":[1,2]},"duration_ms":12}`)
+	got := root.VitalPreview()
+	want := "status: 200 · id: 42 · name: Jane · 4 keys"
+	if got != want {
+		t.Errorf("VitalPreview() = %q, want %q", got, want)
+	}
+}
+
+func FuzzParseSafetyAndRoundTrip(f *testing.F) {
+	f.Add([]byte(`{"status":200,"body":{"\u001b[2J":"line1\nline2\u009b"}}`))
+	f.Add([]byte(`[1, 1.0, 1e9, true, false, null, "a<&>b", {}, []]`))
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		n, err := Parse(raw)
+		if err != nil {
+			return
+		}
+		var checkNode func(*Node)
+		checkNode = func(cur *Node) {
+			for _, s := range []string{cur.Key, cur.Literal, cur.Summary()} {
+				for _, c := range s {
+					if c < 0x20 || c == 0x7f || (c >= 0x80 && c < 0xa0) {
+						t.Fatalf("unsafe rune %U in %q", c, s)
+					}
+				}
+			}
+			for _, line := range cur.Lines {
+				for _, c := range line {
+					if c < 0x20 || c == 0x7f || (c >= 0x80 && c < 0xa0) {
+						t.Fatalf("unsafe rune %U in line %q", c, line)
+					}
+				}
+			}
+			for _, c := range cur.Children {
+				checkNode(c)
+			}
+		}
+		checkNode(n)
+		if !json.Valid([]byte(n.PrettyJSON())) {
+			t.Fatalf("PrettyJSON produced invalid JSON:\n%s", n.PrettyJSON())
+		}
+	})
+}

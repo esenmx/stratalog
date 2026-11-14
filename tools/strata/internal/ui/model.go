@@ -1,10 +1,13 @@
-// Package ui is strata's Bubble Tea v2 TUI: one collapsed line per record,
-// opening into a foldable JSON tree, with a substring filter, a minimum
-// level and live follow.
+// Package ui implements strata's Bubble Tea v2 TUI: one collapsed line per
+// record with vital-key previews, opening into a foldable JSON & multi-line
+// scalar tree, with layer/level/substring filters, soft-wrap, OSC 52 copy, and
+// live follow.
 package ui
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 
 	"charm.land/bubbles/v2/textinput"
@@ -22,16 +25,60 @@ const MaxEntries = 10_000
 
 const restartedLabel = "session restarted"
 
+// Palette hex values drawn from stratalog's WCAG-verified Ansi256 palette
+// (>= 3.0 contrast on solarized light/dark and soft-gray light/dark).
+const (
+	hexKey     = "#0087ff" // Ansi256.dodgerBlue1_33
+	hexString  = "#00875f" // Ansi256.springGreen4_29
+	hexLiteral = "#875fff" // Ansi256.slateBlue1_99
+	hexError   = "#d75f5f" // Ansi256.indianRed_167
+	hexCursor  = "#d75f00" // Ansi256.darkOrange3_166
+)
+
+// PaletteHex exposes the foreground hex colors used by the TUI so tests can
+// enforce WCAG >= 3.0 contrast across light and dark reference backgrounds.
+func PaletteHex() map[string]string {
+	return map[string]string{
+		"key":     hexKey,
+		"string":  hexString,
+		"literal": hexLiteral,
+		"error":   hexError,
+		"cursor":  hexCursor,
+	}
+}
+
+var (
+	dimStyle     = lipgloss.NewStyle().Faint(true)
+	keyStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color(hexKey))
+	stringStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color(hexString))
+	literalStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(hexLiteral))
+	errorStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color(hexError))
+	cursorStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(hexCursor))
+	matchStyle   = lipgloss.NewStyle().Bold(true).Underline(true)
+	statusStyle  = lipgloss.NewStyle().Reverse(true)
+)
+
+// Options configures a [Model]'s initial filters and target mode.
+type Options struct {
+	Target string
+	Level  int             // index into [record.Levels]
+	Layers map[string]bool // lowercased layer names; nil/empty = all
+	Query  string          // initial substring filter
+	Replay bool            // static capture file or stdin (not live-streaming)
+}
+
 // Entry is one record row, or a divider when Divider is set.
 type Entry struct {
 	Rec     record.Record
-	Tree    *tree.Node // Rec.Data, parsed on first open
+	Tree    *tree.Node // Rec.Data, parsed on first touch
 	Open    bool
 	Divider string
 
-	parseErr bool
-	stack    *tree.Node
-	haystack string // lowercased filter text, built on first match
+	parseErr    bool
+	previewDone bool
+	previewText string
+	stack       *tree.Node
+	haystack    string // lowercased filter text, built on first match
 }
 
 // ConnState is the connection loop's state.
@@ -42,6 +89,7 @@ const (
 	Waiting ConnState = iota
 	Connected
 	Disconnected
+	Replaying
 )
 
 type recordMsg struct {
@@ -67,17 +115,6 @@ func ConnMsg(state ConnState, detail string, malformed int64) tea.Msg {
 	return connMsg{state: state, detail: detail, malformed: malformed}
 }
 
-var levels = []struct {
-	name     string
-	severity int
-}{
-	{"trace", 0},
-	{"debug", 100},
-	{"info", 200},
-	{"warning", 400},
-	{"error", 500},
-}
-
 type rowKind int
 
 const (
@@ -90,6 +127,7 @@ const (
 	rowErrorLabel
 	rowStackLabel // node: the stack, foldable
 	rowNode       // node: a Data tree node
+	rowScalarLine // unfolded line of a multi-line string node
 )
 
 type row struct {
@@ -102,25 +140,43 @@ type row struct {
 	parent int // rows back to the parent row; 0 = none
 }
 
+type layerBadge struct {
+	name    string
+	color   string
+	onColor string
+}
+
 // Model is the TUI state.
 type Model struct {
 	target string
+	replay bool
 
-	entries []*Entry
-	rows    []row // visible rows; rebuilt when dirty, appended per record
-	dirty   bool
+	entries  []*Entry
+	entryIdx map[*Entry]int // chronological position for cursor anchoring
+	nextSeq  int
+
+	rows  []row // visible rows; rebuilt when dirty, appended per record
+	dirty bool
 
 	cursor, offset int
 	follow         bool
+	wrap           bool
+	showHelp       bool
 
 	filter    textinput.Model
 	filtering bool
 	query     string // lowercased applied filter
-	level     int    // index into levels
+	level     int    // index into record.Levels
+
+	layering    bool
+	layerCursor int
+	layers      map[string]bool       // lowercased active layer filter
+	knownLayers map[string]layerBadge // lowercased -> display name & palette
 
 	state       ConnState
 	stateDetail string
-	records     int // entries that are not dividers
+	notice      string // transient status flash (e.g. "copied")
+	records     int    // entries that are not dividers
 	dropped     int
 	malformed   int64
 	warning     string
@@ -128,12 +184,44 @@ type Model struct {
 	width, height int
 }
 
-// New returns a model waiting for target.
+// New returns a model waiting for target with default filters.
 func New(target string) *Model {
+	return NewWithOptions(Options{Target: target})
+}
+
+// NewWithOptions returns a model pre-seeded with opts.
+func NewWithOptions(opts Options) *Model {
 	in := textinput.New()
 	in.Prompt = "/"
-	in.Placeholder = "filter layer, message, data, error, stack"
-	return &Model{target: target, follow: true, filter: in, stateDetail: target}
+	in.Placeholder = "filter layer, message, data, error, stack, file"
+	q := strings.ToLower(strings.TrimSpace(opts.Query))
+	if q != "" {
+		in.SetValue(opts.Query)
+	}
+	layers := map[string]bool{}
+	for k, v := range opts.Layers {
+		if v {
+			layers[strings.ToLower(k)] = true
+		}
+	}
+	lvl := clamp(opts.Level, 0, len(record.Levels)-1)
+	st := Waiting
+	if opts.Replay {
+		st = Replaying
+	}
+	return &Model{
+		target:      opts.Target,
+		replay:      opts.Replay,
+		entryIdx:    map[*Entry]int{},
+		follow:      !opts.Replay,
+		filter:      in,
+		query:       q,
+		level:       lvl,
+		layers:      layers,
+		knownLayers: map[string]layerBadge{},
+		state:       st,
+		stateDetail: opts.Target,
+	}
 }
 
 // Init implements tea.Model.
@@ -151,13 +239,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.addRecord(msg.item)
 	case connMsg:
 		m.malformed = msg.malformed
-		// No divider here: a relaunch reaches the model as a Restarted
-		// record (new isolate), a blip to the same app as no restart at all.
 		m.state, m.stateDetail = msg.state, msg.detail
 	case tea.KeyPressMsg:
-		if m.filtering {
+		m.notice = ""
+		switch {
+		case m.filtering:
 			cmd = m.filterKey(msg)
-		} else {
+		case m.layering:
+			m.layerKey(msg)
+		default:
 			cmd = m.key(msg)
 		}
 	case tea.MouseWheelMsg:
@@ -188,8 +278,52 @@ func (m *Model) filterKey(msg tea.KeyPressMsg) tea.Cmd {
 	}
 	var cmd tea.Cmd
 	m.filter, cmd = m.filter.Update(msg)
+	if m.filter.Value() != "" {
+		m.follow = false
+	}
 	m.setQuery(m.filter.Value())
 	return cmd
+}
+
+func (m *Model) layerKey(msg tea.KeyPressMsg) {
+	list := m.sortedLayers()
+	s := msg.String()
+	switch s {
+	case "enter", "esc", "f":
+		m.layering = false
+	case "left", "h":
+		if len(list) > 0 {
+			m.layerCursor = (m.layerCursor - 1 + len(list)) % len(list)
+		}
+	case "right", "l":
+		if len(list) > 0 {
+			m.layerCursor = (m.layerCursor + 1) % len(list)
+		}
+	case "space":
+		if m.layerCursor >= 0 && m.layerCursor < len(list) {
+			m.toggleLayer(strings.ToLower(list[m.layerCursor].name))
+		}
+	case "a":
+		clear(m.layers)
+		m.dirty = true
+	default:
+		if len(s) == 1 && s[0] >= '1' && s[0] <= '9' {
+			idx := int(s[0] - '1')
+			if idx < len(list) {
+				m.layerCursor = idx
+				m.toggleLayer(strings.ToLower(list[idx].name))
+			}
+		}
+	}
+}
+
+func (m *Model) toggleLayer(lower string) {
+	if m.layers[lower] {
+		delete(m.layers, lower)
+	} else {
+		m.layers[lower] = true
+	}
+	m.dirty = true
 }
 
 func (m *Model) key(msg tea.KeyPressMsg) tea.Cmd {
@@ -201,6 +335,20 @@ func (m *Model) key(msg tea.KeyPressMsg) tea.Cmd {
 		m.follow = false
 	case "down", "j":
 		m.cursor++
+	case "pgup", "ctrl+b":
+		m.cursor -= max(m.bodyHeight()-1, 1)
+		m.follow = false
+	case "pgdown", "ctrl+f":
+		m.cursor += max(m.bodyHeight()-1, 1)
+	case "ctrl+u":
+		m.cursor -= max(m.bodyHeight()/2, 1)
+		m.follow = false
+	case "ctrl+d":
+		m.cursor += max(m.bodyHeight()/2, 1)
+	case "[", "K":
+		m.jumpRecord(-1)
+	case "]", "J":
+		m.jumpRecord(1)
 	case "G", "end":
 		m.follow = true
 	case "g", "home":
@@ -214,20 +362,146 @@ func (m *Model) key(msg tea.KeyPressMsg) tea.Cmd {
 		m.closeOrParent()
 	case "e":
 		m.expandAll()
+	case "w":
+		m.wrap = !m.wrap
+	case "y":
+		return m.yankFocused()
+	case "Y":
+		return m.yankRecordJSON()
 	case "/":
 		m.filtering = true
 		return m.filter.Focus()
+	case "n":
+		m.jumpMatch(1)
+	case "N":
+		m.jumpMatch(-1)
+	case "f":
+		m.layering = true
+		m.layerCursor = clamp(m.layerCursor, 0, max(len(m.knownLayers)-1, 0))
+	case "F":
+		if len(m.layers) > 0 {
+			if len(m.rows) > 0 {
+				m.follow = false
+			}
+			clear(m.layers)
+			m.dirty = true
+		}
 	case "esc":
+		if m.showHelp {
+			m.showHelp = false
+			return nil
+		}
+		if m.query != "" && len(m.rows) > 0 {
+			m.follow = false
+		}
 		m.filter.Reset()
 		m.setQuery("")
 	case "L":
-		m.level = (m.level + 1) % len(levels)
+		m.level = (m.level + 1) % len(record.Levels)
 		m.dirty = true
+	case "?":
+		m.showHelp = !m.showHelp
 	case "c":
 		m.entries, m.rows = nil, nil
+		clear(m.entryIdx)
 		m.cursor, m.offset, m.records, m.dropped = 0, 0, 0, 0
+		m.follow = !m.replay
 	}
 	return nil
+}
+
+func (m *Model) jumpRecord(dir int) {
+	if len(m.rows) == 0 {
+		return
+	}
+	m.follow = false
+	for i := m.cursor + dir; i >= 0 && i < len(m.rows); i += dir {
+		if m.rows[i].kind == rowHeader {
+			m.cursor = i
+			return
+		}
+	}
+}
+
+func (m *Model) jumpMatch(dir int) {
+	if m.query == "" || len(m.rows) == 0 {
+		return
+	}
+	m.follow = false
+	n := len(m.rows)
+	for step := 1; step <= n; step++ {
+		i := (m.cursor + dir*step + n) % n
+		r := m.rows[i]
+		if r.entry.Divider == "" && strings.Contains(r.entry.search(), m.query) && r.kind == rowHeader {
+			m.cursor = i
+			return
+		}
+	}
+}
+
+func (m *Model) yankFocused() tea.Cmd {
+	r, ok := m.current()
+	if !ok || r.entry.Divider != "" {
+		return nil
+	}
+	var text string
+	switch r.kind {
+	case rowNode, rowScalarLine:
+		if r.node != nil {
+			text = r.node.CopyText()
+		}
+	case rowErrorLabel, rowErrorText:
+		text = r.entry.Rec.Error
+	case rowStackLabel, rowStackLine:
+		text = r.entry.Rec.Stack
+	case rowCaller:
+		text = r.entry.Rec.Caller()
+	default:
+		text = describeEntry(r.entry)
+	}
+	if text == "" {
+		return nil
+	}
+	m.notice = "copied"
+	return tea.SetClipboard(text)
+}
+
+func (m *Model) yankRecordJSON() tea.Cmd {
+	r, ok := m.current()
+	if !ok || r.entry.Divider != "" {
+		return nil
+	}
+	m.notice = "copied JSON"
+	return tea.SetClipboard(string(r.entry.Rec.JSON()))
+}
+
+func describeEntry(e *Entry) string {
+	rec := e.Rec
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s [%s] %s: %s",
+		rec.Time.Local().Format("15:04:05.000"),
+		rec.Layer,
+		rec.Level,
+		rec.Message,
+	)
+	if len(rec.Data) > 0 {
+		if t := e.tree(); t != nil {
+			b.WriteString("\ndata: ")
+			b.WriteString(t.PrettyJSON())
+		} else {
+			b.WriteString("\ndata: ")
+			b.Write(rec.Data)
+		}
+	}
+	if rec.Error != "" {
+		b.WriteString("\nerror: ")
+		b.WriteString(rec.Error)
+	}
+	if rec.Stack != "" {
+		b.WriteByte('\n')
+		b.WriteString(strings.TrimRight(rec.Stack, "\n"))
+	}
+	return b.String()
 }
 
 func (m *Model) setQuery(q string) {
@@ -250,7 +524,7 @@ func (m *Model) wheel(b tea.MouseButton) {
 	}
 	h := m.bodyHeight()
 	m.offset = clamp(m.offset, 0, max(len(m.rows)-h, 0))
-	m.cursor = clamp(m.cursor, m.offset, m.offset+h-1)
+	m.cursor = clamp(m.cursor, m.offset, min(m.offset+h-1, max(len(m.rows)-1, 0)))
 }
 
 func (m *Model) current() (row, bool) {
@@ -284,15 +558,16 @@ func (m *Model) open() {
 	if !ok {
 		return
 	}
-	m.follow = false
 	switch {
 	case r.kind == rowHeader && r.entry.openable():
+		m.follow = false
 		if r.entry.Open {
 			m.cursor++
 			return
 		}
 		r.entry.Open = true
 	case (r.kind == rowNode || r.kind == rowStackLabel) && r.node.Foldable():
+		m.follow = false
 		if r.node.Open {
 			m.cursor++
 			return
@@ -311,15 +586,17 @@ func (m *Model) closeOrParent() {
 	if !ok {
 		return
 	}
-	m.follow = false
 	switch {
 	case r.kind == rowHeader && r.entry.Open:
+		m.follow = false
 		r.entry.Open = false
 		m.dirty = true
 	case (r.kind == rowNode || r.kind == rowStackLabel) && r.node.Foldable() && r.node.Open:
+		m.follow = false
 		r.node.Open = false
 		m.dirty = true
 	case r.parent > 0:
+		m.follow = false
 		m.cursor -= r.parent
 	}
 }
@@ -369,6 +646,16 @@ func (m *Model) addRecord(it vmservice.Item) {
 	if it.Rec.V > record.SchemaVersion && m.warning == "" {
 		m.warning = fmt.Sprintf("record schema v%d is newer than this strata (v%d): update strata", it.Rec.V, record.SchemaVersion)
 	}
+	if it.Rec.Layer != "" {
+		key := strings.ToLower(it.Rec.Layer)
+		if _, exists := m.knownLayers[key]; !exists || it.Rec.Color != "" {
+			m.knownLayers[key] = layerBadge{
+				name:    record.Printable(it.Rec.Layer),
+				color:   it.Rec.Color,
+				onColor: it.Rec.OnColor,
+			}
+		}
+	}
 	if it.Restarted && len(m.entries) > 0 {
 		m.addEntry(&Entry{Divider: restartedLabel})
 	}
@@ -378,17 +665,25 @@ func (m *Model) addRecord(it vmservice.Item) {
 // addEntry appends e, dropping the oldest entry past [MaxEntries]. Rows are
 // patched in place unless a full rebuild is already pending.
 func (m *Model) addEntry(e *Entry) {
+	m.nextSeq++
+	m.entryIdx[e] = m.nextSeq
 	m.entries = append(m.entries, e)
 	if e.Divider == "" {
 		m.records++
 	}
-	if !m.dirty && m.visible(e) {
-		m.rows = m.appendEntryRows(m.rows, e)
+	if !m.dirty {
+		if e.Divider != "" {
+			// Defer rendering the divider until a matching record follows it.
+			m.dirty = true
+		} else if m.visible(e) {
+			m.rows = m.appendEntryRows(m.rows, e)
+		}
 	}
 	if len(m.entries) <= MaxEntries {
 		return
 	}
 	old := m.entries[0]
+	delete(m.entryIdx, old)
 	m.entries[0] = nil
 	m.entries = m.entries[1:]
 	if old.Divider == "" {
@@ -402,34 +697,96 @@ func (m *Model) addEntry(e *Entry) {
 	for n < len(m.rows) && m.rows[n].entry == old {
 		n++
 	}
-	m.rows = m.rows[n:]
-	m.cursor -= n
-	m.offset -= n
+	// Never strand a leading orphaned divider after dropping the oldest record.
+	for n < len(m.rows) && m.rows[n].kind == rowDivider {
+		n++
+	}
+	if n > 0 {
+		clear(m.rows[:n])
+		m.rows = m.rows[n:]
+		m.cursor -= n
+		m.offset -= n
+	}
+}
+
+func (m *Model) activeFilter() record.Filter {
+	return record.Filter{
+		MinSeverity: record.Levels[m.level].Severity,
+		Layers:      m.layers,
+		Query:       m.query,
+	}
 }
 
 func (m *Model) visible(e *Entry) bool {
 	if e.Divider != "" {
-		return true
-	}
-	if e.Rec.Severity < levels[m.level].severity {
 		return false
 	}
-	return m.query == "" || strings.Contains(e.search(), m.query)
+	return m.activeFilter().Match(e.Rec, e.search())
 }
 
 func (m *Model) rebuild() {
-	rows := make([]row, 0, len(m.rows))
-	for _, e := range m.entries {
-		if m.visible(e) {
-			rows = m.appendEntryRows(rows, e)
+	var anchor row
+	hasAnchor := false
+	anchorSeq := 0
+	if !m.follow {
+		if cur, ok := m.current(); ok {
+			anchor = cur
+			hasAnchor = true
+			anchorSeq = m.entryIdx[cur.entry]
 		}
+	}
+
+	rows := make([]row, 0, len(m.rows))
+	seenVisible := false
+	var pendingDivider *Entry
+	for _, e := range m.entries {
+		if e.Divider != "" {
+			if seenVisible {
+				pendingDivider = e
+			}
+			continue
+		}
+		if !m.visible(e) {
+			continue
+		}
+		if pendingDivider != nil {
+			rows = append(rows, row{kind: rowDivider, entry: pendingDivider, text: pendingDivider.Divider, index: -1})
+			pendingDivider = nil
+		}
+		seenVisible = true
+		rows = m.appendEntryRows(rows, e)
 	}
 	m.rows = rows
 	m.dirty = false
+
+	if hasAnchor && len(m.rows) > 0 {
+		m.cursor = m.relocateAnchor(anchor, anchorSeq)
+	}
 }
 
-// settle rebuilds pending rows, applies follow and keeps the cursor on
-// screen.
+func (m *Model) relocateAnchor(anchor row, anchorSeq int) int {
+	// 1. Exact (entry, node, kind) match.
+	for i, r := range m.rows {
+		if r.entry == anchor.entry && r.node == anchor.node && r.kind == anchor.kind {
+			return i
+		}
+	}
+	// 2. Same entry's header row.
+	for i, r := range m.rows {
+		if r.entry == anchor.entry && r.kind == rowHeader {
+			return i
+		}
+	}
+	// 3. Nearest surviving header at or after anchor's chronological position.
+	for i, r := range m.rows {
+		if r.kind == rowHeader && m.entryIdx[r.entry] >= anchorSeq {
+			return i
+		}
+	}
+	return len(m.rows) - 1
+}
+
+// settle rebuilds pending rows, applies follow and keeps the cursor on screen.
 func (m *Model) settle() {
 	if m.dirty {
 		m.rebuild()
@@ -442,15 +799,38 @@ func (m *Model) settle() {
 	if m.cursor < m.offset {
 		m.offset = m.cursor
 	}
-	if m.cursor >= m.offset+h {
-		m.offset = m.cursor - h + 1
+	if !m.wrap {
+		if m.cursor >= m.offset+h {
+			m.offset = m.cursor - h + 1
+		}
+		m.offset = clamp(m.offset, 0, max(len(m.rows)-h, 0))
+		return
 	}
-	m.offset = clamp(m.offset, 0, max(len(m.rows)-h, 0))
+	// Under soft-wrap, advance m.offset until the wrapped lines from m.offset
+	// through m.cursor fit inside h physical lines.
+	m.offset = clamp(m.offset, 0, max(len(m.rows)-1, 0))
+	for m.offset < m.cursor && m.visualSpan(m.offset, m.cursor) > h {
+		m.offset++
+	}
+}
+
+func (m *Model) visualSpan(from, to int) int {
+	lines := 0
+	for i := from; i <= to && i < len(m.rows); i++ {
+		lines += len(m.wrappedLines(i))
+	}
+	return lines
 }
 
 func (m *Model) bodyHeight() int {
-	h := m.height - 1 // status line
+	h := m.height - 1 // bottom status bar
 	if m.filtering {
+		h--
+	}
+	if m.layering {
+		h--
+	}
+	if m.showHelp {
 		h--
 	}
 	return max(h, 1)
@@ -460,7 +840,7 @@ func (m *Model) appendEntryRows(rows []row, e *Entry) []row {
 	if e.Divider != "" {
 		return append(rows, row{kind: rowDivider, entry: e, text: e.Divider, index: -1})
 	}
-	header := len(rows)
+	headerIdx := len(rows)
 	rows = append(rows, row{kind: rowHeader, entry: e, index: -1})
 	if !e.Open {
 		return rows
@@ -469,40 +849,36 @@ func (m *Model) appendEntryRows(rows []row, e *Entry) []row {
 		text = record.Printable(strings.TrimSuffix(text, "\r"))
 		return row{kind: kind, entry: e, text: text, index: -1, parent: len(rows) - parent}
 	}
-	if e.Rec.File != "" {
-		at := fmt.Sprintf("%s:%d", e.Rec.File, e.Rec.Line)
-		if e.Rec.Method != "" {
-			at += " " + e.Rec.Method
-		}
-		rows = append(rows, child(rowCaller, at, header))
+	if caller := e.Rec.Caller(); caller != "" {
+		rows = append(rows, child(rowCaller, caller, headerIdx))
 	}
 	if _, rest, ok := strings.Cut(e.Rec.Message, "\n"); ok {
 		for line := range strings.SplitSeq(rest, "\n") {
-			rows = append(rows, child(rowText, line, header))
+			rows = append(rows, child(rowText, line, headerIdx))
 		}
 	}
 	if len(e.Rec.Data) > 0 {
 		if t := e.tree(); t != nil {
-			rows = appendTree(rows, e, t, 0, header)
+			rows = appendTree(rows, e, t, 0, headerIdx)
 		} else {
-			rows = append(rows, child(rowText, string(e.Rec.Data), header))
+			rows = append(rows, child(rowText, string(e.Rec.Data), headerIdx))
 		}
 	}
 	if e.Rec.Error != "" {
-		label := len(rows)
-		rows = append(rows, child(rowErrorLabel, "Error:", header))
+		labelIdx := len(rows)
+		rows = append(rows, child(rowErrorLabel, "Error:", headerIdx))
 		for line := range strings.SplitSeq(e.Rec.Error, "\n") {
-			rows = append(rows, child(rowErrorText, line, label))
+			rows = append(rows, child(rowErrorText, line, labelIdx))
 		}
 	}
 	if s := e.stackNode(); s != nil {
-		label := len(rows)
-		r := child(rowStackLabel, "Stack Trace:", header)
+		labelIdx := len(rows)
+		r := child(rowStackLabel, "Stack Trace:", headerIdx)
 		r.node = s
 		rows = append(rows, r)
 		if s.Open {
 			for _, line := range s.Children {
-				rows = append(rows, child(rowStackLine, line.Literal, label))
+				rows = append(rows, child(rowStackLine, line.Literal, labelIdx))
 			}
 		}
 	}
@@ -520,15 +896,30 @@ func appendTree(rows []row, e *Entry, n *tree.Node, depth, parent int) []row {
 		}
 		self := len(rows)
 		rows = append(rows, row{kind: rowNode, entry: e, node: c, depth: depth, index: index, parent: self - parent})
+		if len(c.Lines) > 1 && c.Open {
+			for _, line := range c.Lines {
+				rows = append(rows, row{
+					kind:   rowScalarLine,
+					entry:  e,
+					node:   c,
+					text:   line,
+					depth:  depth + 1,
+					index:  -1,
+					parent: len(rows) - self,
+				})
+			}
+		}
 		rows = appendTree(rows, e, c, depth+1, self)
 	}
 	return rows
 }
 
+// openable reports whether e carries structured body sections beyond its
+// one-line message and caller metadata.
 func (e *Entry) openable() bool {
 	r := e.Rec
 	return e.Divider == "" &&
-		(len(r.Data) > 0 || r.Error != "" || r.Stack != "" || r.File != "" || strings.Contains(r.Message, "\n"))
+		(len(r.Data) > 0 || r.Error != "" || r.Stack != "" || strings.Contains(r.Message, "\n"))
 }
 
 func (e *Entry) tree() *tree.Node {
@@ -543,13 +934,26 @@ func (e *Entry) tree() *tree.Node {
 	return e.Tree
 }
 
+func (e *Entry) preview() string {
+	if !e.previewDone {
+		e.previewDone = true
+		if t := e.tree(); t != nil {
+			e.previewText = t.VitalPreview()
+		}
+	}
+	return e.previewText
+}
+
 // stackNode is the stack trace as one closed node whose children are its
 // lines.
 func (e *Entry) stackNode() *tree.Node {
 	if e.stack == nil && e.Rec.Stack != "" {
 		s := &tree.Node{Key: "Stack Trace", Kind: tree.Array}
 		for line := range strings.SplitSeq(strings.TrimRight(e.Rec.Stack, "\n"), "\n") {
-			s.Children = append(s.Children, &tree.Node{Kind: tree.Scalar, Literal: line})
+			s.Children = append(s.Children, &tree.Node{
+				Kind:    tree.Scalar,
+				Literal: record.Printable(strings.TrimSuffix(line, "\r")),
+			})
 		}
 		e.stack = s
 	}
@@ -580,45 +984,114 @@ func allOpen(n *tree.Node) bool {
 
 func (e *Entry) search() string {
 	if e.haystack == "" {
-		r := e.Rec
-		e.haystack = strings.ToLower(strings.Join([]string{r.Layer, r.Message, string(r.Data), r.Error, r.Stack}, "\n"))
+		e.haystack = e.Rec.Haystack()
 	}
 	return e.haystack
 }
-
-var (
-	dimStyle     = lipgloss.NewStyle().Faint(true)
-	keyStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#87afd7"))
-	stringStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#87d787"))
-	literalStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#d7afff"))
-	errorStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff5f5f"))
-	cursorStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ffd75f"))
-	statusStyle  = lipgloss.NewStyle().Reverse(true)
-)
 
 // View implements tea.Model.
 func (m *Model) View() tea.View {
 	var b strings.Builder
 	h := m.bodyHeight()
+	used := 0
 	if len(m.rows) == 0 {
-		b.WriteString(dimStyle.Render(m.emptyText()))
+		b.WriteString(m.truncate(dimStyle.Render(record.Printable(m.emptyText()))))
 		b.WriteByte('\n')
-		h--
+		used = 1
+	} else {
+		for i := m.offset; i < len(m.rows) && used < h; i++ {
+			lines := m.wrappedLines(i)
+			for _, line := range lines {
+				if used >= h {
+					break
+				}
+				b.WriteString(line)
+				b.WriteByte('\n')
+				used++
+			}
+		}
 	}
-	for i := m.offset; i < len(m.rows) && i < m.offset+h; i++ {
-		b.WriteString(m.truncate(m.renderRow(i)))
+	for used < h {
+		b.WriteByte('\n')
+		used++
+	}
+	if m.layering {
+		b.WriteString(m.truncate(m.layerBarView()))
 		b.WriteByte('\n')
 	}
 	if m.filtering {
 		b.WriteString(m.truncate(m.filter.View()))
 		b.WriteByte('\n')
 	}
-	b.WriteString(statusStyle.Render(m.truncate(m.statusText())))
+	if m.showHelp {
+		b.WriteString(m.truncate(dimStyle.Render(helpLine)))
+		b.WriteByte('\n')
+	}
+	b.WriteString(statusStyle.Render(m.padWidth(m.truncate(m.statusText()))))
 
 	v := tea.NewView(b.String())
 	v.AltScreen = true
 	v.MouseMode = tea.MouseModeCellMotion
 	return v
+}
+
+const helpLine = " j/k move · [/] record · Enter/l/h fold · e all · w wrap · y/Y copy · / filter · n/N match · L level · f/F layer · G follow · c clear · q quit"
+
+func (m *Model) wrappedLines(i int) []string {
+	s := m.renderRow(i)
+	if !m.wrap || m.width <= 0 {
+		return []string{m.truncate(s)}
+	}
+	wrapped := ansi.Wrap(s, m.width, "/?&=-_,.:;")
+	parts := strings.Split(wrapped, "\n")
+	for idx, p := range parts {
+		parts[idx] = m.truncate(p)
+	}
+	return parts
+}
+
+func (m *Model) sortedLayers() []layerBadge {
+	keys := slices.Sorted(maps.Keys(m.knownLayers))
+	out := make([]layerBadge, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, m.knownLayers[k])
+	}
+	return out
+}
+
+func (m *Model) layerBarView() string {
+	list := m.sortedLayers()
+	if len(list) == 0 {
+		return dimStyle.Render(" layers: none seen yet (Esc to close)")
+	}
+	var parts []string
+	for i, l := range list {
+		lower := strings.ToLower(l.name)
+		active := len(m.layers) == 0 || m.layers[lower]
+		check := " "
+		if len(m.layers) > 0 && m.layers[lower] {
+			check = "✓"
+		}
+		prefix := ""
+		if i < 9 {
+			prefix = fmt.Sprintf("%d:", i+1)
+		}
+		style := lipgloss.NewStyle()
+		if !active {
+			style = style.Faint(true)
+		} else if l.color != "" {
+			style = style.Background(lipgloss.Color(l.color))
+			if l.onColor != "" {
+				style = style.Foreground(lipgloss.Color(l.onColor))
+			}
+		}
+		chip := fmt.Sprintf("%s[%s]%s", prefix, check, style.Render(" "+l.name+" "))
+		if i == m.layerCursor {
+			chip = cursorStyle.Render("▸") + chip
+		}
+		parts = append(parts, chip)
+	}
+	return " layers: " + strings.Join(parts, " ") + dimStyle.Render("  (1-9/Space toggle · a all · Enter done)")
 }
 
 func (m *Model) truncate(s string) string {
@@ -628,34 +1101,66 @@ func (m *Model) truncate(s string) string {
 	return ansi.Truncate(s, m.width, "…")
 }
 
+func (m *Model) padWidth(s string) string {
+	if m.width <= 0 {
+		return s
+	}
+	w := ansi.StringWidth(s)
+	if w >= m.width {
+		return s
+	}
+	return s + strings.Repeat(" ", m.width-w)
+}
+
 func (m *Model) emptyText() string {
 	switch {
-	case len(m.entries) > 0:
+	case m.records > 0:
 		return "no records match"
 	case m.state == Connected:
 		return "connected, no records yet"
+	case m.state == Replaying:
+		return "no records in " + m.target
 	default:
 		return "waiting for " + m.target
 	}
 }
 
 func (m *Model) statusText() string {
-	parts := []string{m.stateText(), fmt.Sprintf("%d records", m.records)}
+	parts := make([]string, 0, 10)
+	if m.notice != "" {
+		parts = append(parts, m.notice)
+	}
+	parts = append(parts, record.Printable(m.stateText()), fmt.Sprintf("%d records", m.records))
 	if m.dropped > 0 {
 		parts = append(parts, fmt.Sprintf("dropped %d", m.dropped))
 	}
 	if m.malformed > 0 {
 		parts = append(parts, fmt.Sprintf("malformed %d", m.malformed))
 	}
-	parts = append(parts, "≥"+levels[m.level].name)
-	if m.query != "" && !m.filtering {
-		parts = append(parts, "/"+m.query)
+	parts = append(parts, "≥"+record.Levels[m.level].Name)
+	if len(m.layers) > 0 {
+		names := slices.Sorted(maps.Keys(m.layers))
+		parts = append(parts, "layers:"+strings.Join(names, ","))
 	}
-	if m.follow {
+	if m.query != "" && !m.filtering {
+		parts = append(parts, "/"+record.Printable(m.query))
+	}
+	if m.wrap {
+		parts = append(parts, "wrap")
+	}
+	if m.follow && !m.replay {
 		parts = append(parts, "following")
+	}
+	if cur, ok := m.current(); ok && cur.entry.Divider == "" {
+		if caller := cur.entry.Rec.Caller(); caller != "" {
+			parts = append(parts, caller)
+		}
 	}
 	if m.warning != "" {
 		parts = append(parts, m.warning)
+	}
+	if !m.showHelp {
+		parts = append(parts, "? help")
 	}
 	return " " + strings.Join(parts, " · ") + " "
 }
@@ -666,6 +1171,8 @@ func (m *Model) stateText() string {
 		return "connected"
 	case Disconnected:
 		return "disconnected: " + m.stateDetail
+	case Replaying:
+		return "replay: " + m.stateDetail
 	default:
 		return "waiting for " + m.stateDetail
 	}
@@ -680,29 +1187,31 @@ func (m *Model) renderRow(i int) string {
 	const indent = "    "
 	switch r.kind {
 	case rowHeader:
-		return gutter + header(r.entry)
+		return gutter + m.renderHeader(r.entry)
 	case rowDivider:
-		line := "── " + r.text + " "
+		line := "── " + record.Printable(r.text) + " "
 		return gutter + dimStyle.Render(line+strings.Repeat("─", max(m.width-ansi.StringWidth(line)-2, 0)))
 	case rowCaller:
 		return gutter + indent + dimStyle.Render("at "+r.text)
 	case rowText:
-		return gutter + indent + r.text
+		return gutter + indent + m.highlight(r.text, lipgloss.NewStyle())
 	case rowErrorLabel:
 		return gutter + indent + errorStyle.Bold(true).Render(r.text)
 	case rowErrorText:
-		return gutter + indent + "  " + errorStyle.Render(r.text)
+		return gutter + indent + "  " + m.highlight(r.text, errorStyle)
 	case rowStackLabel:
 		return gutter + indent + marker(r.node) + errorStyle.Render(r.text) + " " + dimStyle.Render(r.node.Summary())
 	case rowStackLine:
-		return gutter + indent + "    " + dimStyle.Render(r.text)
+		return gutter + indent + "    " + m.highlight(r.text, dimStyle)
 	case rowNode:
-		return gutter + indent + strings.Repeat("  ", r.depth) + marker(r.node) + label(r) + value(r.node)
+		return gutter + indent + strings.Repeat("  ", r.depth) + marker(r.node) + m.nodeLabel(r) + m.nodeValue(r.node)
+	case rowScalarLine:
+		return gutter + indent + strings.Repeat("  ", r.depth) + "  " + m.highlight(r.text, stringStyle)
 	}
 	return gutter
 }
 
-func header(e *Entry) string {
+func (m *Model) renderHeader(e *Entry) string {
 	r := e.Rec
 	mark := "  "
 	if e.openable() {
@@ -718,12 +1227,25 @@ func header(e *Entry) string {
 	if r.OnColor != "" {
 		badge = badge.Foreground(lipgloss.Color(r.OnColor))
 	}
+	isoTag := ""
+	if r.IsolateName != "" && r.IsolateName != "main" {
+		isoTag = " " + dimStyle.Render("@"+record.Printable(r.IsolateName))
+	}
 	level := "[" + record.Printable(r.Level) + "]"
 	if r.LevelColor != "" {
 		level = lipgloss.NewStyle().Foreground(lipgloss.Color(r.LevelColor)).Render(level)
 	}
-	return mark + badge.Render(" "+record.Printable(r.Layer)+" ") + " " + level + " " +
-		dimStyle.Render(r.Time.Local().Format("15:04:05.000")) + " " + r.FirstLine()
+	msg := m.highlight(r.FirstLine(), lipgloss.NewStyle())
+	tail := ""
+	if !e.Open {
+		if errText := r.InlineError(); errText != "" {
+			tail += "  " + m.highlight("✗ "+errText, errorStyle)
+		} else if prev := e.preview(); prev != "" {
+			tail += "  " + dimStyle.Render(prev)
+		}
+	}
+	return mark + badge.Render(" "+record.Printable(r.Layer)+" ") + isoTag + " " + level + " " +
+		dimStyle.Render(r.Time.Local().Format("15:04:05.000")) + " " + msg + tail
 }
 
 func marker(n *tree.Node) string {
@@ -737,24 +1259,61 @@ func marker(n *tree.Node) string {
 	}
 }
 
-func label(r row) string {
+func (m *Model) nodeLabel(r row) string {
 	if r.index >= 0 {
 		return dimStyle.Render(fmt.Sprintf("%d: ", r.index))
 	}
-	return keyStyle.Render(r.node.Key) + ": "
+	return m.highlight(r.node.Key, keyStyle) + ": "
 }
 
-func value(n *tree.Node) string {
+func (m *Model) nodeValue(n *tree.Node) string {
 	switch {
 	case n.Kind != tree.Scalar:
 		return dimStyle.Render(n.Summary())
-	case strings.HasPrefix(n.Literal, `"`):
-		return stringStyle.Render(n.Literal)
+	case len(n.Lines) > 1:
+		count := dimStyle.Render(fmt.Sprintf("(%d lines)", len(n.Lines)))
+		if n.Open {
+			return count
+		}
+		return m.highlight(`"`+n.Lines[0]+` …"`, stringStyle) + " " + count
+	case n.IsString:
+		return m.highlight(n.Literal, stringStyle)
 	case n.Literal == "true" || n.Literal == "false" || n.Literal == "null":
 		return literalStyle.Render(n.Literal)
 	default:
-		return n.Literal
+		return m.highlight(n.Literal, lipgloss.NewStyle())
 	}
+}
+
+func (m *Model) highlight(text string, base lipgloss.Style) string {
+	if m.query == "" || text == "" {
+		return base.Render(text)
+	}
+	lower := strings.ToLower(text)
+	// Fast path when no match or Unicode lowercasing changed byte lengths.
+	if !strings.Contains(lower, m.query) || len(lower) != len(text) {
+		return base.Render(text)
+	}
+	hitStyle := base.Inherit(matchStyle)
+	var b strings.Builder
+	start := 0
+	for {
+		idx := strings.Index(lower[start:], m.query)
+		if idx < 0 {
+			break
+		}
+		pos := start + idx
+		if pos > start {
+			b.WriteString(base.Render(text[start:pos]))
+		}
+		end := pos + len(m.query)
+		b.WriteString(hitStyle.Render(text[pos:end]))
+		start = end
+	}
+	if start < len(text) {
+		b.WriteString(base.Render(text[start:]))
+	}
+	return b.String()
 }
 
 func clamp(v, lo, hi int) int { return min(max(v, lo), hi) }

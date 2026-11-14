@@ -26,6 +26,20 @@ const (
 // ErrClosed reports a call on, or a stream from, a closed connection.
 var ErrClosed = errors.New("vmservice: connection closed")
 
+// IsolateInfo describes one running Dart isolate discovered via getVM.
+type IsolateInfo struct {
+	ID         string
+	Name       string
+	HasHistory bool
+}
+
+// VMInfo summarizes the connected Dart VM and its isolates.
+type VMInfo struct {
+	StartTime int64
+	PID       int64
+	Isolates  []IsolateInfo
+}
+
 // Client is one VM service connection. One reader goroutine routes
 // responses to pending calls and stratalog events to [Client.Records].
 //
@@ -45,6 +59,7 @@ type Client struct {
 	mu        sync.Mutex
 	pending   map[string]chan response
 	err       error // why the reader exited
+	cleanDrop bool  // peer sent a normal WebSocket close frame
 	closeOnce sync.Once
 }
 
@@ -112,7 +127,11 @@ func (c *Client) pump() {
 			}
 			queue = append(queue, r)
 		case out <- head:
+			queue[0] = record.Record{}
 			queue = queue[1:]
+			if len(queue) == 0 {
+				queue = nil
+			}
 		case <-c.quit:
 			return
 		}
@@ -127,6 +146,14 @@ func (c *Client) Records() <-chan record.Record { return c.records }
 // Malformed counts stream events and history entries skipped because they
 // did not decode as records.
 func (c *Client) Malformed() int64 { return c.malformed.Load() }
+
+// CleanClose reports whether the peer closed the WebSocket with a normal or
+// going-away status (e.g. a Dart CLI script finishing cleanly).
+func (c *Client) CleanClose() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.cleanDrop
+}
 
 // Err is why the connection ended; nil while it is open.
 func (c *Client) Err() error {
@@ -192,47 +219,51 @@ func (c *Client) Listen(ctx context.Context) error {
 	return err
 }
 
-// HistoryIsolates lists every isolate that registered [HistoryExtension].
-func (c *Client) HistoryIsolates(ctx context.Context) ([]string, error) {
+// InspectVM queries getVM and each isolate's getIsolate metadata.
+func (c *Client) InspectVM(ctx context.Context) (VMInfo, error) {
 	raw, err := c.Call(ctx, "getVM", nil)
 	if err != nil {
-		return nil, err
+		return VMInfo{}, err
 	}
 	var vm struct {
-		Isolates []struct {
-			ID string `json:"id"`
+		StartTime int64 `json:"startTime"`
+		PID       int64 `json:"pid"`
+		Isolates  []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
 		} `json:"isolates"`
 	}
 	if err := json.Unmarshal(raw, &vm); err != nil {
-		return nil, fmt.Errorf("getVM: %w", err)
+		return VMInfo{}, fmt.Errorf("getVM: %w", err)
 	}
-	var ids []string
+	out := VMInfo{StartTime: vm.StartTime, PID: vm.PID}
 	for _, iso := range vm.Isolates {
-		raw, err := c.Call(ctx, "getIsolate", map[string]string{"isolateId": iso.ID})
+		rawIso, err := c.Call(ctx, "getIsolate", map[string]string{"isolateId": iso.ID})
 		if err != nil {
 			continue // exited between getVM and getIsolate
 		}
-		var info struct {
+		var detail struct {
+			Name          string   `json:"name"`
 			ExtensionRPCs []string `json:"extensionRPCs"`
 		}
-		if json.Unmarshal(raw, &info) == nil && slices.Contains(info.ExtensionRPCs, HistoryExtension) {
-			ids = append(ids, iso.ID)
+		if json.Unmarshal(rawIso, &detail) != nil {
+			continue
 		}
+		name := detail.Name
+		if name == "" {
+			name = iso.Name
+		}
+		out.Isolates = append(out.Isolates, IsolateInfo{
+			ID:         iso.ID,
+			Name:       name,
+			HasHistory: slices.Contains(detail.ExtensionRPCs, HistoryExtension),
+		})
 	}
-	return ids, nil
-}
-
-// FindHistoryIsolate returns the first isolate serving [HistoryExtension].
-func (c *Client) FindHistoryIsolate(ctx context.Context) (string, bool, error) {
-	ids, err := c.HistoryIsolates(ctx)
-	if err != nil || len(ids) == 0 {
-		return "", false, err
-	}
-	return ids[0], true, nil
+	return out, nil
 }
 
 // History fetches the isolate's buffered records, oldest first.
-func (c *Client) History(ctx context.Context, isolateID string) ([]record.Record, error) {
+func (c *Client) History(ctx context.Context, isolateID, isolateName string) ([]record.Record, error) {
 	raw, err := c.Call(ctx, HistoryExtension, map[string]string{"isolateId": isolateID})
 	if err != nil {
 		return nil, err
@@ -250,6 +281,9 @@ func (c *Client) History(ctx context.Context, isolateID string) ([]record.Record
 			return record.Record{}, false
 		}
 		r.IsolateID = isolateID
+		if r.IsolateName == "" {
+			r.IsolateName = isolateName
+		}
 		return r, true
 	}), nil
 }
@@ -263,7 +297,8 @@ type envelope struct {
 		Event    struct {
 			ExtensionKind string `json:"extensionKind"`
 			Isolate       struct {
-				ID string `json:"id"`
+				ID   string `json:"id"`
+				Name string `json:"name"`
 			} `json:"isolate"`
 			ExtensionData json.RawMessage `json:"extensionData"`
 		} `json:"event"`
@@ -278,7 +313,9 @@ func (c *Client) read() {
 	for {
 		_, b, err := c.conn.Read(ctx)
 		if err != nil {
+			status := websocket.CloseStatus(err)
 			c.mu.Lock()
+			c.cleanDrop = status == websocket.StatusNormalClosure || status == websocket.StatusGoingAway
 			c.err = fmt.Errorf("%w: %w", ErrClosed, err)
 			c.mu.Unlock()
 			return
@@ -299,6 +336,9 @@ func (c *Client) read() {
 				continue
 			}
 			r.IsolateID = env.Params.Event.Isolate.ID
+			if r.IsolateName == "" {
+				r.IsolateName = env.Params.Event.Isolate.Name
+			}
 			select {
 			case c.live <- r:
 			case <-c.quit:

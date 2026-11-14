@@ -9,35 +9,78 @@ import (
 
 func TestResolveTarget(t *testing.T) {
 	for name, tc := range map[string]struct {
-		arg  string // used as-is unless file is set
-		file string // file content; arg becomes its path
-		want string
+		arg      string // used as-is unless file is set
+		filename string // optional filename override
+		file     string // file content; arg becomes its path
+		wantKind TargetKind
+		want     string
 	}{
-		"ws uri":                  {arg: "ws://127.0.0.1:5000/abc=/ws", want: "ws://127.0.0.1:5000/abc=/ws"},
-		"wss uri":                 {arg: "wss://host/abc=/ws", want: "wss://host/abc=/ws"},
-		"http uri":                {arg: "http://127.0.0.1:5000/abc=/", want: "ws://127.0.0.1:5000/abc=/ws"},
-		"http uri without slash":  {arg: "http://127.0.0.1:5000/abc=", want: "ws://127.0.0.1:5000/abc=/ws"},
-		"https uri":               {arg: "https://host/abc=/", want: "wss://host/abc=/ws"},
-		"file with ws uri":        {file: "ws://127.0.0.1:5000/abc=/ws\n", want: "ws://127.0.0.1:5000/abc=/ws"},
-		"file with http uri":      {file: "http://127.0.0.1:5000/abc=/", want: "ws://127.0.0.1:5000/abc=/ws"},
-		"write-service-info json": {file: `{"uri":"http://127.0.0.1:5000/abc=/"}`, want: "ws://127.0.0.1:5000/abc=/ws"},
+		"stdin":                   {arg: "-", wantKind: TargetStdin, want: "-"},
+		"ws uri":                  {arg: "ws://127.0.0.1:5000/abc=/ws", wantKind: TargetVMService, want: "ws://127.0.0.1:5000/abc=/ws"},
+		"wss uri":                 {arg: "wss://host/abc=/ws", wantKind: TargetVMService, want: "wss://host/abc=/ws"},
+		"http uri":                {arg: "http://127.0.0.1:5000/abc=/", wantKind: TargetVMService, want: "ws://127.0.0.1:5000/abc=/ws"},
+		"http uri without slash":  {arg: "http://127.0.0.1:5000/abc=", wantKind: TargetVMService, want: "ws://127.0.0.1:5000/abc=/ws"},
+		"https uri":               {arg: "https://host/abc=/", wantKind: TargetVMService, want: "wss://host/abc=/ws"},
+		"file with ws uri":        {file: "ws://127.0.0.1:5000/abc=/ws\n", wantKind: TargetVMService, want: "ws://127.0.0.1:5000/abc=/ws"},
+		"file with http uri":      {file: "http://127.0.0.1:5000/abc=/", wantKind: TargetVMService, want: "ws://127.0.0.1:5000/abc=/ws"},
+		"write-service-info json": {file: `{"uri":"http://127.0.0.1:5000/abc=/"}`, wantKind: TargetVMService, want: "ws://127.0.0.1:5000/abc=/ws"},
+		"flutter run stdout log": {
+			file: "Launching lib/main.dart...\n" +
+				"A Dart VM Service on iPhone 16 is available at: http://127.0.0.1:51111/old=/\n" +
+				"Hot restart...\n" +
+				"The Dart VM service is listening on http://127.0.0.1:52222/new=/\n" +
+				"GET https://api.example.com/users/42\n",
+			wantKind: TargetVMService,
+			want:     "ws://127.0.0.1:52222/new=/ws",
+		},
+		"jsonl file by extension": {
+			filename: "capture.jsonl",
+			file:     `{"v":1,"seq":1,"time":"2026-01-02T03:04:05Z","level":"info","layer":"App","message":"hi"}` + "\n",
+			wantKind: TargetJSONL,
+		},
+		"jsonl file auto-detected by record schema": {
+			filename: "capture.log",
+			file:     `{"v":1,"seq":1,"time":"2026-01-02T03:04:05Z","level":"info","layer":"App","message":"hi"}` + "\n",
+			wantKind: TargetJSONL,
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			arg := tc.arg
+			want := tc.want
 			if tc.file != "" {
-				arg = filepath.Join(t.TempDir(), ".flutter.vmservice")
+				fname := tc.filename
+				if fname == "" {
+					fname = ".flutter.vmservice"
+				}
+				arg = filepath.Join(t.TempDir(), fname)
 				if err := os.WriteFile(arg, []byte(tc.file), 0o600); err != nil {
 					t.Fatal(err)
 				}
+				if tc.wantKind == TargetJSONL {
+					want = arg
+				}
 			}
-			got, err := ResolveTarget(arg)
+			got, err := Resolve(arg)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got != tc.want {
-				t.Errorf("ResolveTarget = %q, want %q", got, tc.want)
+			if got.Kind != tc.wantKind || got.Value != want {
+				t.Errorf("Resolve = %+v, want kind=%v value=%q", got, tc.wantKind, want)
 			}
 		})
+	}
+}
+
+func TestResolveEnvFallbackWhenDefaultMissing(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), ".flutter.vmservice")
+	t.Setenv("VM_SERVICE_URI", "http://127.0.0.1:59999/tok=/")
+
+	got, err := ResolveDefault(missing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Kind != TargetVMService || got.Value != "ws://127.0.0.1:59999/tok=/ws" {
+		t.Errorf("ResolveDefault = %+v", got)
 	}
 }
 
@@ -59,9 +102,9 @@ func TestResolveTargetErrors(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			_, err := ResolveTarget(path)
+			_, err := Resolve(path)
 			if err == nil {
-				t.Fatal("ResolveTarget succeeded, want error")
+				t.Fatal("Resolve succeeded, want error")
 			}
 			if got := errors.Is(err, ErrWaiting); got != tc.waiting {
 				t.Errorf("errors.Is(err, ErrWaiting) = %v, want %v (err: %v)", got, tc.waiting, err)

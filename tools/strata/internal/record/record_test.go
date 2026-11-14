@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // The Dart contract test asserts VmStreamWriter produces this fixture; this
@@ -108,6 +109,27 @@ func TestPlain(t *testing.T) {
 			rec:  Record{Time: at, Layer: "Database", Level: "trace", Message: "SELECT *\nFROM users\nWHERE id = 1"},
 			want: clock + " Database [trace] SELECT * …",
 		},
+		"error and non-main isolate are shown and sanitized": {
+			rec: Record{
+				Time:        at,
+				Layer:       "Storage",
+				IsolateName: "drift\x1b[2J",
+				Level:       "error",
+				Message:     "Migration failed",
+				Error:       "SqliteException: bad\ncolumn\x9b2J",
+			},
+			want: clock + ` Storage@drift\x1b[2J [error] Migration failed ✗ SqliteException: bad \n column\x9b2J`,
+		},
+		"c1 control in data is escaped in plain": {
+			rec: Record{
+				Time:    at,
+				Layer:   "App",
+				Level:   "info",
+				Message: "m",
+				Data:    json.RawMessage("{\"k\":\"a\u009b2Jb\u007fc\"}"),
+			},
+			want: clock + ` App [info] m {"k":"a\x9b2Jb\x7fc"}`,
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got := tc.rec.Plain(); got != tc.want {
@@ -115,4 +137,79 @@ func TestPlain(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestJSONRoundTripPreservesOrderAndIsolate(t *testing.T) {
+	b, err := os.ReadFile("../../testdata/record_v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := Decode(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.IsolateName = "worker"
+
+	line := r.JSON()
+	if bytes.Contains(line, []byte("\n")) {
+		t.Fatalf("JSON() contains newline: %q", line)
+	}
+	got, err := Decode(line)
+	if err != nil {
+		t.Fatalf("Decode(JSON()): %v", err)
+	}
+	if got.IsolateName != "worker" || string(got.Data) != `{"status":200,"body":{"id":42,"name":"Jane","tags":["a","b"]},"duration_ms":12}` {
+		t.Errorf("round-trip got IsolateName=%q Data=%s", got.IsolateName, got.Data)
+	}
+}
+
+func TestFilterAndParseLevel(t *testing.T) {
+	idx, ok := ParseLevel("CRITICAL")
+	if !ok || Levels[idx].Severity != 600 {
+		t.Fatalf("ParseLevel(CRITICAL) = (%d, %v), want severity 600", idx, ok)
+	}
+	if _, ok := ParseLevel("bogus"); ok {
+		t.Fatal("ParseLevel(bogus) succeeded")
+	}
+
+	r := Record{
+		Level:    "warning",
+		Severity: 400,
+		Layer:    "Network",
+		Message:  "← 429 GET /items",
+		Error:    "rate limited",
+	}
+	h := r.Haystack()
+	f := Filter{
+		MinSeverity: 400,
+		Layers:      map[string]bool{"network": true},
+		Query:       "rate limited",
+	}
+	if !f.Match(r, h) {
+		t.Error("expected Filter.Match true")
+	}
+	f.Layers = map[string]bool{"auth": true}
+	if f.Match(r, h) {
+		t.Error("expected layer mismatch to reject")
+	}
+}
+
+func FuzzDecodeAndPlain(f *testing.F) {
+	f.Add([]byte(`{"v":1,"seq":1,"time":"2026-01-02T03:04:05Z","level":"info","layer":"App","message":"hi\u001b[2J","error":"boom\n\u009b2J","data":{"\u001b":"a\u007f"}}`))
+	f.Add([]byte(`{"v":2,"seq":9,"message":"a\r\nb","data":[1,true,null]}`))
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		r, err := Decode(raw)
+		if err != nil {
+			return
+		}
+		plain := r.Plain()
+		if !utf8.ValidString(plain) {
+			t.Fatalf("Plain() returned invalid UTF-8: %q", plain)
+		}
+		for _, c := range plain {
+			if c == '\n' || c == '\r' || c == '\t' || isControl(c) {
+				t.Fatalf("Plain() leaked control rune %U in %q", c, plain)
+			}
+		}
+	})
 }

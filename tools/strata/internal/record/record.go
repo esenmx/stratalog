@@ -1,5 +1,6 @@
-// Package record decodes stratalog record schema v1, the JSON posted by the
-// Dart VmStreamWriter on the "stratalog" VM service stream.
+// Package record decodes, filters, sanitizes, and formats stratalog record
+// schema v1, the JSON posted by the Dart VmStreamWriter on the "stratalog" VM
+// service stream (and written to NDJSON capture files).
 package record
 
 import (
@@ -9,10 +10,65 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // SchemaVersion is the newest record schema this build understands.
 const SchemaVersion = 1
+
+// LevelSpec pairs a canonical chirp level name with its minimum severity.
+type LevelSpec struct {
+	Name     string
+	Severity int
+}
+
+// Levels lists chirp's standard log levels in ascending severity order.
+var Levels = []LevelSpec{
+	{"trace", 0},
+	{"debug", 100},
+	{"info", 200},
+	{"notice", 300},
+	{"success", 310},
+	{"warning", 400},
+	{"error", 500},
+	{"critical", 600},
+	{"wtf", 1000},
+}
+
+// ParseLevel resolves a case-insensitive level name to its index in [Levels].
+func ParseLevel(name string) (int, bool) {
+	needle := strings.ToLower(strings.TrimSpace(name))
+	for i, l := range Levels {
+		if l.Name == needle {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+// Filter selects records by minimum severity, layer set, and substring query.
+type Filter struct {
+	MinSeverity int
+	Layers      map[string]bool // lowercased layer names; empty accepts all
+	Query       string          // lowercased substring; empty accepts all
+}
+
+// Match reports whether r (with precomputed lowercased haystack) passes f.
+func (f Filter) Match(r Record, haystack string) bool {
+	if r.Severity < f.MinSeverity {
+		return false
+	}
+	if len(f.Layers) > 0 && !f.Layers[strings.ToLower(r.Layer)] {
+		return false
+	}
+	if f.Query == "" {
+		return true
+	}
+	if haystack == "" {
+		haystack = r.Haystack()
+	}
+	return strings.Contains(haystack, f.Query)
+}
 
 // Record is one stratalog log record. Optional fields are zero when the
 // record omits them.
@@ -34,9 +90,11 @@ type Record struct {
 	Error      string          `json:"error,omitempty"`
 	Stack      string          `json:"stack,omitempty"`
 
-	// IsolateID names the isolate that posted the record; set by the VM
-	// service client, never part of the wire record.
-	IsolateID string `json:"-"`
+	// IsolateID and IsolateName identify the posting isolate. IsolateName is
+	// persisted as "isolate" when non-empty and not "main" so NDJSON captures
+	// preserve worker-isolate origin.
+	IsolateID   string `json:"-"`
+	IsolateName string `json:"isolate,omitempty"`
 }
 
 // ErrNotRecord reports JSON that decodes but carries no schema version.
@@ -55,6 +113,36 @@ func Decode(b []byte) (Record, error) {
 	return r, nil
 }
 
+// Caller formats `file:line method` (omitting `:0` when Line <= 0), sanitized
+// via [Printable], or "" when File is empty.
+func (r Record) Caller() string {
+	if r.File == "" {
+		return ""
+	}
+	s := Printable(r.File)
+	if r.Line > 0 {
+		s = fmt.Sprintf("%s:%d", s, r.Line)
+	}
+	if r.Method != "" {
+		s += " " + Printable(r.Method)
+	}
+	return s
+}
+
+// Haystack returns the lowercased searchable text across all record fields.
+func (r Record) Haystack() string {
+	return strings.ToLower(strings.Join([]string{
+		r.Layer,
+		r.IsolateName,
+		r.Level,
+		r.Message,
+		r.Caller(),
+		string(r.Data),
+		r.Error,
+		r.Stack,
+	}, "\n"))
+}
+
 // FirstLine is the message's first line, [Printable], suffixed " …" when
 // more follow.
 func (r Record) FirstLine() string {
@@ -66,40 +154,87 @@ func (r Record) FirstLine() string {
 	return first
 }
 
-// Printable makes one line of record text safe to print: control
-// characters (ESC, CR, C1) become visible \xNN escapes so a record can't
-// drive the terminal, and a tab becomes a space.
+// Printable makes one line of record text safe to print: control characters
+// (C0 including LF/CR/ESC, DEL, C1, invalid UTF-8 bytes, Unicode line
+// separators) become visible escapes so a record cannot drive the terminal or
+// inject line breaks, and a tab becomes a space.
 func Printable(s string) string {
-	if !strings.ContainsFunc(s, isControl) {
+	if utf8.ValidString(s) && !strings.ContainsFunc(s, isControl) {
 		return s
 	}
 	var b strings.Builder
-	for _, c := range s {
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		c, w := utf8.DecodeRuneInString(s[i:])
 		switch {
+		case c == utf8.RuneError && w == 1:
+			fmt.Fprintf(&b, `\x%02x`, s[i])
 		case c == '\t':
 			b.WriteByte(' ')
-		case isControl(c):
+		case c <= 0xff && isControl(c):
 			fmt.Fprintf(&b, `\x%02x`, c)
+		case isControl(c):
+			fmt.Fprintf(&b, `\u%04x`, c)
 		default:
 			b.WriteRune(c)
 		}
+		i += w
 	}
 	return b.String()
 }
 
-func isControl(c rune) bool { return c < 0x20 || c == 0x7f || (c >= 0x80 && c < 0xa0) }
+func isControl(c rune) bool {
+	return c < 0x20 || c == 0x7f || (c >= 0x80 && c < 0xa0) || c == '\u2028' || c == '\u2029'
+}
 
-// Plain renders `HH:MM:SS.mmm Layer [level] message {data}` in local time,
-// without ANSI.
+// InlineError formats r.Error onto a single terminal-safe line while keeping
+// all lines of multi-line exceptions visible via ` \n ` separators.
+func (r Record) InlineError() string {
+	if r.Error == "" {
+		return ""
+	}
+	norm := strings.ReplaceAll(r.Error, "\r\n", "\n")
+	norm = strings.TrimRight(norm, "\n")
+	parts := strings.Split(norm, "\n")
+	for i, p := range parts {
+		parts[i] = Printable(strings.TrimSuffix(p, "\r"))
+	}
+	return strings.Join(parts, ` \n `)
+}
+
+// Plain renders `HH:MM:SS.mmm Layer[@isolate] [level] message {data} ✗ error`
+// in local time, single-line and without ANSI or terminal control characters.
 func (r Record) Plain() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s %s [%s] %s", r.Time.Local().Format("15:04:05.000"), Printable(r.Layer), Printable(r.Level), r.FirstLine())
+	fmt.Fprintf(&b, "%s %s", r.Time.Local().Format("15:04:05.000"), Printable(r.Layer))
+	if r.IsolateName != "" && r.IsolateName != "main" {
+		fmt.Fprintf(&b, "@%s", Printable(r.IsolateName))
+	}
+	fmt.Fprintf(&b, " [%s] %s", Printable(r.Level), r.FirstLine())
 	if len(r.Data) > 0 {
 		var data bytes.Buffer
 		if err := json.Compact(&data, r.Data); err == nil {
 			b.WriteByte(' ')
-			b.Write(data.Bytes())
+			b.WriteString(Printable(data.String()))
 		}
 	}
+	if errText := r.InlineError(); errText != "" {
+		b.WriteString(" ✗ ")
+		b.WriteString(errText)
+	}
 	return b.String()
+}
+
+// JSON encodes r as one compact NDJSON line (without a trailing newline),
+// keeping Data's wire key order and leaving <, > and & unescaped.
+func (r Record) JSON() []byte {
+	out := r
+	if out.IsolateName == "main" {
+		out.IsolateName = ""
+	}
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(out)
+	return bytes.TrimSuffix(b.Bytes(), []byte("\n"))
 }
