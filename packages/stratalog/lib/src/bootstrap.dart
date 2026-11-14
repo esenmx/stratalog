@@ -107,6 +107,8 @@ void configureLogging({
   // that chain even in release, and release must never post records.
   if (vmStream && !_kReleaseMode) {
     logger.addWriter(VmStreamWriter(domainColors: domainColors));
+  } else {
+    VmStreamWriter.detach();
   }
 
   if (crashReporter case final reporter?) {

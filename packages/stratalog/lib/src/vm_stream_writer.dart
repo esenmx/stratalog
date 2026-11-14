@@ -31,11 +31,15 @@ final class VmStreamWriter({
   /// `developer.postEvent` on [streamId].
   void Function(Map<String, Object?> record)? post,
 }) extends ChirpWriter {
-  /// Becomes the writer [historyExtension] serves; registers the extension
-  /// once per isolate.
+  /// Becomes the writer [historyExtension] serves when posting to the real VM
+  /// stream; registers the extension once per isolate. Instances using the
+  /// [post] test seam stay isolated in-memory.
   this {
-    _current = this;
-    _registerHistory();
+    if (post == null) {
+      _current = this;
+      _trim(_sharedRing, capacity);
+      _registerHistory();
+    }
   }
 
   /// VM service stream the records are posted on.
@@ -56,33 +60,53 @@ final class VmStreamWriter({
     ...domainColors,
   };
 
+  final bool _shared = post == null;
   final void Function(Map<String, Object?> record) _post = post ?? _postEvent;
 
-  final ListQueue<Map<String, Object?>> _ring = ListQueue();
-  int _seq = 0;
+  final ListQueue<Map<String, Object?>> _localRing = ListQueue();
+  int _localSeq = 0;
 
+  // Isolate-wide buffer and monotonic seq so re-calling configureLogging()
+  // keeps boot history intact and never resets seq back to 1.
+  static final ListQueue<Map<String, Object?>> _sharedRing = ListQueue();
+  static int _sharedSeq = 0;
   static VmStreamWriter? _current;
   static bool _registered = false;
 
+  /// Detaches the shared writer and clears its buffered history when
+  /// `configureLogging(vmStream: false)` opts out, while keeping `_sharedSeq`
+  /// monotonic if re-enabled later in the same isolate.
+  static void detach() {
+    _current = null;
+    _sharedRing.clear();
+  }
+
   @override
   bool get requiresCallerInfo => true;
+
+  ListQueue<Map<String, Object?>> get _ring =>
+      _shared ? _sharedRing : _localRing;
 
   /// The buffered records, oldest first.
   List<Map<String, Object?>> get history => List.unmodifiable(_ring);
 
   @override
   void write(LogRecord record) {
-    final seq = ++_seq;
+    final seq = _shared ? ++_sharedSeq : ++_localSeq;
     try {
       final json = toRecordJson(record, seq);
-      _ring.addLast(json);
-      while (_ring.isNotEmpty && _ring.length > capacity) {
-        _ring.removeFirst();
-      }
+      final ring = _ring..addLast(json);
+      _trim(ring, capacity);
       _post(json);
     } on Object catch (_) {
       // Dropped: chirp's dispatch loop has no try/catch, so a throw here
       // would skip every writer queued after this one.
+    }
+  }
+
+  static void _trim(ListQueue<Map<String, Object?>> ring, int capacity) {
+    while (ring.isNotEmpty && ring.length > capacity) {
+      ring.removeFirst();
     }
   }
 
@@ -106,7 +130,7 @@ final class VmStreamWriter({
       if (caller != null) ...{
         'file': caller.callerFileName,
         'line': caller.line,
-        'method': caller.callerMethod,
+        if (caller.callerMethod.isNotEmpty) 'method': caller.callerMethod,
       },
       if (record.data.isNotEmpty) 'data': _jsonSafe(snapshotData(record.data)),
       'error': ?record.error?.toString(),

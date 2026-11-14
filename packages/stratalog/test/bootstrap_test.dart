@@ -63,6 +63,44 @@ void main() {
     check(writers.whereType<IdeDebugConsoleWriter>()).isEmpty();
     check(writers.whereType<PrintConsoleWriter>()).isEmpty();
   });
+
+  test('re-calling configureLogging preserves history and monotonic seq', () {
+    configureLogging(console: _StubWriter());
+    LogLayer.app.info('first boot record');
+    final firstWriter = Chirp.root.writers.whereType<VmStreamWriter>().single;
+    final firstSeq = firstWriter.history.last['seq']! as int;
+
+    configureLogging(console: _StubWriter());
+    LogLayer.app.info('after reconfigure');
+    final secondWriter = Chirp.root.writers.whereType<VmStreamWriter>().single;
+
+    final messages = secondWriter.history.map((r) => r['message']).toList();
+    final tail = messages.sublist(messages.length - 2);
+    check(tail).deepEquals(['first boot record', 'after reconfigure']);
+    final secondSeq = secondWriter.history.last['seq']! as int;
+    check(secondSeq).equals(firstSeq + 1);
+  });
+
+  test(
+    'vmStream: false clears buffered history while keeping seq monotonic',
+    () {
+    configureLogging(console: _StubWriter());
+    LogLayer.app.info('before opt-out');
+    final seqBefore = Chirp.root.writers
+        .whereType<VmStreamWriter>()
+        .single
+        .history
+        .last['seq']! as int;
+
+    configureLogging(console: _StubWriter(), vmStream: false);
+    configureLogging(console: _StubWriter());
+    final writer = Chirp.root.writers.whereType<VmStreamWriter>().single;
+    check(writer.history).isEmpty();
+
+    LogLayer.app.info('after re-enable');
+    final seqAfter = writer.history.single['seq']! as int;
+    check(seqAfter).isGreaterThan(seqBefore);
+  });
 }
 
 final class _StubWriter extends ChirpWriter {

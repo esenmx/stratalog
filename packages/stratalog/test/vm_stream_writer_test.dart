@@ -85,6 +85,30 @@ void main() {
     check(posted.single['method']).isA<String>();
   });
 
+  test('caller info omits empty method', () {
+    final record = LogRecord(
+      message: 'partial caller',
+      timestamp: DateTime.utc(2026),
+      wallClock: DateTime.utc(2026),
+      caller: StackTrace.fromString('#0      (package:app/boot.dart:12:3)'),
+    );
+    final json = VmStreamWriter(post: (_) {}).toRecordJson(record, 1);
+
+    check(json['file']).equals('boot');
+    check(json['line']).equals(12);
+    check(json.keys).not((it) => it.contains('method'));
+  });
+
+  test('post test seam does not clobber shared VM history', () {
+    configureLogging();
+    LogLayer.app.info('live record');
+    final live = Chirp.root.writers.whereType<VmStreamWriter>().single;
+
+    VmStreamWriter(post: (_) {}).write(_record(message: 'isolated test'));
+
+    check(live.history.last['message']).equals('live record');
+  });
+
   test('layer color follows the formatter, LogLayer declarations included', () {
     const custom = LogLayer('VmStreamCustom', color: Ansi256.green3_34);
     final posted = <Map<String, Object?>>[];
