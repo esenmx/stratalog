@@ -16,7 +16,7 @@ environment:
   sdk: ^3.13.0
 
 dependencies:
-  grpc: '>=4.2.0 <6.0.0'
+  grpc: ^5.1.0
   protobuf: ^6.0.0
   stratalog:
     path: ../stratalog

@@ -78,6 +78,7 @@ final class _StreamService extends Service {
     yield [1];
     throw const GrpcError.custom(StatusCode.notFound, 'missing', null, null, {
       'error-code': 'geo.404',
+      'set-cookie': 'sid=secret-session',
     });
   }
 
@@ -117,7 +118,7 @@ final class _StreamService extends Service {
       'overflow',
       null,
       null,
-      {'error-code': 'geo.507'},
+      {'error-code': 'geo.507', 'set-cookie': 'sid=secret-session'},
     );
   }
 }
@@ -147,8 +148,10 @@ final class _StreamClient(
   ResponseStream<List<int>> boomStream(List<int> request) =>
       $createStreamingCall(_boomStream, .value(request));
 
-  ResponseStream<List<int>> fineStream(List<int> request) =>
-      $createStreamingCall(_fineStream, .value(request));
+  ResponseStream<List<int>> fineStream(
+    List<int> request, {
+    CallOptions? options,
+  }) => $createStreamingCall(_fineStream, .value(request), options: options);
 
   ResponseStream<List<int>> tickStream(List<int> request) =>
       $createStreamingCall(_tickStream, .value(request));
@@ -160,6 +163,35 @@ final class _StreamClient(
 
   ResponseFuture<List<int>> collectBoom(Stream<List<int>> requests) =>
       $createStreamingCall(_collectBoom, requests).single;
+}
+
+final class _RejectedCall<Q, R>(
+  ClientMethod<Q, R> method,
+  CallOptions options,
+  final Object _error,
+) extends ClientCall<Q, R> {
+  this : super(method, const Stream.empty(), options);
+
+  @override
+  Stream<R> get response => .error(_error);
+}
+
+final class _RejectingInterceptor(final Object _error)
+    extends ClientInterceptor {
+  @override
+  ResponseStream<R> interceptStreaming<Q, R>(
+    ClientMethod<Q, R> method,
+    Stream<Q> requests,
+    CallOptions options,
+    ClientStreamingInvoker<Q, R> invoker,
+  ) => ResponseStream(_RejectedCall(method, options, _error));
+}
+
+extension on Subject<LogRecord> {
+  void withholds(String secret) => has(
+    (r) => '${r.message} ${r.data} ${r.error}',
+    'rendered record',
+  ).not((it) => it.contains(secret));
 }
 
 void main() {
@@ -195,7 +227,12 @@ void main() {
     'failed stream logs a warning with status, not the success done line',
     () async {
       final responses = client.boomStream([0]);
-      await check(responses.toList()).throws<GrpcError>();
+      await check(responses.toList()).throws<GrpcError>(
+        (it) => it
+            .has((e) => e.trailers, 'trailers')
+            .isNotNull()
+            .containsKey('set-cookie'),
+      );
       await settle();
 
       check(writer.records.map((r) => '${r.message}')).deepEquals([
@@ -204,8 +241,16 @@ void main() {
       ]);
       final record = writer.records.last;
       check(record.level).equals(.warning);
-      check(record.error).isA<GrpcError>();
       check(record.data['error_code']).equals('geo.404');
+      check(record).withholds('secret-session');
+      check('${record.error}')
+        ..contains('NOT_FOUND')
+        ..contains('missing');
+      check(record.error)
+          .isA<GrpcError>()
+          .has((e) => e.trailers, 'trailers')
+          .isNotNull()
+          .isEmpty();
     },
   );
 
@@ -279,7 +324,12 @@ void main() {
   });
 
   test('client-streaming single logs the failure once with status', () async {
-    await check(client.collectBoom(.value([0]))).throws<GrpcError>();
+    await check(client.collectBoom(.value([0]))).throws<GrpcError>(
+      (it) => it
+          .has((e) => e.trailers, 'trailers')
+          .isNotNull()
+          .containsKey('set-cookie'),
+    );
     await settle();
 
     check(writer.records.map((r) => '${r.message}')).deepEquals([
@@ -289,6 +339,80 @@ void main() {
     final record = writer.records.last;
     check(record.level).equals(.warning);
     check(record.data['error_code']).equals('geo.507');
+    check(record).withholds('secret-session');
+    check('${record.error}')
+      ..contains('RESOURCE_EXHAUSTED')
+      ..contains('overflow');
+    check(record.error)
+        .isA<GrpcError>()
+        .has((e) => e.trailers, 'trailers')
+        .isNotNull()
+        .isEmpty();
+  });
+
+  test('non-ASCII sensitive value: the peer resets the stream, the value '
+      'stays masked', () async {
+    await check(
+      client.fineStream(
+        [0],
+        options: CallOptions(
+          metadata: {'authorization': 'Bearer sécret-token'},
+        ),
+      ).toList(),
+    ).throws<GrpcError>();
+    await settle();
+
+    check(writer.records.map((r) => '${r.message}')).deepEquals([
+      '⇄ /test.Stream/FineStream',
+      '✗ UNKNOWN /test.Stream/FineStream',
+    ]);
+    check(writer.records.first.data['metadata'])
+        .isA<Map<String, Object?>>()
+        .deepEquals({'authorization': '***'});
+    for (final record in writer.records) {
+      check(record).withholds('sécret');
+    }
+  });
+
+  test('control-character sensitive value: grpc trims it and sends, the value '
+      'stays masked', () async {
+    await client.fineStream(
+      [0],
+      options: CallOptions(
+        metadata: {'authorization': 'Bearer secret-token\n'},
+      ),
+    ).toList();
+    await settle();
+
+    check(writer.records.map((r) => '${r.message}')).deepEquals([
+      '⇄ /test.Stream/FineStream',
+      '⇄ done /test.Stream/FineStream',
+    ]);
+    check(writer.records.first.data['metadata'])
+        .isA<Map<String, Object?>>()
+        .deepEquals({'authorization': '***'});
+    for (final record in writer.records) {
+      check(record).withholds('secret-token');
+    }
+  });
+
+  test('a FormatException stream failure logs as its type alone', () async {
+    const error = FormatException(
+      'Invalid HTTP header field value: "Bearer secret-token"',
+    );
+    final rejecting = _StreamClient(
+      channel,
+      interceptors: [LoggerGrpcInterceptor(), _RejectingInterceptor(error)],
+    );
+
+    await check(rejecting.fineStream([0]).toList())
+        .throws<FormatException>((it) => it.identicalTo(error));
+    await settle();
+
+    final record = writer.records.last;
+    check('${record.message}').equals('✗ - /test.Stream/FineStream');
+    check(record).withholds('secret-token');
+    check(record.error).equals('FormatException');
   });
 
   test('cancelling client-streaming single logs cancelled at trace, never '

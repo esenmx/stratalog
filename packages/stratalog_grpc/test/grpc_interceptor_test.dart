@@ -4,6 +4,7 @@ import 'package:checks/checks.dart';
 import 'package:chirp/chirp.dart';
 import 'package:grpc/grpc.dart';
 import 'package:protobuf/protobuf.dart';
+import 'package:protobuf/well_known_types/google/protobuf/struct.pb.dart';
 import 'package:stratalog_grpc/stratalog_grpc.dart';
 import 'package:test/test.dart';
 
@@ -52,6 +53,45 @@ final class _BigMessage extends GeneratedMessage {
   List<String> get items => $_getList(1);
 }
 
+/// Hand-rolled proto — no protoc: credential-like fields at the top level, in
+/// a nested message, in a repeated message, as map-field keys and in a Struct.
+final class _Credentials extends GeneratedMessage {
+  new();
+
+  factory fromBuffer(List<int> bytes) => _Credentials()..mergeFromBuffer(bytes);
+
+  factory fromJson(Map<String, Object?> json) =>
+      _Credentials()..mergeFromProto3Json(json);
+
+  static final BuilderInfo _info =
+      BuilderInfo('test.Credentials', createEmptyInstance: _Credentials.new)
+        ..aOS(1, 'user')
+        ..aOS(2, 'password')
+        ..aOS(3, 'newPassword', protoName: 'new_password')
+        ..aOS(4, 'apiKey', protoName: 'api_key')
+        ..aOM<_Credentials>(5, 'inner', subBuilder: _Credentials.new)
+        ..pPM<_Credentials>(6, 'history', subBuilder: _Credentials.new)
+        ..m<String, String>(
+          7,
+          'labels',
+          entryClassName: 'test.Credentials.LabelsEntry',
+          keyFieldType: PbFieldType.OS,
+          valueFieldType: PbFieldType.OS,
+          packageName: const PackageName('test'),
+        )
+        ..aOM<Struct>(8, 'extra', subBuilder: Struct.new)
+        ..hasRequiredFields = false;
+
+  @override
+  BuilderInfo get info_ => _info;
+
+  @override
+  _Credentials createEmptyInstance() => _Credentials();
+
+  @override
+  _Credentials clone() => _Credentials()..mergeFromMessage(this);
+}
+
 /// Hand-rolled echo service — no protoc: payloads are raw bytes.
 final class _EchoService extends Service {
   new() {
@@ -85,6 +125,16 @@ final class _EchoService extends Service {
         (value) => value.writeToBuffer(),
       ),
     );
+    $addMethod(
+      ServiceMethod<_Credentials, _Credentials>(
+        'EchoCredentials',
+        _echoCredentials,
+        false,
+        false,
+        _Credentials.fromBuffer,
+        (value) => value.writeToBuffer(),
+      ),
+    );
   }
 
   @override
@@ -97,11 +147,17 @@ final class _EchoService extends Service {
     await request;
     throw const GrpcError.custom(StatusCode.notFound, 'missing', null, null, {
       'error-code': 'geo.404',
+      'set-cookie': 'sid=secret-session',
     });
   }
 
   Future<_BigMessage> _echoBig(ServiceCall call, Future<_BigMessage> request) =>
       request;
+
+  Future<_Credentials> _echoCredentials(
+    ServiceCall call,
+    Future<_Credentials> request,
+  ) => request;
 }
 
 final class _EchoClient(
@@ -124,6 +180,11 @@ final class _EchoClient(
     (value) => value.writeToBuffer(),
     _BigMessage.fromBuffer,
   );
+  static final _echoCredentials = ClientMethod<_Credentials, _Credentials>(
+    '/test.Echo/EchoCredentials',
+    (value) => value.writeToBuffer(),
+    _Credentials.fromBuffer,
+  );
 
   ResponseFuture<List<int>> echo(List<int> request, {CallOptions? options}) =>
       $createUnaryCall(_echo, request, options: options);
@@ -133,6 +194,38 @@ final class _EchoClient(
 
   ResponseFuture<_BigMessage> echoBig(_BigMessage request) =>
       $createUnaryCall(_echoBig, request);
+
+  ResponseFuture<_Credentials> echoCredentials(_Credentials request) =>
+      $createUnaryCall(_echoCredentials, request);
+}
+
+final class _RejectedCall<Q, R>(
+  ClientMethod<Q, R> method,
+  CallOptions options,
+  final Object _error,
+) extends ClientCall<Q, R> {
+  this : super(method, const Stream.empty(), options);
+
+  @override
+  Stream<R> get response => .error(_error);
+}
+
+final class _RejectingInterceptor(final Object _error)
+    extends ClientInterceptor {
+  @override
+  ResponseFuture<R> interceptUnary<Q, R>(
+    ClientMethod<Q, R> method,
+    Q request,
+    CallOptions options,
+    ClientUnaryInvoker<Q, R> invoker,
+  ) => ResponseFuture(_RejectedCall(method, options, _error));
+}
+
+extension on Subject<LogRecord> {
+  void withholds(String secret) => has(
+    (r) => '${r.message} ${r.data} ${r.error}',
+    'rendered record',
+  ).not((it) => it.contains(secret));
 }
 
 void main() {
@@ -202,6 +295,27 @@ void main() {
     check(record.data['duration_ms']).isA<int>();
   });
 
+  test('failure attaches a GrpcError stripped to code and message', () async {
+    await check(client.boom([0])).throws<GrpcError>(
+      (it) => it
+          .has((e) => e.trailers, 'trailers')
+          .isNotNull()
+          .containsKey('set-cookie'),
+    );
+    await settle();
+
+    final record = writer.records.last;
+    check('${record.message} ${record.data} ${record.error}')
+        .not((it) => it.contains('secret-session'));
+    check('${record.error}')
+      ..contains('NOT_FOUND')
+      ..contains('missing');
+    check(record.error).isA<GrpcError>()
+      ..has((e) => e.trailers, 'trailers').isNotNull().isEmpty()
+      ..has((e) => e.details, 'details').isNull()
+      ..has((e) => e.rawResponse, 'rawResponse').isNull();
+  });
+
   test('large message lands in record data verbatim when logBodies is true — '
       'no clipping', () async {
     final bodyClient = _EchoClient(
@@ -248,8 +362,9 @@ void main() {
     // must fail here.
     final keys = writer.records.expand((r) => r.data.keys).toSet();
     check(keys.difference({'metadata', 'duration_ms', 'error_code'})).isEmpty();
-    check(writer.records.map((r) => '${r.message} ${r.data}').join('\n'))
-        .not((it) => it.contains('user-payload'));
+    check(
+      writer.records.map((r) => '${r.message} ${r.data} ${r.error}').join('\n'),
+    ).not((it) => it.contains('user-payload'));
   });
 
   test('protoLogShape under name stripping is the tag-keyed map', () {
@@ -316,6 +431,136 @@ void main() {
     check(metadata['x-trace-id']).equals('tr-42');
   });
 
+  test('non-ASCII sensitive value: the peer resets the stream, the value '
+      'stays masked', () async {
+    await check(
+      client.echo(
+        [0],
+        options: CallOptions(
+          metadata: {'authorization': 'Bearer sécret-token'},
+        ),
+      ),
+    ).throws<GrpcError>();
+    await settle();
+
+    check(writer.records.map((r) => '${r.message}'))
+        .deepEquals(['→ /test.Echo/Echo', '✗ UNKNOWN /test.Echo/Echo']);
+    check(writer.records.first.data['metadata'])
+        .isA<Map<String, Object?>>()
+        .deepEquals({'authorization': '***'});
+    for (final record in writer.records) {
+      check(record).withholds('sécret');
+    }
+  });
+
+  test('control-character sensitive value: grpc trims it and sends, the value '
+      'stays masked', () async {
+    await client.echo(
+      [0],
+      options: CallOptions(
+        metadata: {'authorization': 'Bearer secret-token\n'},
+      ),
+    );
+    await settle();
+
+    check(writer.records.map((r) => '${r.message}'))
+        .deepEquals(['→ /test.Echo/Echo', '← OK /test.Echo/Echo']);
+    check(writer.records.first.data['metadata'])
+        .isA<Map<String, Object?>>()
+        .deepEquals({'authorization': '***'});
+    for (final record in writer.records) {
+      check(record).withholds('secret-token');
+    }
+  });
+
+  test('FormatException failure is attached as its type alone, even for a '
+      'value the logger never saw — the caller keeps the original', () async {
+    const error = FormatException(
+      'Invalid HTTP header field value: "Bearer secret-token"',
+    );
+    final rejecting = _EchoClient(
+      channel,
+      interceptors: [LoggerGrpcInterceptor(), _RejectingInterceptor(error)],
+    );
+
+    await check(rejecting.echo([0]))
+        .throws<FormatException>((it) => it.identicalTo(error));
+    await settle();
+
+    final record = writer.records.last;
+    check('${record.message}').equals('✗ - /test.Echo/Echo');
+    check(record).withholds('secret-token');
+    check(record.error).equals('FormatException');
+  });
+
+  test('other non-GrpcError failure is attached as its first line, withheld '
+      'values masked longest first before the cut', () async {
+    final error = StateError('rejected "Bearer secret\n-token"');
+    final rejecting = _EchoClient(
+      channel,
+      interceptors: [LoggerGrpcInterceptor(), _RejectingInterceptor(error)],
+    );
+
+    await check(
+      rejecting.echo(
+        [0],
+        options: CallOptions(
+          metadata: {
+            'x-api-key': 'Bearer secret',
+            'authorization': 'Bearer secret\n-token',
+          },
+        ),
+      ),
+    ).throws<StateError>((it) => it.identicalTo(error));
+    await settle();
+
+    final record = writer.records.last;
+    check(record).withholds('secret');
+    check(record.error).equals('StateError: Bad state: rejected "***"');
+  });
+
+  test('a server status keeps its text when it contains an unlisted metadata '
+      'value', () async {
+    await check(
+      client.boom([0], options: CallOptions(metadata: {'x-flag': 'ss'})),
+    ).throws<GrpcError>();
+    await settle();
+
+    check(writer.records.last.error)
+        .isA<GrpcError>()
+        .has((e) => e.message, 'message')
+        .equals('missing');
+  });
+
+  test('a call-setup failure keeps its reason, the sensitive value it echoes '
+      'masked — the caller keeps the original', () async {
+    await check(
+      client.echo(
+        [0],
+        options: CallOptions(
+          metadata: {'authorization': 'Bearer secret-token'},
+          providers: [
+            (metadata, uri) =>
+                throw StateError('refresh failed for "Bearer secret-token"'),
+          ],
+        ),
+      ),
+    ).throws<GrpcError>(
+      (it) => it
+          .has((e) => e.message, 'message')
+          .isNotNull()
+          .contains('secret-token'),
+    );
+    await settle();
+
+    final record = writer.records.last;
+    check(record).withholds('secret-token');
+    check(record.error)
+        .isA<GrpcError>()
+        .has((e) => e.message, 'message')
+        .equals('Error making call: Bad state: refresh failed for "***"');
+  });
+
   test('sensitive metadata verbatim when opted out', () async {
     final unmaskedClient = _EchoClient(
       channel,
@@ -330,5 +575,145 @@ void main() {
     final metadata =
         writer.records.first.data['metadata']! as Map<String, Object?>;
     check(metadata['authorization']).equals('Bearer secret-token');
+  });
+
+  group('logged bodies with logBodies on:', () {
+    final credentials = <String, Object?>{
+      'user': 'ada',
+      'password': 'hunter2',
+      'inner': {
+        'user': 'bob',
+        'newPassword': 'n-secret',
+        'inner': {'user': 'cy', 'apiKey': 'k-secret'},
+      },
+      'history': [
+        {'user': 'h1', 'password': 'p-secret'},
+        {'user': 'h2', 'apiKey': 'k2-secret'},
+      ],
+      'labels': {
+        'new_password': 'l1-secret',
+        'NEW-PASSWORD': 'l2-secret',
+        'region': 'eu',
+      },
+      'extra': {
+        'clientSecret': 's-secret',
+        'nested': {'pin': '0000', 'ok': true},
+        'cards': [
+          {'cvv': '999', 'brand': 'visa'},
+        ],
+        'secret': {'deep': 'whole-value'},
+      },
+    };
+    final defaultsMasked = <String, Object?>{
+      'user': 'ada',
+      'password': '***',
+      'inner': {
+        'user': 'bob',
+        'newPassword': '***',
+        'inner': {'user': 'cy', 'apiKey': '***'},
+      },
+      'history': [
+        {'user': 'h1', 'password': '***'},
+        {'user': 'h2', 'apiKey': '***'},
+      ],
+      'labels': {'new_password': '***', 'NEW-PASSWORD': '***', 'region': 'eu'},
+      'extra': {
+        'clientSecret': '***',
+        'nested': {'pin': '***', 'ok': true},
+        'cards': [
+          {'cvv': '***', 'brand': 'visa'},
+        ],
+        'secret': '***',
+      },
+    };
+    final newPasswordMasked = <String, Object?>{
+      ...credentials,
+      'inner': {
+        'user': 'bob',
+        'newPassword': '***',
+        'inner': {'user': 'cy', 'apiKey': 'k-secret'},
+      },
+      'labels': {'new_password': '***', 'NEW-PASSWORD': '***', 'region': 'eu'},
+    };
+    Future<void> sendCredentials(_EchoClient client) =>
+        client.echoCredentials(_Credentials.fromJson(credentials));
+    Future<void> sendBig(_EchoClient client) =>
+        client.echoBig(_BigMessage()..text = 'hi');
+    Future<void> sendBytes(_EchoClient client) => client.echo([1, 2, 3]);
+    Future<void> sendUnserializable(_EchoClient client) =>
+        client.echoCredentials(
+          _Credentials()..setField(8, Struct()..fields['kindless'] = Value()),
+        );
+
+    for (final (name, tap, send, want) in [
+      (
+        'default keys masked at any depth',
+        LoggerGrpcInterceptor(logBodies: true),
+        sendCredentials,
+        defaultsMasked,
+      ),
+      (
+        'keys stay masked with maskSensitiveValues off',
+        LoggerGrpcInterceptor(logBodies: true, maskSensitiveValues: false),
+        sendCredentials,
+        defaultsMasked,
+      ),
+      (
+        'a custom key matches ignoring case, _ and -',
+        LoggerGrpcInterceptor(logBodies: true, redactKeys: {'NEW-PASSWORD'}),
+        sendCredentials,
+        newPasswordMasked,
+      ),
+      (
+        'an empty redactKeys logs verbatim',
+        LoggerGrpcInterceptor(logBodies: true, redactKeys: {}),
+        sendCredentials,
+        credentials,
+      ),
+      (
+        'a matched method path drops the body',
+        LoggerGrpcInterceptor(
+          logBodies: true,
+          redactBodyPaths: {'Echo/EchoCred'},
+        ),
+        sendCredentials,
+        '*** redacted body ***',
+      ),
+      (
+        'a service prefix drops a non-protobuf body',
+        LoggerGrpcInterceptor(
+          logBodies: true,
+          redactBodyPaths: {'/test.Echo/'},
+        ),
+        sendBytes,
+        '*** redacted body ***',
+      ),
+      (
+        'an unmatched method path keeps the body',
+        LoggerGrpcInterceptor(
+          logBodies: true,
+          redactBodyPaths: {'/test.Echo/EchoCredentials'},
+        ),
+        sendBig,
+        {'text': 'hi'},
+      ),
+      (
+        'a body proto3 JSON rejects logs a placeholder, the call goes through',
+        LoggerGrpcInterceptor(logBodies: true),
+        sendUnserializable,
+        '<unloggable body: ArgumentError>',
+      ),
+    ]) {
+      test('$name — request and response', () async {
+        final tapped = _EchoClient(channel, interceptors: [tap]);
+        await send(tapped);
+        await settle();
+
+        check(writer.records.map((r) => r.data['request_body']).nonNulls)
+            .deepEquals([want]);
+        check(writer.records.map((r) => r.data['response_body']).nonNulls)
+            .deepEquals([want]);
+      });
+    }
   });
 }
