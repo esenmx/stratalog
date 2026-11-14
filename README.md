@@ -23,35 +23,40 @@ Start with the [core package README](packages/stratalog/README.md). `Network`/`S
 
 ## strata
 
-`strata` is a terminal viewer for a running app's records. In debug and profile builds, `configureLogging()` posts every record as JSON on the `stratalog` VM service stream, with the payload unelided, and keeps the last 1000 for a viewer that attaches late. Release builds never post. Each record shows as one collapsed line that opens into a foldable JSON tree, and new records stream in live.
+`strata` is a terminal viewer and CLI inspector for `stratalog` records. In debug and profile builds, `configureLogging()` posts every record as JSON on the `stratalog` VM service stream (across all isolates, with payloads unelided) and buffers the last 1000 per isolate for late-attaching viewers. Release builds never post.
 
 ```sh
 go install github.com/esenmx/stratalog/tools/strata@latest
 ```
 
-Run it from the Flutter app directory:
+Run it from the Flutter or Dart app directory:
 
 ```sh
 flutter run --vmservice-out-file=.flutter.vmservice   # writes the service URI
-strata                    # reads ./.flutter.vmservice, waits until it exists
-strata path/to/file       # a file holding the URI, or dart run --write-service-info JSON
-strata ws://127.0.0.1:PORT/TOKEN=/ws   # or an http:// service URI
-strata --plain            # one ANSI-free line per record on stdout, for scripts
+strata                           # TUI on ./.flutter.vmservice ($STRATA_TARGET / $VM_SERVICE_URI fallback)
+strata path/to/flutter.log       # URI file, --write-service-info JSON, or flutter/dart run stdout log
+strata ws://127.0.0.1:PORT/TOKEN=/ws
+strata --once --json > run.jsonl # snapshot buffered history as lossless NDJSON and exit
+strata run.jsonl                 # open a saved .jsonl/.ndjson capture in the TUI (or `-` for stdin)
+strata --plain -l warning -L Network,Storage -g timeout   # script/agent CLI filtering (auto-plain when piped)
 ```
 
-When the app relaunches, `strata` keeps its records, reconnects once the file holds the new URI, and marks the restart with a divider.
+When the app hot-restarts or relaunches, `strata` keeps its records, reconnects once the target holds the new URI, and marks the restart with a divider (worker isolates log inline with `@isolate` badges).
 
 | Key | Action |
 |---|---|
-| `↑`/`↓`, `j`/`k` | move |
-| `Enter`/`Space` | open or close the record or JSON node |
-| `→`/`l`, `←`/`h` | open; close, or jump to the parent |
+| `↑`/`↓`, `j`/`k`, `PgUp`/`PgDn`, `Ctrl-U`/`Ctrl-D` | move / page |
+| `[`/`]`, `K`/`J` | jump to previous / next record header |
+| `Enter`/`Space` | open or close the record, JSON node, multi-line string, or stack trace |
+| `→`/`l`, `←`/`h` | open; close, or jump to parent |
 | `e` | expand or collapse the whole record |
-| `/` | filter: substring of layer, message, data, error or stack; `Esc` clears |
-| `L` | cycle the minimum level (trace → debug → info → warning → error) |
+| `w` | toggle soft-wrapping for long messages, URLs, and scalar strings |
+| `y` / `Y` | copy focused value/node/error/stack (`y`) or raw `record_v1` JSON (`Y`) to clipboard |
+| `/` (`n`/`N`, `Esc`) | substring filter with match highlighting (`n`/`N` next/prev hit; `Esc` clears anchored on current record) |
+| `f` / `F` | toggle layer filter chips (`1`–`9` / `Space`, `a` all); `F` clears layer filter |
+| `L` | cycle minimum chirp level (`trace` → `debug` → `info` → `notice` → `success` → `warning` → `error` → `critical` → `wtf`) |
 | `G`/`End`, `g`/`Home` | jump to the end and follow; jump to the top |
-| `c` | clear |
-| `q`/`Ctrl-C` | quit |
+| `c`, `?`, `q`/`Ctrl-C` | clear, toggle key help bar, quit |
 
 To leave the stream out, call `configureLogging(vmStream: false)`.
 
