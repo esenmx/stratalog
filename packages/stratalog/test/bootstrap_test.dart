@@ -84,23 +84,26 @@ void main() {
   test(
     'vmStream: false clears buffered history while keeping seq monotonic',
     () {
-    configureLogging(console: _StubWriter());
-    LogLayer.app.info('before opt-out');
-    final seqBefore = Chirp.root.writers
-        .whereType<VmStreamWriter>()
-        .single
-        .history
-        .last['seq']! as int;
+      configureLogging(console: _StubWriter());
+      LogLayer.app.info('before opt-out');
+      final seqBefore =
+          Chirp.root.writers
+                  .whereType<VmStreamWriter>()
+                  .single
+                  .history
+                  .last['seq']!
+              as int;
 
-    configureLogging(console: _StubWriter(), vmStream: false);
-    configureLogging(console: _StubWriter());
-    final writer = Chirp.root.writers.whereType<VmStreamWriter>().single;
-    check(writer.history).isEmpty();
+      configureLogging(console: _StubWriter(), vmStream: false);
+      configureLogging(console: _StubWriter());
+      final writer = Chirp.root.writers.whereType<VmStreamWriter>().single;
+      check(writer.history).isEmpty();
 
-    LogLayer.app.info('after re-enable');
-    final seqAfter = writer.history.single['seq']! as int;
-    check(seqAfter).isGreaterThan(seqBefore);
-  });
+      LogLayer.app.info('after re-enable');
+      final seqAfter = writer.history.single['seq']! as int;
+      check(seqAfter).isGreaterThan(seqBefore);
+    },
+  );
 }
 
 final class _StubWriter extends ChirpWriter {

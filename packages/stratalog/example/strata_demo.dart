@@ -28,10 +28,7 @@ Future<void> main() async {
       'cart': {'items': 3, 'total': 1.5},
     },
   );
-  LogLayer.storage.warning(
-    'cache miss',
-    error: StateError('stale entry'),
-  );
+  LogLayer.storage.warning('cache miss', error: StateError('stale entry'));
   // e2e.sh attaches strata only after this line, so the records above can
   // only reach it as history.
   stdout.writeln('strata-demo: booted');
