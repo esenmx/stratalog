@@ -22,22 +22,9 @@ import 'package:stratalog/src/snapshot.dart';
 /// }
 /// ```
 ///
-/// Sentry:
-/// ```dart
-/// final class SentryReporter implements CrashReporter {
-///   @override
-///   void recordError(Object error, StackTrace? stackTrace,
-///           {String? reason, bool fatal = false}) =>
-///       Sentry.captureException(error, stackTrace: stackTrace,
-///           hint: reason == null ? null : Hint.withMap({'reason': reason}))
-///           .ignore();
-///
-///   @override
-///   void addBreadcrumb(String message, {Map<String, Object?>? data}) =>
-///       Sentry.addBreadcrumb(Breadcrumb(message: message, data: data))
-///           .ignore();
-/// }
-/// ```
+/// Sentry: `SentryCrashReporter` in `stratalog_sentry`. A Sentry `Hint` is
+/// never serialized, so `reason` has to ride a scope context to reach the
+/// event.
 abstract interface class CrashReporter {
   /// Forward a report-worthy record to the backend.
   void recordError(

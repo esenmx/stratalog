@@ -90,7 +90,9 @@ configureLogging(debugFormatter: StructuredLogFormatter(rawDataLayers: const {})
 configureLogging(layerElision: const {});
 
 // Opt Network into untruncated payloads:
-configureLogging(layerElision: {'Network': ElisionConfig.none});
+configureLogging(
+  layerElision: {...defaultLayerElision, 'Network': ElisionConfig.none},
+);
 
 // Opt a custom layer into raw output:
 StructuredLogFormatter(
@@ -133,7 +135,7 @@ Any other backend is a 2-method `CrashReporter` implementation away.
 
 ```dart
 configureLogging(writers: [
-  CrashReporterWriter(SentryReporter(), shouldReport: (r) => r.error is! Failure),
+  CrashReporterWriter(const SentryCrashReporter(), shouldReport: (r) => r.error is! Failure),
 ]);
 ```
 

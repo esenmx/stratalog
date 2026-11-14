@@ -46,15 +46,9 @@ void main() {
         .deepEquals(['Storage', 'Payments']);
   });
 
-  test(
-    'logging through a layer before configureLogging throws a package hint',
-    () {
-      check(() => LogLayer.app.info('x'))
-          .throws<StateError>()
-          .has((e) => e.message, 'message')
-          .contains('configureLogging');
-    },
-  );
+  test('logging through a layer before configureLogging throws StateError', () {
+    check(() => LogLayer.app.info('x')).throws<StateError>();
+  });
 
   test('declared layer color registers on first log', () {
     Chirp.root = ChirpLogger();

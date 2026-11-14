@@ -72,18 +72,11 @@ final class const LogLayer(
   static final Map<String, ChirpLogger> _cache = {};
 
   /// The chirp logger backing this layer under the current root — the escape
-  /// hatch for APIs that want a raw `ChirpLogger`.
+  /// hatch for APIs that want a raw `ChirpLogger`. Throws chirp's
+  /// [StateError] while `Chirp.root` is unset: call `configureLogging()`
+  /// first, whatever that error's own text suggests.
   ChirpLogger get logger {
-    final ChirpLogger root;
-    try {
-      root = Chirp.root;
-      // ignore: avoid_catching_errors -- rethrown with a package-level hint
-    } on StateError {
-      throw StateError(
-        'Chirp.root is not configured. '
-        'Call configureLogging() before logging through a LogLayer.',
-      );
-    }
+    final root = Chirp.root;
     if (!identical(root, _cachedRoot)) {
       _cache.clear();
       _cachedRoot = root;
