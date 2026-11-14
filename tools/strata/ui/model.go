@@ -141,6 +141,17 @@ type row struct {
 	parent int // rows back to the parent row; 0 = none
 }
 
+// anchor pins the cursor to a row across rebuilds.
+type anchor struct {
+	row
+	nth int // ordinal among the entry's rows sharing node and kind
+	seq int // the row's entry position in entryIdx
+}
+
+func (r row) sameSlot(o row) bool {
+	return r.entry == o.entry && r.node == o.node && r.kind == o.kind
+}
+
 type layerBadge struct {
 	name    string
 	color   string
@@ -158,11 +169,20 @@ type Model struct {
 
 	rows  []row // visible rows; rebuilt when dirty, appended per record
 	dirty bool
+	// lost is the cursor's anchor while a rebuild leaves no rows to hold it.
+	lost *anchor
+	// pendingDivider is owed to rows ahead of the next visible record.
+	pendingDivider *Entry
 
 	cursor, offset int
-	follow         bool
-	wrap           bool
-	showHelp       bool
+	// lineOff is the first wrapped line shown of a cursor row taller than the
+	// body; it belongs to lineRow and is 0 for any row that fits.
+	lineOff   int
+	lineRow   row
+	fromBelow bool // the cursor stepped up onto its row this update
+	follow    bool
+	wrap      bool
+	showHelp  bool
 
 	filter    textinput.Model
 	filtering bool
@@ -244,6 +264,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		m.notice = ""
 		switch {
+		case msg.String() == "ctrl+c":
+			cmd = tea.Quit
 		case m.filtering:
 			cmd = m.filterKey(msg)
 		case m.layering:
@@ -255,7 +277,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.wheel(msg.Mouse().Button)
 	default:
 		if m.filtering {
-			m.filter, cmd = m.filter.Update(msg)
+			cmd = m.updateFilter(msg)
 		}
 	}
 	m.settle()
@@ -274,15 +296,22 @@ func (m *Model) filterKey(msg tea.KeyPressMsg) tea.Cmd {
 		m.filter.Reset()
 		m.setQuery("")
 		return nil
-	case "ctrl+c":
-		return tea.Quit
 	}
+	return m.updateFilter(msg)
+}
+
+// updateFilter feeds msg to the filter input and applies its value as the
+// query on change; pastes arrive as tea.PasteMsg, not key presses.
+func (m *Model) updateFilter(msg tea.Msg) tea.Cmd {
+	before := m.filter.Value()
 	var cmd tea.Cmd
 	m.filter, cmd = m.filter.Update(msg)
-	if m.filter.Value() != "" {
-		m.follow = false
+	if v := m.filter.Value(); v != before {
+		if v != "" {
+			m.follow = false
+		}
+		m.setQuery(v)
 	}
-	m.setQuery(m.filter.Value())
 	return cmd
 }
 
@@ -329,13 +358,23 @@ func (m *Model) toggleLayer(lower string) {
 
 func (m *Model) key(msg tea.KeyPressMsg) tea.Cmd {
 	switch msg.String() {
-	case "q", "ctrl+c":
+	case "q":
 		return tea.Quit
 	case "up", "k":
-		m.cursor--
 		m.follow = false
+		switch {
+		case m.lineOff > 0:
+			m.lineOff--
+		case m.cursor > 0:
+			m.cursor--
+			m.fromBelow = true
+		}
 	case "down", "j":
-		m.cursor++
+		if m.lineOff < m.maxLineOff() {
+			m.lineOff++
+		} else {
+			m.cursor++
+		}
 	case "pgup", "ctrl+b":
 		m.cursor -= max(m.bodyHeight()-1, 1)
 		m.follow = false
@@ -353,7 +392,7 @@ func (m *Model) key(msg tea.KeyPressMsg) tea.Cmd {
 	case "G", "end":
 		m.follow = true
 	case "g", "home":
-		m.cursor, m.offset = 0, 0
+		m.cursor, m.offset, m.lineOff = 0, 0, 0
 		m.follow = false
 	case "enter", "space":
 		m.toggle()
@@ -403,7 +442,7 @@ func (m *Model) key(msg tea.KeyPressMsg) tea.Cmd {
 	case "?":
 		m.showHelp = !m.showHelp
 	case "c":
-		m.entries, m.rows = nil, nil
+		m.entries, m.rows, m.lost, m.pendingDivider = nil, nil, nil, nil
 		clear(m.entryIdx)
 		m.cursor, m.offset, m.records, m.dropped = 0, 0, 0, 0
 		m.follow = !m.replay
@@ -513,19 +552,49 @@ func (m *Model) setQuery(q string) {
 	}
 }
 
+const wheelStep = 3
+
+// wheel scrolls inside a cursor row taller than the body until its end, then
+// moves the viewport by up to [wheelStep] rows. A tall row bounds the step on
+// both sides, so it becomes the cursor row and is read through, and the rows
+// beside it, which it kept off screen, are never skipped.
 func (m *Model) wheel(b tea.MouseButton) {
+	dir := 0
 	switch b {
 	case tea.MouseWheelUp:
-		m.offset -= 3
 		m.follow = false
+		if m.lineOff > 0 {
+			m.lineOff = max(m.lineOff-wheelStep, 0)
+			return
+		}
+		dir = -1
 	case tea.MouseWheelDown:
-		m.offset += 3
+		if hi := m.maxLineOff(); m.lineOff < hi {
+			m.lineOff = min(m.lineOff+wheelStep, hi)
+			return
+		}
+		dir = 1
 	default:
 		return
 	}
-	h := m.bodyHeight()
-	m.offset = clamp(m.offset, 0, max(len(m.rows)-h, 0))
-	m.cursor = clamp(m.cursor, m.offset, min(m.offset+h-1, max(len(m.rows)-1, 0)))
+	if len(m.rows) == 0 {
+		m.offset = 0
+		return
+	}
+	for n := range wheelStep {
+		next := m.offset + dir
+		if next < 0 || next >= len(m.rows) || (n > 0 && dir < 0 && m.tall(next)) {
+			break
+		}
+		m.offset = next
+		if m.tall(next) || (dir > 0 && m.tall(next-1)) {
+			break
+		}
+	}
+	from := m.cursor
+	m.offset = clamp(m.offset, 0, m.firstFitting(0, len(m.rows)-1))
+	m.cursor = clamp(m.cursor, m.offset, m.lastFitting(m.offset))
+	m.fromBelow = m.cursor < from
 }
 
 func (m *Model) current() (row, bool) {
@@ -677,7 +746,11 @@ func (m *Model) addEntry(e *Entry) {
 			// Defer rendering the divider until a matching record follows it.
 			m.dirty = true
 		} else if m.visible(e) {
-			m.rows = m.appendEntryRows(m.rows, e)
+			if m.pendingDivider != nil {
+				m.dirty = true
+			} else {
+				m.rows = m.appendEntryRows(m.rows, e)
+			}
 		}
 	}
 	if len(m.entries) <= MaxEntries {
@@ -726,33 +799,37 @@ func (m *Model) visible(e *Entry) bool {
 }
 
 func (m *Model) rebuild() {
-	var anchor row
-	hasAnchor := false
-	anchorSeq := 0
+	var at *anchor
 	if !m.follow {
 		if cur, ok := m.current(); ok {
-			anchor = cur
-			hasAnchor = true
-			anchorSeq = m.entryIdx[cur.entry]
+			at = &anchor{row: cur, seq: m.entryIdx[cur.entry]}
+			for i := m.cursor - 1; i >= 0 && m.rows[i].entry == cur.entry; i-- {
+				if m.rows[i].sameSlot(cur) {
+					at.nth++
+				}
+			}
+		} else {
+			at = m.lost
 		}
 	}
+	m.lost = nil
 
 	rows := make([]row, 0, len(m.rows))
 	seenVisible := false
-	var pendingDivider *Entry
+	m.pendingDivider = nil
 	for _, e := range m.entries {
 		if e.Divider != "" {
 			if seenVisible {
-				pendingDivider = e
+				m.pendingDivider = e
 			}
 			continue
 		}
 		if !m.visible(e) {
 			continue
 		}
-		if pendingDivider != nil {
-			rows = append(rows, row{kind: rowDivider, entry: pendingDivider, text: pendingDivider.Divider, index: -1})
-			pendingDivider = nil
+		if d := m.pendingDivider; d != nil {
+			rows = append(rows, row{kind: rowDivider, entry: d, text: d.Divider, index: -1})
+			m.pendingDivider = nil
 		}
 		seenVisible = true
 		rows = m.appendEntryRows(rows, e)
@@ -760,27 +837,37 @@ func (m *Model) rebuild() {
 	m.rows = rows
 	m.dirty = false
 
-	if hasAnchor && len(m.rows) > 0 {
-		m.cursor = m.relocateAnchor(anchor, anchorSeq)
+	if at != nil && len(m.rows) > 0 {
+		m.cursor = m.relocateAnchor(*at)
+	} else {
+		m.lost = at
 	}
 }
 
-func (m *Model) relocateAnchor(anchor row, anchorSeq int) int {
-	// 1. Exact (entry, node, kind) match.
+func (m *Model) relocateAnchor(at anchor) int {
+	// 1. Exact (entry, node, kind) match, at its ordinal or the group's last.
+	last := -1
 	for i, r := range m.rows {
-		if r.entry == anchor.entry && r.node == anchor.node && r.kind == anchor.kind {
-			return i
+		if r.sameSlot(at.row) {
+			if at.nth == 0 {
+				return i
+			}
+			at.nth--
+			last = i
 		}
+	}
+	if last >= 0 {
+		return last
 	}
 	// 2. Same entry's header row.
 	for i, r := range m.rows {
-		if r.entry == anchor.entry && r.kind == rowHeader {
+		if r.entry == at.entry && r.kind == rowHeader {
 			return i
 		}
 	}
 	// 3. Nearest surviving header at or after anchor's chronological position.
 	for i, r := range m.rows {
-		if r.kind == rowHeader && m.entryIdx[r.entry] >= anchorSeq {
+		if r.kind == rowHeader && m.entryIdx[r.entry] >= at.seq {
 			return i
 		}
 	}
@@ -796,6 +883,7 @@ func (m *Model) settle() {
 		m.cursor = len(m.rows) - 1
 	}
 	m.cursor = clamp(m.cursor, 0, max(len(m.rows)-1, 0))
+	m.settleLine()
 	h := m.bodyHeight()
 	if m.cursor < m.offset {
 		m.offset = m.cursor
@@ -815,8 +903,48 @@ func (m *Model) settle() {
 	if m.offset >= m.cursor {
 		return
 	}
-	top, lines := m.cursor, len(m.wrappedLines(m.cursor))
-	for top > m.offset {
+	m.offset = m.firstFitting(m.offset, m.cursor)
+}
+
+// settleLine keeps lineOff on the cursor row: a row reached by stepping up
+// opens at its last screenful, any other new row at its first line.
+// FIXME(P3, strata): rows compare by value, so an offset inside a tall row
+// drops to 0 when its row changes shape under the cursor (e on a folded
+// sibling) or leaves and returns (a full L cycle, a filter typed and erased).
+// FIXME(P3, strata): maxLineOff re-wraps the cursor row on every message; a
+// value of about 100 KB under the cursor stalls the viewer while records
+// arrive.
+func (m *Model) settleLine() {
+	cur, _ := m.current()
+	if cur != m.lineRow {
+		m.lineOff = 0
+		if m.fromBelow {
+			m.lineOff = m.maxLineOff()
+		}
+	}
+	m.lineRow, m.fromBelow = cur, false
+	m.lineOff = clamp(m.lineOff, 0, m.maxLineOff())
+}
+
+// tall reports whether row i wraps to more lines than the body holds.
+func (m *Model) tall(i int) bool {
+	return m.wrap && len(m.wrappedLines(i)) > m.bodyHeight()
+}
+
+// maxLineOff is the last valid lineOff for the cursor row.
+func (m *Model) maxLineOff() int {
+	if !m.wrap || m.cursor < 0 || m.cursor >= len(m.rows) {
+		return 0
+	}
+	return max(len(m.wrappedLines(m.cursor))-m.bodyHeight(), 0)
+}
+
+// firstFitting is the earliest row in [floor, last] from which the wrapped
+// lines through row last fit in the body; last alone always fits.
+func (m *Model) firstFitting(floor, last int) int {
+	h := m.bodyHeight()
+	top, lines := last, len(m.wrappedLines(last))
+	for top > floor {
 		above := len(m.wrappedLines(top - 1))
 		if lines+above > h {
 			break
@@ -824,7 +952,23 @@ func (m *Model) settle() {
 		lines += above
 		top--
 	}
-	m.offset = top
+	return top
+}
+
+// lastFitting is the last row whose wrapped lines, counted from row first,
+// fit in the body; first alone always fits.
+func (m *Model) lastFitting(first int) int {
+	h := m.bodyHeight()
+	end, lines := first, len(m.wrappedLines(first))
+	for end+1 < len(m.rows) {
+		below := len(m.wrappedLines(end + 1))
+		if lines+below > h {
+			break
+		}
+		lines += below
+		end++
+	}
+	return end
 }
 
 func (m *Model) bodyHeight() int {
@@ -1006,6 +1150,9 @@ func (m *Model) View() tea.View {
 	} else {
 		for i := m.offset; i < len(m.rows) && used < h; i++ {
 			lines := m.wrappedLines(i)
+			if i == m.cursor {
+				lines = lines[min(m.lineOff, len(lines)):]
+			}
 			for _, line := range lines {
 				if used >= h {
 					break
@@ -1047,7 +1194,9 @@ func (m *Model) wrappedLines(i int) []string {
 	if !m.wrap || m.width <= 0 {
 		return []string{m.truncate(s)}
 	}
-	wrapped := ansi.Wrap(s, m.width, "/?&=-_,.:;")
+	// Each wrapped line must carry its own style: View drops the leading lines
+	// of a tall row, and ansi.Wrap opens a style only on the first.
+	wrapped := lipgloss.Wrap(s, m.width, "/?&=-_,.:;")
 	parts := strings.Split(wrapped, "\n")
 	for idx, p := range parts {
 		parts[idx] = m.truncate(p)
@@ -1096,7 +1245,7 @@ func (m *Model) layerBarView() string {
 		}
 		parts = append(parts, chip)
 	}
-	return " layers: " + strings.Join(parts, " ") + dimStyle.Render("  (1-9/Space toggle · a all · Enter done)")
+	return " layers: " + strings.Join(parts, " ") + dimStyle.Render("  (←/→ move · 1-9/Space toggle · a all · Enter done)")
 }
 
 func (m *Model) truncate(s string) string {
@@ -1134,6 +1283,10 @@ func (m *Model) statusText() string {
 	parts := make([]string, 0, 10)
 	if m.notice != "" {
 		parts = append(parts, m.notice)
+	}
+	if hi := m.maxLineOff(); hi > 0 {
+		h := m.bodyHeight()
+		parts = append(parts, fmt.Sprintf("line %d-%d/%d", m.lineOff+1, m.lineOff+h, hi+h))
 	}
 	parts = append(parts, termsafe.Line(m.stateText()), fmt.Sprintf("%d records", m.records))
 	if m.dropped > 0 {

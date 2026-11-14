@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"sync"
 	"time"
 
@@ -150,21 +151,31 @@ func (s *isolateSeen) add(r record.Record) {
 	}
 }
 
-// historyTimeout bounds one history fetch; a paused isolate never replies.
-var historyTimeout = 5 * time.Second
+// HistoryTimeout bounds one history fetch; a paused isolate never replies.
+const HistoryTimeout = 5 * time.Second
+
+var historyTimeout = HistoryTimeout
+
+// ErrNoHistory reports a VM where no isolate serves [HistoryExtension] (yet).
+var ErrNoHistory = errors.New("vmservice: no isolate exposes " + HistoryExtension)
 
 // Snapshot fetches buffered history across every isolate serving
 // [HistoryExtension], merges them chronologically while preserving per-isolate
 // sequence order, and returns the deduplicated items without subscribing to the
-// live stream.
+// live stream. A VM where every isolate inspected fine and none serves the
+// extension fails with [ErrNoHistory], never an empty success.
 //
-// An isolate whose history fetch fails or outlives [historyTimeout] (paused at
-// a breakpoint, say) leaves its records out: the items from every other
-// isolate are still returned, alongside an error naming each isolate missed.
+// An isolate whose getIsolate answers an RPC error, or whose history fetch
+// fails or outlives [HistoryTimeout] (paused at a breakpoint, say), leaves its
+// records out: the items from every other isolate are still returned,
+// alongside an error naming each isolate missed.
 func Snapshot(ctx context.Context, c *Client) ([]Item, error) {
 	vm, err := c.InspectVM(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if len(vm.skipped) == 0 && !slices.ContainsFunc(vm.Isolates, func(iso IsolateInfo) bool { return iso.HasHistory }) {
+		return nil, ErrNoHistory
 	}
 	d := NewDedup()
 	d.ObserveVM(vm)
@@ -195,7 +206,7 @@ func Snapshot(ctx context.Context, c *Client) ([]Item, error) {
 	close(ch)
 
 	byIso := map[string][]record.Record{}
-	var errs []error
+	errs := slices.Clone(vm.skipped)
 	for b := range ch {
 		if b.err != nil {
 			errs = append(errs, fmt.Errorf("isolate %s (%s) history: %w", b.iso.Name, b.iso.ID, b.err))
@@ -219,8 +230,15 @@ type histResult struct {
 	recs    []record.Record
 }
 
+// ErrDisconnected reports a connection that dropped after [Stream] had
+// subscribed and inspected the VM: the target exited, crashed or restarted. A
+// Dart VM ends its service socket without a WebSocket close frame either way,
+// so the cause is not observable.
+var ErrDisconnected = errors.New("vmservice: target disconnected")
+
 // Stream subscribes c to the stratalog stream and emits its records until
-// ctx ends or the connection drops, returning why it stopped.
+// ctx ends or the connection drops, returning why it stopped: a drop once
+// streaming began is [ErrDisconnected], an earlier one the transport error.
 //
 // Initial history across isolates is merged chronologically ahead of live
 // records. If a new isolate appears later on the live stream, only that
@@ -349,7 +367,7 @@ func Stream(ctx context.Context, c *Client, d *Dedup, emit func(Item)) error {
 			for isoID := range heldByIso {
 				flushIsolate(isoID, nil)
 			}
-			return c.Err()
+			return fmt.Errorf("%w: %w", ErrDisconnected, c.Err())
 		}
 		select {
 		case <-ctx.Done():

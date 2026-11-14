@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -196,6 +197,15 @@ func TestStreamBrokenPipeCancelsCleanly(t *testing.T) {
 
 func fakeVMServer(t *testing.T, history []map[string]any, keepOpen bool) string {
 	t.Helper()
+	return fakeVMServerHidingHistory(t, history, keepOpen, 0)
+}
+
+// fakeVMServerHidingHistory is fakeVMServer whose isolate registers the
+// history extension only from its getIsolate call number hiddenFor+1 on;
+// negative hides it for good.
+func fakeVMServerHidingHistory(t *testing.T, history []map[string]any, keepOpen bool, hiddenFor int32) string {
+	t.Helper()
+	var inspected atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, nil)
 		if err != nil {
@@ -229,9 +239,11 @@ func fakeVMServer(t *testing.T, history []map[string]any, keepOpen bool) string 
 					"isolates":  []map[string]any{{"id": "isolates/1", "name": "main"}},
 				})
 			case "getIsolate":
-				reply(map[string]any{
-					"extensionRPCs": []string{vmservice.HistoryExtension},
-				})
+				rpcs := []string{}
+				if n := inspected.Add(1); hiddenFor >= 0 && n > hiddenFor {
+					rpcs = append(rpcs, vmservice.HistoryExtension)
+				}
+				reply(map[string]any{"extensionRPCs": rpcs})
 			case vmservice.HistoryExtension:
 				reply(map[string]any{"records": history})
 				if !keepOpen {
@@ -380,5 +392,192 @@ func TestOncePrintsReachableIsolatesThenFailsNamingTheMissedOne(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), "drift") {
 		t.Errorf("run --once = %v, want an error naming the missed drift isolate", err)
+	}
+}
+
+func TestOnceWithoutHistoryExtensionFailsUnlessItAppearsWithinGrace(t *testing.T) {
+	booted := []map[string]any{{
+		"v": 1, "seq": 1, "time": "2026-04-14T06:04:05Z",
+		"level": "info", "severity": 200, "layer": "App", "message": "booted",
+	}}
+	for name, tc := range map[string]struct {
+		history   []map[string]any
+		hiddenFor int32
+		args      []string
+		wantOut   string
+		wantErr   bool
+	}{
+		"no --wait fails at once": {
+			history: booted, hiddenFor: -1,
+			args:    []string{"--once", "--json"},
+			wantErr: true,
+		},
+		"--wait gives up after the grace period": {
+			history: booted, hiddenFor: -1,
+			args:    []string{"--once", "--json", "--wait"},
+			wantErr: true,
+		},
+		"--wait snapshots once the extension registers": {
+			history: booted, hiddenFor: 3,
+			args:    []string{"--once", "--plain", "--wait"},
+			wantOut: "booted",
+		},
+		"an extension with zero records is an empty success": {
+			history: nil, hiddenFor: 0,
+			args: []string{"--once", "--json"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := fakeVMServerHidingHistory(t, tc.history, false, tc.hiddenFor)
+			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+			defer cancel()
+
+			var out bytes.Buffer
+			env := runEnv{stdout: &out, stderr: io.Discard, poll: 5 * time.Millisecond, historyGrace: 200 * time.Millisecond}
+			err := env.run(ctx, append(tc.args, srv))
+			if ctx.Err() != nil {
+				t.Fatal("run outlived its context instead of a bounded grace period")
+			}
+			switch {
+			case tc.wantErr && (err == nil || !strings.Contains(err.Error(), "configureLogging")):
+				t.Errorf("run = %v, want an error naming configureLogging as a likely cause", err)
+			case !tc.wantErr && err != nil:
+				t.Errorf("run = %v, want success", err)
+			}
+			if got := strings.TrimSpace(out.String()); !strings.Contains(got, tc.wantOut) || (tc.wantOut == "" && got != "") {
+				t.Errorf("stdout = %q, want %q", got, tc.wantOut)
+			}
+		})
+	}
+}
+
+func TestPlainStreamMarksRestartWhoseFirstRecordIsFiltered(t *testing.T) {
+	srv := fakeVMServer(t, []map[string]any{
+		{"v": 1, "seq": 5, "time": "2026-04-14T06:04:05Z", "level": "error", "severity": 500, "layer": "App", "message": "old session"},
+		{"v": 1, "seq": 1, "time": "2026-04-14T06:05:00Z", "level": "trace", "severity": 0, "layer": "App", "message": "boot trace"},
+		{"v": 1, "seq": 2, "time": "2026-04-14T06:05:01Z", "level": "error", "severity": 500, "layer": "App", "message": "new session error"},
+	}, false)
+
+	var out bytes.Buffer
+	env := runEnv{stdout: &out, stderr: io.Discard}
+	if err := env.run(t.Context(), []string{"--plain", "-l", "info", srv}); err != nil {
+		t.Fatalf("run --plain -l info: %v", err)
+	}
+	var got []string
+	for line := range strings.Lines(out.String()) {
+		switch {
+		case strings.Contains(line, "session restarted"):
+			got = append(got, "divider")
+		case strings.Contains(line, "old session"):
+			got = append(got, "old")
+		case strings.Contains(line, "new session error"):
+			got = append(got, "new")
+		default:
+			got = append(got, line)
+		}
+	}
+	if want := []string{"old", "divider", "new"}; !slices.Equal(got, want) {
+		t.Errorf("plain output = %q, want %q:\n%s", got, want, out.String())
+	}
+}
+
+// fakeVMServerDroppingAt serves one history record and resets the connection,
+// with no WebSocket close frame, when the client calls dropAt: on getIsolate
+// before answering it, on the history extension right after answering it.
+func fakeVMServerDroppingAt(t *testing.T, dropAt string) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.CloseNow() }()
+		ctx := r.Context()
+		for {
+			_, raw, err := conn.Read(ctx)
+			if err != nil {
+				return
+			}
+			var req struct {
+				ID     string `json:"id"`
+				Method string `json:"method"`
+			}
+			if json.Unmarshal(raw, &req) != nil {
+				continue
+			}
+			reply := func(res any) {
+				b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": res})
+				_ = conn.Write(ctx, websocket.MessageText, b)
+			}
+			switch req.Method {
+			case "streamListen":
+				reply(map[string]any{"type": "Success"})
+			case "getVM":
+				reply(map[string]any{
+					"startTime": 1000,
+					"pid":       42,
+					"isolates":  []map[string]any{{"id": "isolates/1", "name": "main"}},
+				})
+			case "getIsolate":
+				if dropAt == req.Method {
+					return
+				}
+				reply(map[string]any{"extensionRPCs": []string{vmservice.HistoryExtension}})
+			case vmservice.HistoryExtension:
+				reply(map[string]any{"records": []map[string]any{
+					{"v": 1, "seq": 1, "time": "2026-04-14T06:04:05Z", "level": "info", "severity": 200, "layer": "App", "message": "one"},
+				}})
+				if dropAt == req.Method {
+					return
+				}
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+func TestPlainStreamTreatsTargetDisconnectAsCleanExitWithNote(t *testing.T) {
+	srv := fakeVMServerDroppingAt(t, vmservice.HistoryExtension)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+
+	var out, errOut bytes.Buffer
+	env := runEnv{stdout: &out, stderr: &errOut}
+	if err := env.run(ctx, []string{"--plain", srv}); err != nil {
+		t.Fatalf("run --plain after the target dropped the connection: %v, want nil", err)
+	}
+	if !strings.Contains(out.String(), "one") {
+		t.Errorf("stdout = %q, want the record delivered before the drop", out.String())
+	}
+	if got, want := errOut.String(), "strata: target disconnected\n"; got != want {
+		t.Errorf("stderr = %q, want %q", got, want)
+	}
+}
+
+func TestPlainStreamFailsWhenConnectionDropsBeforeSubscribing(t *testing.T) {
+	srv := fakeVMServerDroppingAt(t, "getIsolate")
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+
+	var errOut bytes.Buffer
+	env := runEnv{stdout: io.Discard, stderr: &errOut}
+	err := env.run(ctx, []string{"--plain", srv})
+	if !errors.Is(err, vmservice.ErrClosed) {
+		t.Fatalf("run --plain with a drop during getIsolate: %v, want vmservice.ErrClosed", err)
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("stderr = %q, want nothing: run's error carries the report", errOut.String())
+	}
+}
+
+func TestPlainStreamDisconnectWithoutStderrDoesNotPanic(t *testing.T) {
+	srv := fakeVMServerDroppingAt(t, vmservice.HistoryExtension)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+
+	var out bytes.Buffer
+	if err := (runEnv{stdout: &out}).run(ctx, []string{"--plain", srv}); err != nil {
+		t.Fatalf("run --plain with no stderr set: %v, want nil", err)
 	}
 }

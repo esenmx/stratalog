@@ -59,6 +59,9 @@ type runEnv struct {
 	stderr io.Writer
 	isTTY  bool
 	poll   time.Duration
+	// historyGrace bounds how long --wait --once polls for an isolate to
+	// register the history extension; zero means [vmservice.HistoryTimeout].
+	historyGrace time.Duration
 }
 
 func main() {
@@ -92,6 +95,13 @@ func (e runEnv) pollEvery() time.Duration {
 		return e.poll
 	}
 	return pollInterval
+}
+
+func (e runEnv) historyGraceOrDefault() time.Duration {
+	if e.historyGrace > 0 {
+		return e.historyGrace
+	}
+	return vmservice.HistoryTimeout
 }
 
 func (e runEnv) errOut() io.Writer {
@@ -331,6 +341,23 @@ func (e runEnv) runSnapshot(ctx context.Context, c *vmservice.Client, cfg cliCon
 	// A partial snapshot still prints what it got, then fails: a script must
 	// never mistake a missed isolate for one that logged nothing.
 	items, err := vmservice.Snapshot(ctx, c)
+	if cfg.wait {
+		// The service-info file appears before main() reaches configureLogging.
+		expired := time.After(e.historyGraceOrDefault())
+		for errors.Is(err, vmservice.ErrNoHistory) {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-expired:
+				return noHistoryErr(err)
+			case <-time.After(e.pollEvery()):
+			}
+			items, err = vmservice.Snapshot(ctx, c)
+		}
+	}
+	if errors.Is(err, vmservice.ErrNoHistory) {
+		return noHistoryErr(err)
+	}
 	e.reportMalformed(c.Malformed())
 	for _, it := range items {
 		if !cfg.filter.Match(it.Rec, "") {
@@ -346,24 +373,33 @@ func (e runEnv) runSnapshot(ctx context.Context, c *vmservice.Client, cfg cliCon
 	return err
 }
 
+func noHistoryErr(err error) error {
+	return fmt.Errorf("%w (likely causes: configureLogging not called yet, a release build, or configureLogging(vmStream: false))", err)
+}
+
 func (e runEnv) runStream(ctx context.Context, c *vmservice.Client, cfg cliConfig) error {
 	sctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	var (
-		werr     error
-		wroteAny bool
+		werr           error
+		wroteAny       bool
+		pendingRestart bool
 	)
 	err := vmservice.Stream(sctx, c, vmservice.NewDedup(), func(it vmservice.Item) {
+		// Only a session's first record carries Restarted, and the filter may
+		// drop it.
+		pendingRestart = pendingRestart || it.Restarted
 		if werr != nil || !cfg.filter.Match(it.Rec, "") {
 			return
 		}
-		if it.Restarted && wroteAny && cfg.mode == modePlain {
+		if pendingRestart && wroteAny && cfg.mode == modePlain {
 			if _, werr = fmt.Fprintln(e.stdout, "── session restarted ──"); werr != nil {
 				cancel()
 				return
 			}
 		}
+		pendingRestart = false
 		wroteAny = true
 		if werr = writeRecord(e.stdout, it.Rec, cfg.mode); werr != nil {
 			cancel()
@@ -375,7 +411,10 @@ func (e runEnv) runStream(ctx context.Context, c *vmservice.Client, cfg cliConfi
 		return cleanPipeErr(werr)
 	case ctx.Err() != nil:
 		return nil
-	case errors.Is(err, vmservice.ErrClosed) && c.CleanClose():
+	case errors.Is(err, vmservice.ErrDisconnected):
+		// Every record received was written; whether the target exited or
+		// crashed is not observable, so the drop is a note, not a failure.
+		_, _ = fmt.Fprintln(e.errOut(), "strata: target disconnected")
 		return nil
 	default:
 		return err

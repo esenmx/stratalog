@@ -2,7 +2,8 @@
 # E2E oracle: a real Dart VM running example/strata_demo.dart, verified via
 # `strata --once --json`, `.jsonl` replay filtering, and live `strata --plain`.
 # Proves history snapshot, unelided payloads, error fields, live stream, dedup,
-# and clean SIGINT shutdown without non-portable GNU coreutils.
+# clean SIGINT shutdown, and exit 0 with a stderr note when the target exits
+# mid-stream, without non-portable GNU coreutils.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -82,5 +83,26 @@ grep -qF '"name":"Jane"' "$tmp/out.txt" || fail "payload '\"name\":\"Jane\"' mis
 grep -q '✗ Bad state: stale entry' "$tmp/out.txt" || fail "inline error missing in live plain output"
 boots=$(grep -c 'demo boot' "$tmp/out.txt")
 [ "$boots" -eq 1 ] || fail "'demo boot' appears $boots times, want 1"
+
+# 3. The target finishing while strata streams: exit 0, one stderr note. A
+# Dart VM drops its service socket without a WebSocket close frame; the unit
+# test's fake only assumes that, this step proves it against a real VM.
+kill -0 "$demo" 2>/dev/null || fail "demo exited before step 3 could attach"
+"$tmp/strata" --plain "$tmp/info.json" >"$tmp/tail.txt" 2>"$tmp/tail.err" &
+viewer=$!
+for _ in $(seq 150); do
+  kill -0 "$viewer" 2>/dev/null || break
+  sleep 0.2
+done
+if kill -0 "$viewer" 2>/dev/null; then
+  fail "strata still running 30 s after attaching to a demo that exits"
+fi
+wait "$viewer" || fail "strata exited non-zero when the demo finished: $(cat "$tmp/tail.err")"
+viewer=""
+wait "$demo" || fail "demo exited non-zero"
+demo=""
+grep -qE '\] live 39$' "$tmp/tail.txt" || fail "last live record 'live 39' missing before the disconnect"
+[ "$(cat "$tmp/tail.err")" = "strata: target disconnected" ] ||
+  fail "stderr on disconnect = '$(cat "$tmp/tail.err")', want 'strata: target disconnected'"
 
 echo "e2e: OK ($(wc -l <"$tmp/out.txt" | tr -d ' ') live+history records, $(wc -l <"$tmp/boot.jsonl" | tr -d ' ') snapshot records)"

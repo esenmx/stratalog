@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"math/rand/v2"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"charm.land/bubbles/v2/cursor"
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
@@ -607,5 +610,668 @@ func TestWrapJumpToEndScrollsInBoundedTime(t *testing.T) {
 	}
 	if span > m.bodyHeight() || (m.offset > 0 && span+len(m.wrappedLines(m.offset-1)) <= m.bodyHeight()) {
 		t.Errorf("rows %d..%d span %d lines; body holds %d and must be filled", m.offset, m.cursor, span, m.bodyHeight())
+	}
+}
+
+func TestPasteIntoFilterAppliesQuery(t *testing.T) {
+	m := newModel(t, appBoot(), network(), stateTrace())
+
+	send(m, key("/"), tea.PasteMsg{Content: "Jane"}, key("enter"))
+
+	if m.query != "jane" || len(m.rows) != 1 {
+		t.Errorf("after pasting Jane: query = %q, rows = %d; want %q, 1", m.query, len(m.rows), "jane")
+	}
+	if s := screen(m); !strings.Contains(s, "/jane") {
+		t.Errorf("status bar lacks the pasted query:\n%s", s)
+	}
+}
+
+func TestReopenedFilterKeepsFollowUntilQueryChanges(t *testing.T) {
+	m := newModel(t, appBoot(), network(), stateTrace())
+	send(m, key("/"))
+	send(m, typed("Jane")...)
+	send(m, keys("enter", "G")...)
+	if !m.follow {
+		t.Fatal("G did not restore follow")
+	}
+
+	send(m, key("/"), key("left"), cursor.BlinkMsg{})
+
+	if !m.follow || m.query != "jane" {
+		t.Errorf("follow = %v, query = %q after reopening the filter without editing; want true, %q", m.follow, m.query, "jane")
+	}
+}
+
+func TestWheelScrollsWrappedRows(t *testing.T) {
+	m := New("./.flutter.vmservice")
+	send(m, tea.WindowSizeMsg{Width: 40, Height: 21})
+	const n = 200
+	for i := range n {
+		r := appBoot()
+		r.Seq = int64(i)
+		r.Message = fmt.Sprintf("record %d with a message long enough to wrap twice at forty", i)
+		send(m, RecordMsg(vmservice.Item{Rec: r}, 0))
+	}
+	send(m, key("w"))
+	wheel := func(b tea.MouseButton) tea.Msg { return tea.MouseWheelMsg{Button: b} }
+
+	top := m.offset
+	for range 5 {
+		send(m, wheel(tea.MouseWheelUp))
+	}
+	if m.offset >= top {
+		t.Errorf("5 wheel-ups under wrap left offset at %d, want above %d", m.offset, top)
+	}
+
+	send(m, key("g"))
+	for range n {
+		send(m, wheel(tea.MouseWheelDown))
+	}
+	if s := screen(m); !strings.Contains(s, fmt.Sprintf("record %d", n-1)) {
+		t.Errorf("wheel-down under wrap never reached the last record:\n%s", s)
+	}
+}
+
+func TestCursorSurvivesRebuildThroughZeroRows(t *testing.T) {
+	setup := func(t *testing.T) *Model {
+		t.Helper()
+		m := newModel(t)
+		for i := range 50 {
+			r := appBoot()
+			r.Seq = int64(i + 1)
+			r.Message = fmt.Sprintf("r%d", i)
+			send(m, RecordMsg(vmservice.Item{Rec: r}, 0))
+		}
+		send(m, key("g"))
+		for range 30 {
+			send(m, key("down"))
+		}
+		return m
+	}
+	for name, steps := range map[string][]tea.Msg{
+		"level cycle": keys("L", "L", "L", "L", "L", "L", "L", "L", "L"),
+		"filter typo": append(append([]tea.Msg{key("/")}, typed("r3zz")...),
+			tea.KeyPressMsg{Code: tea.KeyBackspace}, tea.KeyPressMsg{Code: tea.KeyBackspace}, key("esc")),
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := setup(t)
+			send(m, steps...)
+			r, ok := m.current()
+			if !ok {
+				t.Fatal("no cursor row after passing through zero rows")
+			}
+			if got := r.entry.Rec.Message; got != "r30" {
+				t.Errorf("cursor on %q after passing through zero rows, want r30", got)
+			}
+		})
+	}
+}
+
+func TestCursorStaysOnItsLineInsideMultiLineBlocksAcrossRebuilds(t *testing.T) {
+	r := appBoot()
+	r.Message = "m1\nm2\nm3"
+	r.Data = json.RawMessage(`{"sql":"s1\ns2\ns3"}`)
+	r.Error = "e1\ne2\ne3"
+	r.Stack = "f1\nf2\nf3\nf4\nf5"
+	for _, line := range []string{"m3", "s3", "e3", "f4"} {
+		for name, trigger := range map[string]tea.Msg{
+			"level":   key("L"),
+			"restart": RecordMsg(vmservice.Item{Rec: appBoot(), Restarted: true}, 0),
+		} {
+			t.Run(line+"/"+name, func(t *testing.T) {
+				m := newModel(t, r)
+				send(m, keys("e", "g")...)
+				for range len(m.rows) {
+					if m.rows[m.cursor].text == line {
+						break
+					}
+					send(m, key("down"))
+				}
+				if m.rows[m.cursor].text != line {
+					t.Fatalf("no row %q", line)
+				}
+				send(m, trigger)
+				if got := m.rows[m.cursor].text; got != line {
+					t.Errorf("cursor moved from %q to %q", line, got)
+				}
+			})
+		}
+	}
+}
+
+func TestRestartDividerSurvivesFilteredFirstRecord(t *testing.T) {
+	m := newModel(t, appBoot())
+	send(m, keys("L", "L")...) // ≥info hides stateTrace
+	after := appBoot()
+	after.Message = "after restart"
+
+	send(m, RecordMsg(vmservice.Item{Rec: stateTrace(), Restarted: true}, 0))
+	send(m, RecordMsg(vmservice.Item{Rec: after}, 0))
+
+	s := screen(m)
+	if strings.Count(s, restartedLabel) != 1 || strings.Index(s, restartedLabel) > strings.Index(s, "after restart") {
+		t.Errorf("want one divider above the first shown record after the restart:\n%s", s)
+	}
+}
+
+func TestCtrlCQuitsInEveryMode(t *testing.T) {
+	ctrlC := tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
+	for name, open := range map[string][]tea.Msg{
+		"normal": nil,
+		"filter": keys("/"),
+		"layer":  keys("f"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := newModel(t, appBoot())
+			send(m, open...)
+			cmd := send(m, ctrlC)
+			if cmd == nil {
+				t.Fatal("ctrl+c returned no command, want tea.Quit")
+			}
+			if _, quit := cmd().(tea.QuitMsg); !quit {
+				t.Error("ctrl+c did not quit")
+			}
+		})
+	}
+}
+
+const tallW, tallH = 80, 24
+
+// tallModel is the 80x24 reproduction: a record whose data holds a
+// 4,000-character single-line string, expanded and wrapped, then a short
+// record below it, with the cursor on the first header.
+func tallModel(t *testing.T) *Model {
+	t.Helper()
+	return tallModelThen(t, stateTrace())
+}
+
+func tallModelThen(t *testing.T, after ...record.Record) *Model {
+	t.Helper()
+	blob := "THE-START" + strings.Repeat("x", 4000-len("THE-START")-len("THE-END")) + "THE-END"
+	r := appBoot()
+	r.Data = json.RawMessage(fmt.Sprintf(`{"blob":%q}`, blob))
+	m := New("./.flutter.vmservice")
+	send(m, tea.WindowSizeMsg{Width: tallW, Height: tallH})
+	for _, rec := range append([]record.Record{r}, after...) {
+		send(m, RecordMsg(vmservice.Item{Rec: rec}, 0))
+	}
+	send(m, keys("g", "e", "w")...)
+	return m
+}
+
+// shows reports whether s is on screen, allowing it to wrap across lines.
+func shows(m *Model, s string) bool {
+	return strings.Contains(strings.ReplaceAll(screen(m), "\n", ""), s)
+}
+
+func onBlob(m *Model) bool {
+	r, ok := m.current()
+	return ok && r.node != nil && r.node.Key == "blob"
+}
+
+func pressUntil(m *Model, msg tea.Msg, s string) bool {
+	for range 1000 {
+		if shows(m, s) {
+			return true
+		}
+		send(m, msg)
+	}
+	return shows(m, s)
+}
+
+var (
+	wheelDown = tea.MouseWheelMsg{Button: tea.MouseWheelDown}
+	wheelUp   = tea.MouseWheelMsg{Button: tea.MouseWheelUp}
+)
+
+func TestWrapScrollsThroughRowTallerThanBody(t *testing.T) {
+	for name, tc := range map[string]struct{ down, up tea.Msg }{
+		"keys":  {key("down"), key("up")},
+		"vim":   {key("j"), key("k")},
+		"wheel": {wheelDown, wheelUp},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := tallModel(t)
+			if !pressUntil(m, tc.down, "THE-END") {
+				t.Fatalf("THE-END never shown by moving down:\n%s", screen(m))
+			}
+			if !onBlob(m) {
+				t.Fatalf("THE-END shown with the cursor off the blob row:\n%s", screen(m))
+			}
+			send(m, tc.down)
+			if r, _ := m.current(); r.kind != rowHeader || r.entry.Rec.Layer != "State" {
+				t.Fatalf("down past the blob's end landed on %+v, want the next record:\n%s", r, screen(m))
+			}
+			if !pressUntil(m, tc.up, "THE-START") {
+				t.Fatalf("THE-START never shown by moving back up:\n%s", screen(m))
+			}
+			if first, _, _ := strings.Cut(screen(m), "\n"); !onBlob(m) || !strings.HasPrefix(first, "❯") || !strings.Contains(first, `blob: "THE-`) {
+				t.Errorf("back at the blob's top, first line = %q, want the blob row's first line:\n%s", first, screen(m))
+			}
+		})
+	}
+}
+
+func TestWrapEnteringTallRowFromBelowShowsItsLastScreenful(t *testing.T) {
+	for name, up := range map[string]tea.Msg{
+		"key":   key("up"),
+		"wheel": wheelUp,
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := tallModel(t)
+			send(m, key("G"))
+			send(m, up)
+			if !onBlob(m) || !shows(m, "THE-END") || shows(m, "THE-START") {
+				t.Errorf("entering the blob from below did not show its last screenful:\n%s", screen(m))
+			}
+		})
+	}
+}
+
+var linePos = regexp.MustCompile(`line (\d+)-(\d+)/(\d+)`)
+
+func TestWrapStatusShowsLinePositionInsideTallRow(t *testing.T) {
+	for name, tc := range map[string]struct {
+		width, downs, first int
+		end                 bool
+	}{
+		"caller row":    {width: tallW, downs: 1},
+		"blob top":      {width: tallW, downs: 2, first: 1},
+		"one line down": {width: tallW, downs: 3, first: 2},
+		"blob end":      {width: tallW, end: true},
+		"narrow":        {width: 30, downs: 2, first: 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := tallModel(t)
+			send(m, tea.WindowSizeMsg{Width: tc.width, Height: tallH})
+			for range tc.downs {
+				send(m, key("down"))
+			}
+			if tc.end {
+				pressUntil(m, key("down"), "THE-END")
+			}
+			lines := strings.Split(screen(m), "\n")
+			status := lines[len(lines)-1]
+			got := linePos.FindStringSubmatch(status)
+			if tc.first == 0 && !tc.end {
+				if got != nil {
+					t.Errorf("status %q shows a line position on a row that fits", status)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatalf("status %q lacks the line position", status)
+			}
+			a, _ := strconv.Atoi(got[1])
+			b, _ := strconv.Atoi(got[2])
+			n, _ := strconv.Atoi(got[3])
+			if body := tallH - 1; b-a+1 != body || b > n {
+				t.Errorf("status %q: want a %d-line window inside the row", status, body)
+			}
+			if tc.end && b != n {
+				t.Errorf("status %q at THE-END, want the window to end at the last line", status)
+			}
+			if !tc.end && a != tc.first {
+				t.Errorf("status %q, want the window to start at line %d", status, tc.first)
+			}
+		})
+	}
+}
+
+func TestWrapTallRowStaysReadableAfterResizeAndWrapToggle(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		msgs []tea.Msg
+		want []string
+	}{
+		"taller":      {msgs: []tea.Msg{tea.WindowSizeMsg{Width: tallW, Height: 80}}, want: []string{"THE-START", "THE-END"}},
+		"wider":       {msgs: []tea.Msg{tea.WindowSizeMsg{Width: 160, Height: tallH}}, want: []string{"THE-END"}},
+		"shorter":     {msgs: []tea.Msg{tea.WindowSizeMsg{Width: tallW, Height: 8}}},
+		"narrower":    {msgs: []tea.Msg{tea.WindowSizeMsg{Width: 30, Height: tallH}}},
+		"tiny":        {msgs: []tea.Msg{tea.WindowSizeMsg{Width: 10, Height: 4}}},
+		"help bar":    {msgs: keys("?")},
+		"wrap off":    {msgs: keys("w"), want: []string{"THE-"}},
+		"wrap toggle": {msgs: keys("w", "w"), want: []string{"THE-START"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			m := tallModel(t)
+			pressUntil(m, key("down"), "THE-END")
+			send(m, tc.msgs...)
+			for _, s := range tc.want {
+				if !shows(m, s) {
+					t.Errorf("%s not shown right after the change:\n%s", s, screen(m))
+				}
+			}
+			if got, want := len(strings.Split(screen(m), "\n")), m.height; got != want {
+				t.Errorf("screen has %d lines, want %d", got, want)
+			}
+			if !onBlob(m) {
+				t.Fatalf("cursor left the blob row:\n%s", screen(m))
+			}
+			if !pressUntil(m, key("up"), `blob: "THE-`) || !onBlob(m) {
+				t.Errorf("up did not lead back to the blob's first line:\n%s", screen(m))
+			}
+			if m.wrap && (!pressUntil(m, key("down"), "THE-END") || !onBlob(m)) {
+				t.Errorf("down did not lead to the blob's last line:\n%s", screen(m))
+			}
+		})
+	}
+}
+
+var token = regexp.MustCompile(`\b[hdz]\d{3}\b`)
+
+func tokens(prefix string, n int) string {
+	ts := make([]string, n)
+	for i := range ts {
+		ts[i] = fmt.Sprintf("%s%03d", prefix, i)
+	}
+	return strings.Join(ts, " ")
+}
+
+func TestWrapEveryLineReachableByDownAloneAndUpAlone(t *testing.T) {
+	short := appBoot()
+	tallHead := appBoot()
+	tallHead.Message = "head " + tokens("h", 120)
+	tallData := network()
+	tallData.Data = json.RawMessage(fmt.Sprintf(`{"blob":%q,"n":1}`, tokens("d", 150)))
+	last := stateTrace()
+	last.Message = "last " + tokens("z", 100)
+	m := New("./.flutter.vmservice")
+	send(m, tea.WindowSizeMsg{Width: 40, Height: 12})
+	for _, r := range []record.Record{short, tallHead, tallData, short, last} {
+		send(m, RecordMsg(vmservice.Item{Rec: r}, 0))
+	}
+	send(m, keys("g", "]", "]", "e", "w", "g")...)
+	want := token.FindAllString(tokens("h", 120)+" "+tokens("d", 150)+" "+tokens("z", 100), -1)
+
+	// Down runs first so up starts from the bottom it reached.
+	for _, name := range []string{"down", "up"} {
+		seen := map[string]bool{}
+		for range 400 {
+			for _, tok := range token.FindAllString(screen(m), -1) {
+				seen[tok] = true
+			}
+			send(m, key(name))
+		}
+		var missing []string
+		for _, tok := range want {
+			if !seen[tok] {
+				missing = append(missing, tok)
+			}
+		}
+		if len(missing) > 0 {
+			t.Errorf("%s alone never showed %d of %d tokens, first %v", name, len(missing), len(want), missing[0])
+		}
+	}
+}
+
+type walk struct {
+	rng     *rand.Rand
+	seq     int64
+	pending []tea.Msg
+}
+
+func (w *walk) record() tea.Msg {
+	w.seq++
+	r := appBoot()
+	r.Seq = w.seq
+	r.Layer = []string{"App", "Network", "State"}[w.rng.IntN(3)]
+	lvl := record.Levels[w.rng.IntN(len(record.Levels))]
+	r.Level, r.Severity = lvl.Name, lvl.Severity
+	r.Message = fmt.Sprintf("m%d %s", w.seq, strings.Repeat("word ", w.rng.IntN(300)))
+	switch w.rng.IntN(4) {
+	case 0:
+		r.Data = json.RawMessage(fmt.Sprintf(`{"blob":%q,"list":[1,2,{"k":"a\nb\nc"}]}`, strings.Repeat("x", w.rng.IntN(5000))))
+	case 1:
+		r.Error = strings.Repeat("err ", w.rng.IntN(400))
+		r.Stack = "f1\nf2\n" + strings.Repeat("frame ", w.rng.IntN(300))
+	}
+	return RecordMsg(vmservice.Item{Rec: r, Restarted: w.rng.IntN(20) == 0}, 0)
+}
+
+func (w *walk) next() tea.Msg {
+	if len(w.pending) > 0 {
+		msg := w.pending[0]
+		w.pending = w.pending[1:]
+		return msg
+	}
+	names := []string{
+		"pgup", "pgdown", "[", "]", "J", "K", "g", "G", "enter", "space", "right", "left",
+		"l", "h", "e", "e", "w", "w", "esc", "n", "N", "f", "1", "?", "L", "F",
+	}
+	switch n := w.rng.IntN(1000); {
+	case n < 1:
+		return key("c")
+	case n < 10:
+		w.pending = append(typed([]string{"m1", "word", "x", "zz"}[w.rng.IntN(4)]), key([]string{"enter", "esc"}[w.rng.IntN(2)]))
+		return key("/")
+	case n < 50:
+		return tea.WindowSizeMsg{Width: 1 + w.rng.IntN(140), Height: 1 + w.rng.IntN(50)}
+	case n < 120:
+		return w.record()
+	case n < 220:
+		return wheelDown
+	case n < 300:
+		return wheelUp
+	case n < 320:
+		return tea.KeyPressMsg{Code: []rune{'u', 'd'}[w.rng.IntN(2)], Mod: tea.ModCtrl}
+	case n < 500:
+		return key([]string{"up", "down", "j", "k"}[w.rng.IntN(4)])
+	default:
+		return key(names[w.rng.IntN(len(names))])
+	}
+}
+
+func steppedUp(msg tea.Msg) bool {
+	switch msg := msg.(type) {
+	case tea.KeyPressMsg:
+		return msg.String() == "up" || msg.String() == "k"
+	case tea.MouseWheelMsg:
+		return msg.Button == tea.MouseWheelUp
+	}
+	return false
+}
+
+func TestWrapRandomWalkKeepsBodyAndLineOffsetInBoundsSeed20261114(t *testing.T) {
+	w := &walk{rng: rand.New(rand.NewPCG(20261114, 0))}
+	m := New("./.flutter.vmservice")
+	send(m, tea.WindowSizeMsg{Width: tallW, Height: tallH}, key("w"))
+	for step := range 3000 {
+		msg := w.next()
+		before, _ := m.current()
+		send(m, msg)
+		if after, _ := m.current(); after != before && m.lineOff != 0 && !steppedUp(msg) {
+			t.Fatalf("step %d (%T %v): moved to another row at lineOff %d, want its first line", step, msg, msg, m.lineOff)
+		}
+		bars := 0
+		for _, on := range []bool{m.layering, m.filtering, m.showHelp} {
+			if on {
+				bars++
+			}
+		}
+		if got, want := len(strings.Split(m.View().Content, "\n")), m.bodyHeight()+bars+1; got != want {
+			t.Fatalf("step %d (%T %v): view has %d lines, want body %d + %d bars + status", step, msg, msg, got, m.bodyHeight(), bars)
+		}
+		hi := 0
+		if m.wrap && len(m.rows) > 0 {
+			hi = max(len(m.wrappedLines(m.cursor))-m.bodyHeight(), 0)
+		}
+		if m.lineOff < 0 || m.lineOff > hi || (m.lineOff > 0 && m.offset != m.cursor) {
+			t.Fatalf("step %d (%T %v): lineOff %d outside [0, %d] or offset %d != cursor %d", step, msg, msg, m.lineOff, hi, m.offset, m.cursor)
+		}
+	}
+}
+
+func TestWrapWheelNeverSkipsRowsBesideTallRow(t *testing.T) {
+	const after = 30
+	recs := make([]record.Record, after)
+	for i := range recs {
+		recs[i] = appBoot()
+		recs[i].Message = fmt.Sprintf("after %02d", i+1)
+	}
+	m := tallModelThen(t, recs...)
+
+	if !pressUntil(m, wheelDown, "THE-END") {
+		t.Fatalf("wheel never reached THE-END:\n%s", screen(m))
+	}
+	send(m, wheelDown)
+	if r, _ := m.current(); r.entry.Rec.Message != "after 01" || !shows(m, "after 01") {
+		t.Errorf("wheel past the blob's end landed on %q, want after 01:\n%s", r.entry.Rec.Message, screen(m))
+	}
+
+	send(m, key("G"))
+	seen := map[string]bool{}
+	for range 1000 {
+		if shows(m, "THE-END") {
+			break
+		}
+		for i := range after {
+			if s := fmt.Sprintf("after %02d", i+1); shows(m, s) {
+				seen[s] = true
+			}
+		}
+		send(m, wheelUp)
+	}
+	for i := range after {
+		if s := fmt.Sprintf("after %02d", i+1); !seen[s] {
+			t.Errorf("wheel up from the bottom reached THE-END without ever showing %s", s)
+		}
+	}
+}
+
+type cell struct{ s, fg string }
+
+// cells replays a view the way Bubble Tea's renderer does, carrying SGR state
+// across newlines, and returns each printed grapheme with its foreground.
+func cells(view string) [][]cell {
+	lines := [][]cell{nil}
+	fg := ""
+	var state byte
+	for view != "" {
+		seq, width, n, next := ansi.DecodeSequence(view, state, nil)
+		state, view = next, view[n:]
+		switch {
+		case seq == "\n":
+			lines = append(lines, nil)
+		case width > 0:
+			lines[len(lines)-1] = append(lines[len(lines)-1], cell{seq, fg})
+		case ansi.HasCsiPrefix(seq) && strings.HasSuffix(seq, "m"):
+			fg = sgrForeground(fg, strings.Split(seq[2:len(seq)-1], ";"))
+		}
+	}
+	return lines
+}
+
+func sgrForeground(fg string, ps []string) string {
+	for i := 0; i < len(ps); i++ {
+		switch p := ps[i]; p {
+		case "", "0", "39":
+			fg = ""
+		case "38", "48":
+			n := 2
+			if i+1 < len(ps) && ps[i+1] == "2" {
+				n = 4
+			}
+			if p == "38" {
+				fg = strings.Join(ps[i+1:min(i+1+n, len(ps))], ";")
+			}
+			i += n
+		default:
+			if v, err := strconv.Atoi(p); err == nil && (v >= 30 && v <= 37 || v >= 90 && v <= 97) {
+				fg = p
+			}
+		}
+	}
+	return fg
+}
+
+func TestWrapScrolledTallRowKeepsItsColours(t *testing.T) {
+	blob := "Q-" + strings.Repeat("Q", 3998)
+	withData := appBoot()
+	withData.Data = json.RawMessage(fmt.Sprintf(`{"blob":%q}`, blob))
+	withError := appBoot()
+	withError.Error = blob
+	for name, tc := range map[string]struct {
+		rec   record.Record
+		style string
+	}{
+		"string": {withData, stringStyle.Render("Q")},
+		"error":  {withError, errorStyle.Render("Q")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			want := cells(tc.style)[0][0].fg
+			m := New("./.flutter.vmservice")
+			send(m, tea.WindowSizeMsg{Width: tallW, Height: tallH}, RecordMsg(vmservice.Item{Rec: tc.rec}, 0))
+			send(m, keys("g", "e", "w")...)
+			for range 10 {
+				if linePos.MatchString(screen(m)) {
+					break
+				}
+				send(m, key("down"))
+			}
+			send(m, key("down"))
+			if got := linePos.FindString(screen(m)); got != "line 2-24/"+strconv.Itoa(m.maxLineOff()+m.bodyHeight()) {
+				t.Fatalf("status shows %q, want one line into the tall row:\n%s", got, screen(m))
+			}
+			lines := cells(m.View().Content)
+			painted := 0
+			for y, line := range lines[:m.bodyHeight()] {
+				for x, c := range line {
+					if c.s == "Q" && c.fg != want {
+						t.Fatalf("body cell %d,%d drawn in %q, want %q", y, x, c.fg, want)
+					}
+					if c.s == "Q" {
+						painted++
+					}
+				}
+			}
+			if painted < m.bodyHeight()*tallW/2 {
+				t.Errorf("only %d cells of the tall row on screen", painted)
+			}
+			for x, c := range lines[len(lines)-1] {
+				if c.fg != "" {
+					t.Fatalf("status bar cell %d drawn in %q, want the default foreground", x, c.fg)
+				}
+			}
+		})
+	}
+}
+
+func TestWrapWheelInsideTallRowScrollsByItsStep(t *testing.T) {
+	for name, wheels := range map[string][]tea.Msg{
+		"down":         {wheelDown},
+		"down then up": {wheelDown, wheelDown, wheelUp},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := tallModel(t)
+			send(m, keys("down", "down")...)
+			send(m, wheels...)
+			if got, want := linePos.FindString(screen(m)), fmt.Sprintf("line %d-", 1+wheelStep); !strings.HasPrefix(got, want) {
+				t.Errorf("status shows %q, want %q…: one wheel step into the row", got, want)
+			}
+		})
+	}
+}
+
+func TestWrapJumpOntoAnotherTallRowOpensAtItsFirstLine(t *testing.T) {
+	second := appBoot()
+	second.Message = "SECOND-HEAD " + strings.Repeat("y", 4000)
+	m := tallModelThen(t, second)
+	send(m, keys("down", "down")...)
+	for range 10 {
+		send(m, key("down"))
+	}
+	send(m, key("]"))
+	if r, _ := m.current(); r.kind != rowHeader || !shows(m, "SECOND-HEAD") {
+		t.Errorf("] from inside the blob landed on %+v without its first line:\n%s", r, screen(m))
+	}
+}
+
+func TestWrapEnteringTallRowFromAboveAfterAnUpShowsItsFirstScreenful(t *testing.T) {
+	m := tallModel(t)
+	send(m, keys("G", "up", "g", "down", "down")...)
+	if !onBlob(m) || !shows(m, "THE-START") {
+		t.Errorf("entering the blob from above after an earlier up did not show its first screenful:\n%s", screen(m))
 	}
 }

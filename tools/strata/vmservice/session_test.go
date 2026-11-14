@@ -3,6 +3,7 @@ package vmservice
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -138,6 +139,8 @@ type fakeIsolate struct {
 	id, name      string
 	history, live []map[string]any
 	hang          bool
+	inspectErr    bool // answer getIsolate with a JSON-RPC error
+	inspectDrop   bool // drop the connection on getIsolate
 }
 
 type fakeOpts struct {
@@ -232,6 +235,13 @@ func fakeVM(t *testing.T, o fakeOpts) string {
 				reply(map[string]any{"startTime": start, "isolates": vmStubs})
 			case "getIsolate":
 				iso := byID[req.Params.IsolateID]
+				switch {
+				case iso.inspectDrop:
+					return
+				case iso.inspectErr:
+					send(map[string]any{"jsonrpc": "2.0", "id": req.ID, "error": map[string]any{"code": -32000, "message": "isolate lookup failed"}})
+					continue
+				}
 				reply(map[string]any{"id": iso.id, "name": iso.name, "extensionRPCs": []string{HistoryExtension}})
 			case HistoryExtension:
 				iso := byID[req.Params.IsolateID]
@@ -315,8 +325,8 @@ func TestStreamOrdersHistoryAndLive(t *testing.T) {
 			var got []string
 			err = Stream(ctx, c, NewDedup(), func(it Item) { got = append(got, label(it)) })
 
-			if err == nil || ctx.Err() != nil {
-				t.Fatalf("Stream returned %v (ctx %v), want a connection-closed error", err, ctx.Err())
+			if !errors.Is(err, ErrDisconnected) || !errors.Is(err, ErrClosed) || ctx.Err() != nil {
+				t.Fatalf("Stream returned %v (ctx %v), want ErrDisconnected wrapping ErrClosed", err, ctx.Err())
 			}
 			if !slices.Equal(got, tc.want) {
 				t.Errorf("emitted %q, want %q", got, tc.want)
@@ -562,5 +572,51 @@ func TestSnapshotReportsIsolatesWhoseHistoryFailed(t *testing.T) {
 	}
 	if want := []string{"m1"}; !slices.Equal(got, want) {
 		t.Errorf("Snapshot items = %q, want the reachable isolate's %q", got, want)
+	}
+}
+
+func TestSnapshotFailsWhenAnIsolateCannotBeInspected(t *testing.T) {
+	mainIso := fakeIsolate{id: "isolates/1", name: "main", history: []map[string]any{wireRecordAt(1, epoch, "m1")}}
+	for name, tc := range map[string]struct {
+		isolates  []fakeIsolate
+		wantErr   string
+		wantItems []string
+	}{
+		"getIsolate answers an RPC error": {
+			isolates:  []fakeIsolate{mainIso, {id: "isolates/2", name: "drift", inspectErr: true}},
+			wantErr:   "drift",
+			wantItems: []string{"m1"},
+		},
+		"the only isolate answers an RPC error": {
+			isolates: []fakeIsolate{{id: "isolates/2", name: "drift", inspectErr: true}},
+			wantErr:  "drift",
+		},
+		"connection drops during getIsolate": {
+			isolates: []fakeIsolate{{id: "isolates/1", name: "main", inspectDrop: true}},
+			wantErr:  ErrClosed.Error(),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			url := fakeVM(t, fakeOpts{isolates: tc.isolates})
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			c, err := Dial(ctx, url)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+
+			items, err := Snapshot(ctx, c)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("Snapshot err = %v, want one containing %q", err, tc.wantErr)
+			}
+			got := make([]string, 0, len(items))
+			for _, it := range items {
+				got = append(got, label(it))
+			}
+			if !slices.Equal(got, tc.wantItems) {
+				t.Errorf("Snapshot items = %q, want %q", got, tc.wantItems)
+			}
+		})
 	}
 }

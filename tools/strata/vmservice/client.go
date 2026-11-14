@@ -38,6 +38,8 @@ type VMInfo struct {
 	StartTime int64
 	PID       int64
 	Isolates  []IsolateInfo
+
+	skipped []error // isolates left out of Isolates because getIsolate failed
 }
 
 // Client is one VM service connection. One reader goroutine routes
@@ -59,7 +61,6 @@ type Client struct {
 	mu        sync.Mutex
 	pending   map[string]chan response
 	err       error // why the reader exited
-	cleanDrop bool  // peer sent a normal WebSocket close frame
 	closeOnce sync.Once
 }
 
@@ -147,14 +148,6 @@ func (c *Client) Records() <-chan record.Record { return c.records }
 // did not decode as records.
 func (c *Client) Malformed() int64 { return c.malformed.Load() }
 
-// CleanClose reports whether the peer closed the WebSocket with a normal or
-// going-away status (e.g. a Dart CLI script finishing cleanly).
-func (c *Client) CleanClose() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.cleanDrop
-}
-
 // Err is why the connection ended; nil while it is open.
 func (c *Client) Err() error {
 	c.mu.Lock()
@@ -219,7 +212,9 @@ func (c *Client) Listen(ctx context.Context) error {
 	return err
 }
 
-// InspectVM queries getVM and each isolate's getIsolate metadata.
+// InspectVM queries getVM and each isolate's getIsolate metadata. An isolate
+// whose getIsolate answers an RPC error is left out of [VMInfo.Isolates];
+// a dropped connection or ended ctx fails the whole call.
 func (c *Client) InspectVM(ctx context.Context) (VMInfo, error) {
 	raw, err := c.Call(ctx, "getVM", nil)
 	if err != nil {
@@ -238,15 +233,23 @@ func (c *Client) InspectVM(ctx context.Context) (VMInfo, error) {
 	}
 	out := VMInfo{StartTime: vm.StartTime, PID: vm.PID}
 	for _, iso := range vm.Isolates {
+		// An isolate that exited since getVM answers a Sentinel result, not an
+		// error, and lands below without the history extension.
 		rawIso, err := c.Call(ctx, "getIsolate", map[string]string{"isolateId": iso.ID})
-		if err != nil {
-			continue // exited between getVM and getIsolate
+		var rpcErr *rpcError
+		switch {
+		case errors.As(err, &rpcErr):
+			out.skipped = append(out.skipped, fmt.Errorf("isolate %s (%s): %w", iso.Name, iso.ID, err))
+			continue
+		case err != nil:
+			return VMInfo{}, err
 		}
 		var detail struct {
 			Name          string   `json:"name"`
 			ExtensionRPCs []string `json:"extensionRPCs"`
 		}
-		if json.Unmarshal(rawIso, &detail) != nil {
+		if err := json.Unmarshal(rawIso, &detail); err != nil {
+			out.skipped = append(out.skipped, fmt.Errorf("isolate %s (%s): getIsolate: %w", iso.Name, iso.ID, err))
 			continue
 		}
 		name := detail.Name
@@ -313,9 +316,7 @@ func (c *Client) read() {
 	for {
 		_, b, err := c.conn.Read(ctx)
 		if err != nil {
-			status := websocket.CloseStatus(err)
 			c.mu.Lock()
-			c.cleanDrop = status == websocket.StatusNormalClosure || status == websocket.StatusGoingAway
 			c.err = fmt.Errorf("%w: %w", ErrClosed, err)
 			c.mu.Unlock()
 			return
