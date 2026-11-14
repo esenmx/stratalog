@@ -228,7 +228,7 @@ const Map<String, ElisionConfig> defaultLayerElision = {'State': .vital};
 
 /// Wraps any [ChirpFormatter] to elide `record.data` before it renders — the
 /// single place structure-aware truncation lives, composable over the
-/// console, a release sink, or an in-app viewer.
+/// console or a release sink.
 ///
 /// Producers (e.g. the Dio interceptor) pass full payloads; each sink picks
 /// its own budget, so a viewer can retain the full body while the console

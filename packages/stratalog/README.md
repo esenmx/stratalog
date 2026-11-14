@@ -11,7 +11,7 @@ Opinionated structured logging for Dart & Flutter, built on [chirp](https://pub.
 - **Layer loggers** — nine pre-defined, non-overlapping domains (`LogLayer.network`, `LogLayer.auth`, …), each a `const` value rendering as a colored badge with a matching left gutter. Declare your own the same way: `const payments = LogLayer('Payments', color: Ansi256.springGreen4_29)` — omit `color` for a stable contrast-verified hash pick.
 - **Theme-adaptive colors** — every hue passes WCAG ≥ 3.0 contrast on solarized light/dark *and* soft-gray light/dark backgrounds, enforced by a test. Red/orange/hot-pink are reserved for severity, so hue always separates *where* from *how bad*.
 - **Pluggable crash reporting** — implement the 2-method `CrashReporter` against Crashlytics, Sentry, or anything else; stratalog carries no vendor dependency.
-- **Stack taps** — Dio, Drift, gRPC, ConnectRPC, Riverpod, bloc, auto_route, FirebaseAuth, FirebaseAnalytics, Crashlytics, Sentry, and an in-app viewer, each a separate `stratalog_*` package so unused dependencies stay out of your graph.
+- **Stack taps** — Dio, Drift, gRPC, ConnectRPC, Riverpod, bloc, auto_route, FirebaseAuth, FirebaseAnalytics, Crashlytics and Sentry, each a separate `stratalog_*` package so unused dependencies stay out of your graph.
 - Debug builds log via `dart:developer` (no garbled ANSI from the daemon's `print` chunker); release builds emit single-line JSON for pipelines.
 
 ## Setup
@@ -172,11 +172,6 @@ FirebaseAuthLogger(FirebaseAuth.instance).attach();
 
 // stratalog_firebase_analytics
 final analytics = LoggerAnalytics(FirebaseAnalytics.instance);
-
-// stratalog_viewer
-final memoryWriter = MemoryLogWriter();
-configureLogging(writers: [memoryWriter]);
-// later: LogViewerPage(writer: memoryWriter)
 ```
 
 ## Changing colors

@@ -16,7 +16,6 @@ Opinionated structured logging for Dart & Flutter, built on [chirp](https://pub.
 | [`stratalog_crashlytics`](packages/stratalog_crashlytics) | Firebase Crashlytics crash reporting |
 | [`stratalog_sentry`](packages/stratalog_sentry) | Sentry crash reporting |
 | [`stratalog_firebase_analytics`](packages/stratalog_firebase_analytics) | FirebaseAnalytics event mirroring |
-| [`stratalog_viewer`](packages/stratalog_viewer) | in-app log browser (ring buffer + page) |
 | [`tools/strata`](tools/strata) | terminal viewer with foldable JSON (Go) |
 
 Start with the [core package README](packages/stratalog/README.md). `Network`/`Storage` records print gutter-free by default — copyable SQL and JSON — see [Copyable payloads](packages/stratalog/README.md#copyable-payloads).

@@ -25,7 +25,7 @@ const (
 	Scalar
 )
 
-// defaultKeepKeys mirrors stratalog's ElisionConfig.keepKeys & LogViewerPage:
+// defaultKeepKeys mirrors stratalog's ElisionConfig.keepKeys:
 // vital identifier/status keys surfaced on collapsed rows.
 var defaultKeepKeys = map[string]bool{
 	"id":     true,
@@ -310,9 +310,9 @@ func (n *Node) CopyText() string {
 	return n.PrettyJSON()
 }
 
-// VitalPreview builds a compact one-line summary matching stratalog_viewer's
-// collapsed tile preview: up to 3 keepKeys hits (top-level or one object level
-// down) followed by the top-level field/item count.
+// VitalPreview builds a compact one-line summary for a collapsed row: up to 3
+// keepKeys hits (top-level or one object level down) followed by the
+// top-level field/item count.
 func (n *Node) VitalPreview() string {
 	switch n.Kind {
 	case Object:

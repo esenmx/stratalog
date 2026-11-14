@@ -42,8 +42,7 @@ const bool _kReleaseMode = .fromEnvironment('dart.vm.product');
 ///   so oversized `data` leaves (big JSON bodies, base64 blobs, long arrays)
 ///   are structure-elided at the sink — producers log full payloads. Pass
 ///   `null` to disable, or a tuned [ElisionConfig]. Extra [writers] you pass
-///   are left untouched; wrap them in [ElidingFormatter] yourself if wanted
-///   (an in-app viewer typically keeps the full body — two-tier logging).
+///   are left untouched; wrap them in [ElidingFormatter] yourself if wanted.
 /// - [layerElision] overrides the budget per `loggerName` on the *debug*
 ///   console only — by default State clips to vital fields while all other
 ///   layers (Network and Storage included) use the global [elision] budget.

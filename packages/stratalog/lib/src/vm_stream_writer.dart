@@ -16,9 +16,8 @@ import 'package:stratalog/src/snapshot.dart';
 /// buffer served by the [historyExtension] service extension, so a viewer
 /// attaching late still sees what came before it.
 ///
-/// The payload is full — no `ElidingFormatter` — like the in-app viewer's
-/// half of two-tier logging. Never throws into chirp: encoding and posting
-/// failures drop the record.
+/// The payload is full — no `ElidingFormatter`. Never throws into chirp:
+/// encoding and posting failures drop the record.
 final class VmStreamWriter({
   /// Records kept for [historyExtension].
   final int capacity = 1000,

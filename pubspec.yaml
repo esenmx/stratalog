@@ -17,7 +17,6 @@ workspace:
   - packages/stratalog_grpc
   - packages/stratalog_riverpod
   - packages/stratalog_sentry
-  - packages/stratalog_viewer
 
 dev_dependencies:
   melos: ^8.10.0
