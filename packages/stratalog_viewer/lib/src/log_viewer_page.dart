@@ -26,6 +26,13 @@ String _lowerJson(LogRecord r) {
   return _lowerJsonOf[r] ??= _prettyJson(r).toLowerCase();
 }
 
+bool _hitInBody(LogRecord r, String query) {
+  return query.isNotEmpty &&
+      ((r.data.isNotEmpty && _lowerJson(r).contains(query)) ||
+          (r.error?.toString().toLowerCase().contains(query) ?? false) ||
+          (r.stackTrace?.toString().toLowerCase().contains(query) ?? false));
+}
+
 String _haystack(LogRecord r) {
   return _haystackOf[r] ??= [
     '${r.message}',
@@ -67,6 +74,11 @@ final class _LogViewerPageState extends State<LogViewerPage> {
   bool _expandAll = false;
   final Set<String> _layers = {};
 
+  // Read only when a tile mounts; the mounted tile owns its live state.
+  // Invariant: an entry differs from its record's auto state and is dropped
+  // when that state changes, exactly when the tile's key changes.
+  Expando<bool> _toggled = Expando();
+
   static const _levels = <ChirpLogLevel>[
     .trace,
     .debug,
@@ -82,6 +94,16 @@ final class _LogViewerPageState extends State<LogViewerPage> {
   Set<String> _layersPresent() => {
     for (final record in widget.writer.records) _layerName(record),
   };
+
+  void _pruneToggled(String from, String to) {
+    if (_expandAll) return;
+    for (final record in widget.writer.records) {
+      if (_toggled[record] != null &&
+          _hitInBody(record, from) != _hitInBody(record, to)) {
+        _toggled[record] = null;
+      }
+    }
+  }
 
   List<LogRecord> _visible(Set<String> present) {
     final query = _query.toLowerCase();
@@ -104,6 +126,10 @@ final class _LogViewerPageState extends State<LogViewerPage> {
       builder: (context, _) {
         final present = _layersPresent();
         final records = _visible(present);
+        final indexOf = Map<LogRecord, int>.identity()
+          ..addEntries(
+            records.indexed.map((entry) => MapEntry(entry.$2, entry.$1)),
+          );
         final query = _query.toLowerCase();
         return Scaffold(
           appBar: AppBar(
@@ -112,13 +138,19 @@ final class _LogViewerPageState extends State<LogViewerPage> {
                 hintText: 'Search message, layer, or payload',
                 border: .none,
               ),
-              onChanged: (value) => setState(() => _query = value),
+              onChanged: (value) => setState(() {
+                _pruneToggled(_query.toLowerCase(), value.toLowerCase());
+                _query = value;
+              }),
             ),
             actions: [
               IconButton(
                 icon: Icon(_expandAll ? Icons.unfold_less : Icons.unfold_more),
                 tooltip: _expandAll ? 'Collapse all' : 'Expand all',
-                onPressed: () => setState(() => _expandAll = !_expandAll),
+                onPressed: () => setState(() {
+                  _expandAll = !_expandAll;
+                  _toggled = Expando();
+                }),
               ),
               PopupMenuButton<ChirpLogLevel>(
                 icon: const Icon(Icons.filter_list),
@@ -147,12 +179,20 @@ final class _LogViewerPageState extends State<LogViewerPage> {
               ? const Center(child: Text('No records'))
               : ListView.builder(
                   itemCount: records.length,
+                  findChildIndexCallback: (key) => switch (key) {
+                    ObjectKey(:final LogRecord value) => indexOf[value],
+                    _ => null,
+                  },
                   itemBuilder: (context, index) => _RecordTile(
+                    key: ObjectKey(records[index]),
                     record: records[index],
                     keepKeys: widget.keepKeys,
                     onCopy: () => _copy(_describe(records[index])),
                     query: query,
                     expandAll: _expandAll,
+                    toggled: _toggled[records[index]],
+                    onToggled: (expanded) =>
+                        _toggled[records[index]] = expanded,
                     onCopyJson: () => _copy(
                       _prettyJson(records[index]),
                       notice: 'JSON copied',
@@ -246,7 +286,12 @@ final class const _RecordTile({
   /// Active search query, lowercased; empty when idle.
   required final String query,
   required final bool expandAll,
+
+  /// Manual expand/collapse that departs from the auto state; null when none.
+  required final bool? toggled,
+  required final ValueChanged<bool?> onToggled,
   required final VoidCallback onCopyJson,
+  super.key,
 }) extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
@@ -317,20 +362,16 @@ final class const _RecordTile({
         onLongPress: onCopy,
       );
     }
-    final hitInBody =
-        query.isNotEmpty &&
-        ((record.data.isNotEmpty && _lowerJson(record).contains(query)) ||
-            (record.error?.toString().toLowerCase().contains(query) ?? false) ||
-            (record.stackTrace?.toString().toLowerCase().contains(query) ??
-                false));
-    final expanded = hitInBody || expandAll;
+    final hitInBody = _hitInBody(record, query);
+    final auto = hitInBody || expandAll;
     return GestureDetector(
       onLongPress: onCopy,
       child: ExpansionTile(
-        // Keying on the record + desired state re-applies initiallyExpanded
-        // exactly when it changes; manual toggles survive otherwise.
-        key: ValueKey((record, expanded)),
-        initiallyExpanded: expanded,
+        // Remounts when the auto state changes so initiallyExpanded re-applies.
+        key: ValueKey((record, hitInBody, expandAll)),
+        initiallyExpanded: toggled ?? auto,
+        onExpansionChanged: (expanded) =>
+            onToggled(expanded == auto ? null : expanded),
         dense: true,
         title: title,
         subtitle: subtitle,

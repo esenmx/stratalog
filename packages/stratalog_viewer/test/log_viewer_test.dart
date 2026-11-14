@@ -191,6 +191,179 @@ void main() {
     expect(find.textContaining('"ms": 132'), findsNothing);
   });
 
+  testWidgets('manual expand survives a new record', (tester) async {
+    LogLayer.network.warning('slow response', data: {'ms': 132});
+
+    await tester.pumpWidget(MaterialApp(home: LogViewerPage(writer: writer)));
+    await tester.tap(find.text('slow response'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('"ms": 132'), findsOneWidget);
+    final tile = find.widgetWithText(ExpansionTile, 'slow response');
+    final mounted = tester.state(tile);
+
+    LogLayer.network.info('another', data: {'x': 1});
+    await tester.pumpAndSettle();
+    expect(find.textContaining('"ms": 132'), findsOneWidget);
+    expect(find.text('Copy record'), findsOneWidget);
+    expect(tester.state(tile), same(mounted)); // moved, not remounted
+  });
+
+  testWidgets('expand-all collapse survives a new record', (tester) async {
+    LogLayer.network.warning('slow response', data: {'ms': 132});
+
+    await tester.pumpWidget(MaterialApp(home: LogViewerPage(writer: writer)));
+    await tester.tap(find.byIcon(Icons.unfold_more));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('slow response'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('"ms": 132'), findsNothing);
+
+    LogLayer.app.info('plain');
+    await tester.pumpAndSettle();
+    expect(find.textContaining('"ms": 132'), findsNothing);
+
+    await tester.tap(find.byIcon(Icons.unfold_less));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byIcon(Icons.unfold_more));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('"ms": 132'), findsOneWidget);
+  });
+
+  testWidgets('collapsed search hit survives a new record', (tester) async {
+    LogLayer.network.info('user loaded', data: {'id': 'usr_42'});
+
+    await tester.pumpWidget(MaterialApp(home: LogViewerPage(writer: writer)));
+    await tester.enterText(find.byType(TextField), 'usr_42');
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('user loaded'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('"usr_42"'), findsNothing);
+
+    LogLayer.network.info('session usr_42', data: {'id': 'usr_42'});
+    await tester.pumpAndSettle();
+    expect(find.text('session usr_42'), findsOneWidget);
+    expect(find.textContaining('"usr_42"'), findsOneWidget);
+  });
+
+  final expandAllFirst = ValueVariant({false, true});
+  testWidgets('manual toggle survives scrolling out and back', (tester) async {
+    final expandAll = expandAllFirst.currentValue!;
+    final body = expandAll ? findsNothing : findsOneWidget;
+    writer = MemoryLogWriter(capacity: 100);
+    Chirp.root = ChirpLogger().addWriter(writer);
+    for (var i = 0; i < 60; i++) {
+      LogLayer.app.info('m$i', data: {'i': i});
+    }
+
+    await tester.pumpWidget(MaterialApp(home: LogViewerPage(writer: writer)));
+    if (expandAll) await tester.tap(find.byIcon(Icons.unfold_more));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('m59'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('"i": 59'), body);
+
+    final position = tester
+        .state<ScrollableState>(
+          find
+              .ancestor(of: find.text('m59'), matching: find.byType(Scrollable))
+              .first,
+        )
+        .position;
+    position.jumpTo(position.maxScrollExtent);
+    await tester.pumpAndSettle();
+    expect(find.text('m59', skipOffstage: false), findsNothing);
+
+    position.jumpTo(0);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('"i": 59'), body);
+  }, variant: expandAllFirst);
+
+  testWidgets('expand-all re-expands a hand-collapsed search hit', (
+    tester,
+  ) async {
+    LogLayer.network.info('user loaded', data: {'id': 'usr_42'});
+
+    await tester.pumpWidget(MaterialApp(home: LogViewerPage(writer: writer)));
+    await tester.enterText(find.byType(TextField), 'usr_42');
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('user loaded'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('"usr_42"'), findsNothing);
+
+    await tester.tap(find.byIcon(Icons.unfold_more));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('"usr_42"'), findsOneWidget);
+  });
+
+  testWidgets('new hit keeps an expand-all collapse', (tester) async {
+    LogLayer.network.info('user loaded', data: {'id': 'usr_42'});
+
+    await tester.pumpWidget(MaterialApp(home: LogViewerPage(writer: writer)));
+    await tester.tap(find.byIcon(Icons.unfold_more));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('user loaded'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('"usr_42"'), findsNothing);
+
+    await tester.enterText(find.byType(TextField), 'usr_42');
+    await tester.pumpAndSettle();
+    expect(find.textContaining('"usr_42"'), findsNothing);
+  });
+
+  testWidgets('new hit re-expands a hand-collapsed tile', (tester) async {
+    LogLayer.network.info('user loaded', data: {'id': 'usr_42', 'tok': 'abc'});
+
+    await tester.pumpWidget(MaterialApp(home: LogViewerPage(writer: writer)));
+    await tester.enterText(find.byType(TextField), 'usr_42');
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('user loaded'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('"abc"'), findsNothing);
+
+    await tester.enterText(find.byType(TextField), '');
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'abc');
+    await tester.pumpAndSettle();
+    expect(find.textContaining('"abc"'), findsOneWidget);
+  });
+
+  testWidgets('off-screen collapse yields to a new hit', (tester) async {
+    writer = MemoryLogWriter(capacity: 100);
+    Chirp.root = ChirpLogger().addWriter(writer);
+    LogLayer.network.info('target', data: {'id': 'usr_42', 'tok': 'abc'});
+    for (var i = 0; i < 60; i++) {
+      LogLayer.app.info('usr_42 m$i', data: {'i': i});
+    }
+
+    await tester.pumpWidget(MaterialApp(home: LogViewerPage(writer: writer)));
+    await tester.enterText(find.byType(TextField), 'usr_42');
+    await tester.pumpAndSettle();
+    final position = tester
+        .state<ScrollableState>(
+          find
+              .ancestor(
+                of: find.text('usr_42 m59'),
+                matching: find.byType(Scrollable),
+              )
+              .first,
+        )
+        .position;
+    position.jumpTo(position.maxScrollExtent);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('target'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('"abc"'), findsNothing);
+
+    position.jumpTo(0);
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), '');
+    await tester.pumpAndSettle();
+    expect(find.text('target', skipOffstage: false), findsNothing);
+    await tester.enterText(find.byType(TextField), 'abc');
+    await tester.pumpAndSettle();
+    expect(find.textContaining('"abc"'), findsOneWidget);
+  });
+
   testWidgets('chips list distinct layers present in the buffer', (
     tester,
   ) async {
