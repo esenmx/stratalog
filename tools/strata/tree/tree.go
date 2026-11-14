@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/esenmx/stratalog/tools/strata/termsafe"
 )
 
 // Kind classifies a [Node].
@@ -79,7 +81,7 @@ func parseValue(dec *json.Decoder, rawKey string) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	safeKey := sanitizeInline(rawKey)
+	safeKey := termsafe.Inline(rawKey)
 	switch t := tok.(type) {
 	case json.Delim:
 		switch t {
@@ -101,7 +103,7 @@ func parseValue(dec *json.Decoder, rawKey string) (*Node, error) {
 			rawLines := strings.Split(trimmed, "\n")
 			lines = make([]string, len(rawLines))
 			for i, l := range rawLines {
-				lines[i] = sanitizeLine(strings.TrimSuffix(l, "\r"))
+				lines[i] = termsafe.Line(strings.TrimSuffix(l, "\r"))
 			}
 		}
 		return &Node{
@@ -114,7 +116,7 @@ func parseValue(dec *json.Decoder, rawKey string) (*Node, error) {
 			IsString: true,
 		}, nil
 	case json.Number:
-		return &Node{Key: safeKey, RawKey: rawKey, Kind: Scalar, Literal: sanitizeInline(t.String())}, nil
+		return &Node{Key: safeKey, RawKey: rawKey, Kind: Scalar, Literal: termsafe.Inline(t.String())}, nil
 	case bool:
 		return &Node{Key: safeKey, RawKey: rawKey, Kind: Scalar, Literal: strconv.FormatBool(t)}, nil
 	case nil:
@@ -173,77 +175,19 @@ func quote(s string) (string, error) {
 		return "", err
 	}
 	encoded := string(bytes.TrimSuffix(b.Bytes(), []byte("\n")))
-	if !strings.ContainsFunc(encoded, isUnsafeRune) {
+	if !strings.ContainsFunc(encoded, termsafe.IsControl) {
 		return encoded, nil
 	}
 	var out strings.Builder
 	out.Grow(len(encoded) + 8)
 	for _, c := range encoded {
-		if isUnsafeRune(c) {
+		if termsafe.IsControl(c) {
 			fmt.Fprintf(&out, `\u%04x`, c)
 		} else {
 			out.WriteRune(c)
 		}
 	}
 	return out.String(), nil
-}
-
-func sanitizeInline(s string) string {
-	if utf8.ValidString(s) && !strings.ContainsFunc(s, isUnsafeRune) {
-		return s
-	}
-	var b strings.Builder
-	b.Grow(len(s))
-	for i := 0; i < len(s); {
-		c, w := utf8.DecodeRuneInString(s[i:])
-		switch {
-		case c == utf8.RuneError && w == 1:
-			fmt.Fprintf(&b, `\x%02x`, s[i])
-		case c == '\n':
-			b.WriteString(`\n`)
-		case c == '\r':
-			b.WriteString(`\r`)
-		case c == '\t':
-			b.WriteString(`\t`)
-		case c <= 0xff && isUnsafeRune(c):
-			fmt.Fprintf(&b, `\x%02x`, c)
-		case isUnsafeRune(c):
-			fmt.Fprintf(&b, `\u%04x`, c)
-		default:
-			b.WriteRune(c)
-		}
-		i += w
-	}
-	return b.String()
-}
-
-func sanitizeLine(s string) string {
-	if utf8.ValidString(s) && !strings.ContainsFunc(s, isUnsafeRune) {
-		return s
-	}
-	var b strings.Builder
-	b.Grow(len(s))
-	for i := 0; i < len(s); {
-		c, w := utf8.DecodeRuneInString(s[i:])
-		switch {
-		case c == utf8.RuneError && w == 1:
-			fmt.Fprintf(&b, `\x%02x`, s[i])
-		case c == '\t':
-			b.WriteString("  ")
-		case c <= 0xff && isUnsafeRune(c):
-			fmt.Fprintf(&b, `\x%02x`, c)
-		case isUnsafeRune(c):
-			fmt.Fprintf(&b, `\u%04x`, c)
-		default:
-			b.WriteRune(c)
-		}
-		i += w
-	}
-	return b.String()
-}
-
-func isUnsafeRune(c rune) bool {
-	return c < 0x20 || c == 0x7f || (c >= 0x80 && c < 0xa0) || c == '\u2028' || c == '\u2029'
 }
 
 // Rows lists the visible descendants of n depth-first: its children at
@@ -387,7 +331,7 @@ func (n *Node) VitalPreview() string {
 			case c.Kind != Scalar:
 				val = c.Summary()
 			case c.IsString:
-				val = clipRunes(sanitizeInline(c.Raw), maxChars)
+				val = clipRunes(termsafe.Inline(c.Raw), maxChars)
 			default:
 				val = clipRunes(c.Literal, maxChars)
 			}

@@ -13,7 +13,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/samber/lo"
 
-	"github.com/esenmx/stratalog/tools/strata/internal/record"
+	"github.com/esenmx/stratalog/tools/strata/record"
 )
 
 // VM service names stratalog's VmStreamWriter posts to and serves.

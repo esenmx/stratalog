@@ -14,7 +14,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/esenmx/stratalog/tools/strata/internal/record"
+	"github.com/esenmx/stratalog/tools/strata/record"
 )
 
 // ErrWaiting reports a target file that does not exist yet, or is still

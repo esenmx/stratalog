@@ -9,12 +9,14 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/esenmx/stratalog/tools/strata/termsafe"
 )
 
 // The Dart contract test asserts VmStreamWriter produces this fixture; this
 // one asserts strata decodes it.
 func TestDecodeContractFixture(t *testing.T) {
-	b, err := os.ReadFile("../../testdata/record_v1.json")
+	b, err := os.ReadFile("../testdata/record_v1.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +142,7 @@ func TestPlain(t *testing.T) {
 }
 
 func TestJSONRoundTripPreservesOrderAndIsolate(t *testing.T) {
-	b, err := os.ReadFile("../../testdata/record_v1.json")
+	b, err := os.ReadFile("../testdata/record_v1.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +209,7 @@ func FuzzDecodeAndPlain(f *testing.F) {
 			t.Fatalf("Plain() returned invalid UTF-8: %q", plain)
 		}
 		for _, c := range plain {
-			if c == '\n' || c == '\r' || c == '\t' || isControl(c) {
+			if c == '\n' || c == '\r' || c == '\t' || termsafe.IsControl(c) {
 				t.Fatalf("Plain() leaked control rune %U in %q", c, plain)
 			}
 		}

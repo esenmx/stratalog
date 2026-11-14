@@ -15,9 +15,10 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/esenmx/stratalog/tools/strata/internal/record"
-	"github.com/esenmx/stratalog/tools/strata/internal/tree"
-	"github.com/esenmx/stratalog/tools/strata/internal/vmservice"
+	"github.com/esenmx/stratalog/tools/strata/record"
+	"github.com/esenmx/stratalog/tools/strata/termsafe"
+	"github.com/esenmx/stratalog/tools/strata/tree"
+	"github.com/esenmx/stratalog/tools/strata/vmservice"
 )
 
 // MaxEntries caps retained records; the oldest are dropped and counted.
@@ -650,7 +651,7 @@ func (m *Model) addRecord(it vmservice.Item) {
 		key := strings.ToLower(it.Rec.Layer)
 		if _, exists := m.knownLayers[key]; !exists || it.Rec.Color != "" {
 			m.knownLayers[key] = layerBadge{
-				name:    record.Printable(it.Rec.Layer),
+				name:    termsafe.Line(it.Rec.Layer),
 				color:   it.Rec.Color,
 				onColor: it.Rec.OnColor,
 			}
@@ -806,20 +807,24 @@ func (m *Model) settle() {
 		m.offset = clamp(m.offset, 0, max(len(m.rows)-h, 0))
 		return
 	}
-	// Under soft-wrap, advance m.offset until the wrapped lines from m.offset
-	// through m.cursor fit inside h physical lines.
+	// Under soft-wrap, the offset is the earliest row at or after m.offset from
+	// which the wrapped lines through m.cursor fit inside h physical lines.
+	// Walking back from the cursor wraps at most a screenful of rows, however
+	// far the cursor jumped.
 	m.offset = clamp(m.offset, 0, max(len(m.rows)-1, 0))
-	for m.offset < m.cursor && m.visualSpan(m.offset, m.cursor) > h {
-		m.offset++
+	if m.offset >= m.cursor {
+		return
 	}
-}
-
-func (m *Model) visualSpan(from, to int) int {
-	lines := 0
-	for i := from; i <= to && i < len(m.rows); i++ {
-		lines += len(m.wrappedLines(i))
+	top, lines := m.cursor, len(m.wrappedLines(m.cursor))
+	for top > m.offset {
+		above := len(m.wrappedLines(top - 1))
+		if lines+above > h {
+			break
+		}
+		lines += above
+		top--
 	}
-	return lines
+	m.offset = top
 }
 
 func (m *Model) bodyHeight() int {
@@ -846,7 +851,7 @@ func (m *Model) appendEntryRows(rows []row, e *Entry) []row {
 		return rows
 	}
 	child := func(kind rowKind, text string, parent int) row {
-		text = record.Printable(strings.TrimSuffix(text, "\r"))
+		text = termsafe.Line(strings.TrimSuffix(text, "\r"))
 		return row{kind: kind, entry: e, text: text, index: -1, parent: len(rows) - parent}
 	}
 	if caller := e.Rec.Caller(); caller != "" {
@@ -952,7 +957,7 @@ func (e *Entry) stackNode() *tree.Node {
 		for line := range strings.SplitSeq(strings.TrimRight(e.Rec.Stack, "\n"), "\n") {
 			s.Children = append(s.Children, &tree.Node{
 				Kind:    tree.Scalar,
-				Literal: record.Printable(strings.TrimSuffix(line, "\r")),
+				Literal: termsafe.Line(strings.TrimSuffix(line, "\r")),
 			})
 		}
 		e.stack = s
@@ -995,7 +1000,7 @@ func (m *Model) View() tea.View {
 	h := m.bodyHeight()
 	used := 0
 	if len(m.rows) == 0 {
-		b.WriteString(m.truncate(dimStyle.Render(record.Printable(m.emptyText()))))
+		b.WriteString(m.truncate(dimStyle.Render(termsafe.Line(m.emptyText()))))
 		b.WriteByte('\n')
 		used = 1
 	} else {
@@ -1130,7 +1135,7 @@ func (m *Model) statusText() string {
 	if m.notice != "" {
 		parts = append(parts, m.notice)
 	}
-	parts = append(parts, record.Printable(m.stateText()), fmt.Sprintf("%d records", m.records))
+	parts = append(parts, termsafe.Line(m.stateText()), fmt.Sprintf("%d records", m.records))
 	if m.dropped > 0 {
 		parts = append(parts, fmt.Sprintf("dropped %d", m.dropped))
 	}
@@ -1143,7 +1148,7 @@ func (m *Model) statusText() string {
 		parts = append(parts, "layers:"+strings.Join(names, ","))
 	}
 	if m.query != "" && !m.filtering {
-		parts = append(parts, "/"+record.Printable(m.query))
+		parts = append(parts, "/"+termsafe.Line(m.query))
 	}
 	if m.wrap {
 		parts = append(parts, "wrap")
@@ -1189,7 +1194,7 @@ func (m *Model) renderRow(i int) string {
 	case rowHeader:
 		return gutter + m.renderHeader(r.entry)
 	case rowDivider:
-		line := "── " + record.Printable(r.text) + " "
+		line := "── " + termsafe.Line(r.text) + " "
 		return gutter + dimStyle.Render(line+strings.Repeat("─", max(m.width-ansi.StringWidth(line)-2, 0)))
 	case rowCaller:
 		return gutter + indent + dimStyle.Render("at "+r.text)
@@ -1229,9 +1234,9 @@ func (m *Model) renderHeader(e *Entry) string {
 	}
 	isoTag := ""
 	if r.IsolateName != "" && r.IsolateName != "main" {
-		isoTag = " " + dimStyle.Render("@"+record.Printable(r.IsolateName))
+		isoTag = " " + dimStyle.Render("@"+termsafe.Line(r.IsolateName))
 	}
-	level := "[" + record.Printable(r.Level) + "]"
+	level := "[" + termsafe.Line(r.Level) + "]"
 	if r.LevelColor != "" {
 		level = lipgloss.NewStyle().Foreground(lipgloss.Color(r.LevelColor)).Render(level)
 	}
@@ -1244,7 +1249,7 @@ func (m *Model) renderHeader(e *Entry) string {
 			tail += "  " + dimStyle.Render(prev)
 		}
 	}
-	return mark + badge.Render(" "+record.Printable(r.Layer)+" ") + isoTag + " " + level + " " +
+	return mark + badge.Render(" "+termsafe.Line(r.Layer)+" ") + isoTag + " " + level + " " +
 		dimStyle.Render(r.Time.Local().Format("15:04:05.000")) + " " + msg + tail
 }
 

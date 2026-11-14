@@ -12,8 +12,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/esenmx/stratalog/tools/strata/internal/record"
-	"github.com/esenmx/stratalog/tools/strata/internal/vmservice"
+	"github.com/esenmx/stratalog/tools/strata/record"
+	"github.com/esenmx/stratalog/tools/strata/vmservice"
 )
 
 var at = time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
@@ -577,4 +577,35 @@ func FuzzViewSafetyAndGeometry(f *testing.F) {
 			}
 		}
 	})
+}
+
+func TestWrapJumpToEndScrollsInBoundedTime(t *testing.T) {
+	m := New("./.flutter.vmservice")
+	send(m, tea.WindowSizeMsg{Width: 40, Height: 20})
+	const n = 3000
+	for i := range n {
+		r := appBoot()
+		r.Seq = int64(i)
+		r.Message = fmt.Sprintf("record %d with a message long enough to wrap twice at forty", i)
+		send(m, RecordMsg(vmservice.Item{Rec: r}, 0))
+	}
+	send(m, keys("w", "g")...)
+
+	start := time.Now()
+	send(m, key("G"))
+	// Settling under wrap must cost O(screen), not O(rows²): the quadratic
+	// walk took ~20 s here.
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("G under wrap took %v over %d rows", d, n)
+	}
+	if m.cursor != len(m.rows)-1 || !strings.Contains(screen(m), fmt.Sprintf("%d with a message", n-1)) {
+		t.Errorf("last record not on screen after G under wrap:\n%s", screen(m))
+	}
+	span := 0
+	for i := m.offset; i <= m.cursor; i++ {
+		span += len(m.wrappedLines(i))
+	}
+	if span > m.bodyHeight() || (m.offset > 0 && span+len(m.wrappedLines(m.offset-1)) <= m.bodyHeight()) {
+		t.Errorf("rows %d..%d span %d lines; body holds %d and must be filled", m.offset, m.cursor, span, m.bodyHeight())
+	}
 }

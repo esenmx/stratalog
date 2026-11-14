@@ -13,7 +13,7 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/esenmx/stratalog/tools/strata/internal/record"
+	"github.com/esenmx/stratalog/tools/strata/record"
 )
 
 var epoch = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -526,5 +526,41 @@ func TestPausedWorkerIsolateDoesNotStallMainLive(t *testing.T) {
 
 	if want := []string{"boot", "main-live-2"}; !slices.Equal(got, want) {
 		t.Fatalf("emitted %q, want %q without stalling on paused worker", got, want)
+	}
+}
+
+func TestSnapshotReportsIsolatesWhoseHistoryFailed(t *testing.T) {
+	defer func(d time.Duration) { historyTimeout = d }(historyTimeout)
+	historyTimeout = 100 * time.Millisecond
+
+	url := fakeVM(t, fakeOpts{
+		isolates: []fakeIsolate{
+			{
+				id:      "isolates/1",
+				name:    "main",
+				history: []map[string]any{wireRecordAt(1, epoch, "m1")},
+			},
+			// Paused at a breakpoint: the extension never replies.
+			{id: "isolates/2", name: "drift", hang: true},
+		},
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	c, err := Dial(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	items, err := Snapshot(ctx, c)
+	if err == nil || !strings.Contains(err.Error(), "drift") {
+		t.Errorf("Snapshot err = %v, want one naming the failed drift isolate", err)
+	}
+	var got []string
+	for _, it := range items {
+		got = append(got, label(it))
+	}
+	if want := []string{"m1"}; !slices.Equal(got, want) {
+		t.Errorf("Snapshot items = %q, want the reachable isolate's %q", got, want)
 	}
 }

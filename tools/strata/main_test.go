@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -18,7 +19,7 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/esenmx/stratalog/tools/strata/internal/vmservice"
+	"github.com/esenmx/stratalog/tools/strata/vmservice"
 )
 
 func TestParseCLIPermutationAndModes(t *testing.T) {
@@ -242,4 +243,142 @@ func fakeVMServer(t *testing.T, history []map[string]any, keepOpen bool) string 
 	}))
 	t.Cleanup(srv.Close)
 	return srv.URL
+}
+
+func TestWaitInterruptedExitsCleanly(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.vmservice")
+	for _, args := range [][]string{
+		{"--plain", "--wait", missing},
+		{"--once", "--json", "--wait", missing},
+	} {
+		t.Run(strings.Join(args[:len(args)-1], " "), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel() // SIGINT before the target ever appears
+			env := runEnv{stdout: io.Discard, stderr: io.Discard, poll: time.Millisecond}
+			if err := env.run(ctx, args); err != nil {
+				t.Errorf("run %q after interrupt = %v, want nil", args, err)
+			}
+		})
+	}
+}
+
+func TestStdinReplayStopsOnInterruptWhileProducerIdle(t *testing.T) {
+	pr, pw := io.Pipe()
+	t.Cleanup(func() { _ = pw.Close() })
+	go func() {
+		_, _ = io.WriteString(pw, `{"v":1,"seq":1,"time":"2026-04-14T06:04:05Z","level":"info","severity":200,"layer":"App","message":"first"}`+"\n")
+		// The producer then stays open and silent.
+	}()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	var out syncBuffer
+	env := runEnv{stdin: pr, stdout: &out, stderr: io.Discard}
+	done := make(chan error, 1)
+	go func() { done <- env.run(ctx, []string{"--plain", "-"}) }()
+
+	deadline := time.After(3 * time.Second)
+	for !strings.Contains(out.String(), "first") {
+		select {
+		case <-deadline:
+			t.Fatal("first record never replayed")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("run after interrupt = %v, want nil", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("stdin replay ignored the interrupt while the producer was idle")
+	}
+}
+
+// syncBuffer is a bytes.Buffer safe to read while another goroutine writes.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func TestReportErrorEscapesEveryLine(t *testing.T) {
+	var out bytes.Buffer
+	reportError(&out, errors.Join(
+		errors.New("isolate w\x1b]0;pwn\x07 (isolates/2) history: timeout"),
+		errors.New("isolate b (isolates/3) history: closed"),
+	))
+	want := "strata: isolate w\\x1b]0;pwn\\x07 (isolates/2) history: timeout\n" +
+		"strata: isolate b (isolates/3) history: closed\n"
+	if out.String() != want {
+		t.Errorf("reportError wrote %q, want %q", out.String(), want)
+	}
+}
+
+func TestOncePrintsReachableIsolatesThenFailsNamingTheMissedOne(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.CloseNow() }()
+		ctx := r.Context()
+		for {
+			_, raw, err := conn.Read(ctx)
+			if err != nil {
+				return
+			}
+			var req struct {
+				ID     string `json:"id"`
+				Method string `json:"method"`
+				Params struct {
+					IsolateID string `json:"isolateId"`
+				} `json:"params"`
+			}
+			if json.Unmarshal(raw, &req) != nil {
+				continue
+			}
+			msg := map[string]any{"jsonrpc": "2.0", "id": req.ID}
+			switch {
+			case req.Method == "getVM":
+				msg["result"] = map[string]any{"startTime": 1000, "isolates": []map[string]any{
+					{"id": "isolates/1", "name": "main"},
+					{"id": "isolates/2", "name": "drift"},
+				}}
+			case req.Method == "getIsolate":
+				msg["result"] = map[string]any{"extensionRPCs": []string{vmservice.HistoryExtension}}
+			case req.Params.IsolateID == "isolates/1":
+				msg["result"] = map[string]any{"records": []map[string]any{{
+					"v": 1, "seq": 1, "time": "2026-04-14T06:04:05Z",
+					"level": "info", "severity": 200, "layer": "App", "message": "reachable",
+				}}}
+			default:
+				msg["error"] = map[string]any{"code": 113, "message": "isolate is paused"}
+			}
+			b, _ := json.Marshal(msg)
+			_ = conn.Write(ctx, websocket.MessageText, b)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	var out bytes.Buffer
+	env := runEnv{stdout: &out, stderr: io.Discard}
+	err := env.run(t.Context(), []string{"--once", "--plain", srv.URL})
+	if !strings.Contains(out.String(), "reachable") {
+		t.Errorf("stdout = %q, want the reachable isolate's record", out.String())
+	}
+	if err == nil || !strings.Contains(err.Error(), "drift") {
+		t.Errorf("run --once = %v, want an error naming the missed drift isolate", err)
+	}
 }

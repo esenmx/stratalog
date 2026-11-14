@@ -1,4 +1,4 @@
-// Package record decodes, filters, sanitizes, and formats stratalog record
+// Package record decodes, filters, and formats stratalog record
 // schema v1, the JSON posted by the Dart VmStreamWriter on the "stratalog" VM
 // service stream (and written to NDJSON capture files).
 package record
@@ -10,7 +10,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode/utf8"
+
+	"github.com/esenmx/stratalog/tools/strata/termsafe"
 )
 
 // SchemaVersion is the newest record schema this build understands.
@@ -114,17 +115,17 @@ func Decode(b []byte) (Record, error) {
 }
 
 // Caller formats `file:line method` (omitting `:0` when Line <= 0), sanitized
-// via [Printable], or "" when File is empty.
+// via [termsafe.Line], or "" when File is empty.
 func (r Record) Caller() string {
 	if r.File == "" {
 		return ""
 	}
-	s := Printable(r.File)
+	s := termsafe.Line(r.File)
 	if r.Line > 0 {
 		s = fmt.Sprintf("%s:%d", s, r.Line)
 	}
 	if r.Method != "" {
-		s += " " + Printable(r.Method)
+		s += " " + termsafe.Line(r.Method)
 	}
 	return s
 }
@@ -143,48 +144,15 @@ func (r Record) Haystack() string {
 	}, "\n"))
 }
 
-// FirstLine is the message's first line, [Printable], suffixed " …" when
+// FirstLine is the message's first line, [termsafe.Line], suffixed " …" when
 // more follow.
 func (r Record) FirstLine() string {
 	first, _, multi := strings.Cut(r.Message, "\n")
-	first = Printable(strings.TrimSuffix(first, "\r"))
+	first = termsafe.Line(strings.TrimSuffix(first, "\r"))
 	if multi {
 		return first + " …"
 	}
 	return first
-}
-
-// Printable makes one line of record text safe to print: control characters
-// (C0 including LF/CR/ESC, DEL, C1, invalid UTF-8 bytes, Unicode line
-// separators) become visible escapes so a record cannot drive the terminal or
-// inject line breaks, and a tab becomes a space.
-func Printable(s string) string {
-	if utf8.ValidString(s) && !strings.ContainsFunc(s, isControl) {
-		return s
-	}
-	var b strings.Builder
-	b.Grow(len(s))
-	for i := 0; i < len(s); {
-		c, w := utf8.DecodeRuneInString(s[i:])
-		switch {
-		case c == utf8.RuneError && w == 1:
-			fmt.Fprintf(&b, `\x%02x`, s[i])
-		case c == '\t':
-			b.WriteByte(' ')
-		case c <= 0xff && isControl(c):
-			fmt.Fprintf(&b, `\x%02x`, c)
-		case isControl(c):
-			fmt.Fprintf(&b, `\u%04x`, c)
-		default:
-			b.WriteRune(c)
-		}
-		i += w
-	}
-	return b.String()
-}
-
-func isControl(c rune) bool {
-	return c < 0x20 || c == 0x7f || (c >= 0x80 && c < 0xa0) || c == '\u2028' || c == '\u2029'
 }
 
 // InlineError formats r.Error onto a single terminal-safe line while keeping
@@ -197,7 +165,7 @@ func (r Record) InlineError() string {
 	norm = strings.TrimRight(norm, "\n")
 	parts := strings.Split(norm, "\n")
 	for i, p := range parts {
-		parts[i] = Printable(strings.TrimSuffix(p, "\r"))
+		parts[i] = termsafe.Line(strings.TrimSuffix(p, "\r"))
 	}
 	return strings.Join(parts, ` \n `)
 }
@@ -206,16 +174,16 @@ func (r Record) InlineError() string {
 // in local time, single-line and without ANSI or terminal control characters.
 func (r Record) Plain() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s %s", r.Time.Local().Format("15:04:05.000"), Printable(r.Layer))
+	fmt.Fprintf(&b, "%s %s", r.Time.Local().Format("15:04:05.000"), termsafe.Line(r.Layer))
 	if r.IsolateName != "" && r.IsolateName != "main" {
-		fmt.Fprintf(&b, "@%s", Printable(r.IsolateName))
+		fmt.Fprintf(&b, "@%s", termsafe.Line(r.IsolateName))
 	}
-	fmt.Fprintf(&b, " [%s] %s", Printable(r.Level), r.FirstLine())
+	fmt.Fprintf(&b, " [%s] %s", termsafe.Line(r.Level), r.FirstLine())
 	if len(r.Data) > 0 {
 		var data bytes.Buffer
 		if err := json.Compact(&data, r.Data); err == nil {
 			b.WriteByte(' ')
-			b.WriteString(Printable(data.String()))
+			b.WriteString(termsafe.Line(data.String()))
 		}
 	}
 	if errText := r.InlineError(); errText != "" {

@@ -2,11 +2,13 @@ package vmservice
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"maps"
 	"sync"
 	"time"
 
-	"github.com/esenmx/stratalog/tools/strata/internal/record"
+	"github.com/esenmx/stratalog/tools/strata/record"
 )
 
 // Item is one record ready to show. Restarted marks the first record of a new
@@ -155,6 +157,10 @@ var historyTimeout = 5 * time.Second
 // [HistoryExtension], merges them chronologically while preserving per-isolate
 // sequence order, and returns the deduplicated items without subscribing to the
 // live stream.
+//
+// An isolate whose history fetch fails or outlives [historyTimeout] (paused at
+// a breakpoint, say) leaves its records out: the items from every other
+// isolate are still returned, alongside an error naming each isolate missed.
 func Snapshot(ctx context.Context, c *Client) ([]Item, error) {
 	vm, err := c.InspectVM(ctx)
 	if err != nil {
@@ -164,8 +170,9 @@ func Snapshot(ctx context.Context, c *Client) ([]Item, error) {
 	d.ObserveVM(vm)
 
 	type batch struct {
-		id   string
+		iso  IsolateInfo
 		recs []record.Record
+		err  error
 	}
 	var wg sync.WaitGroup
 	ch := make(chan batch, len(vm.Isolates))
@@ -180,16 +187,21 @@ func Snapshot(ctx context.Context, c *Client) ([]Item, error) {
 			defer wg.Done()
 			fctx, cancel := context.WithTimeout(ctx, historyTimeout)
 			defer cancel()
-			recs, _ := c.History(fctx, iso.ID, iso.Name)
-			ch <- batch{id: iso.ID, recs: recs}
+			recs, err := c.History(fctx, iso.ID, iso.Name)
+			ch <- batch{iso: iso, recs: recs, err: err}
 		}(iso)
 	}
 	wg.Wait()
 	close(ch)
 
 	byIso := map[string][]record.Record{}
+	var errs []error
 	for b := range ch {
-		byIso[b.id] = b.recs
+		if b.err != nil {
+			errs = append(errs, fmt.Errorf("isolate %s (%s) history: %w", b.iso.Name, b.iso.ID, b.err))
+			continue
+		}
+		byIso[b.iso.ID] = b.recs
 	}
 	merged := mergeIsolateSlices(order, byIso)
 	out := make([]Item, 0, len(merged))
@@ -198,7 +210,7 @@ func Snapshot(ctx context.Context, c *Client) ([]Item, error) {
 			out = append(out, Item{Rec: r, Restarted: restarted})
 		}
 	}
-	return out, nil
+	return out, errors.Join(errs...)
 }
 
 type histResult struct {
@@ -308,17 +320,10 @@ func Stream(ctx context.Context, c *Client, d *Dedup, emit func(Item)) error {
 	flushInitial := func() {
 		// Combine each initial isolate's (before + hist + after) stream in
 		// exact per-isolate sequence order, then k-way merge chronologically.
+		// Every held isolate is in initOrder unless its own history is still
+		// pending; those stay held for flushIsolate.
 		streams := map[string][]record.Record{}
-		order := append([]string(nil), initOrder...)
-		for isoID, held := range heldByIso {
-			if pendingIso[isoID] {
-				continue // late isolate still fetching its own history
-			}
-			if _, inInit := initHist[isoID]; !inInit {
-				order = append(order, isoID)
-			}
-			_ = held
-		}
+		order := initOrder
 		for _, isoID := range order {
 			hist := initHist[isoID]
 			before, after := splitHeld(heldByIso[isoID], hist)

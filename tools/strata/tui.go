@@ -9,9 +9,9 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/esenmx/stratalog/tools/strata/internal/record"
-	"github.com/esenmx/stratalog/tools/strata/internal/ui"
-	"github.com/esenmx/stratalog/tools/strata/internal/vmservice"
+	"github.com/esenmx/stratalog/tools/strata/record"
+	"github.com/esenmx/stratalog/tools/strata/ui"
+	"github.com/esenmx/stratalog/tools/strata/vmservice"
 )
 
 const pollInterval = 500 * time.Millisecond

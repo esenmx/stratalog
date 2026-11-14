@@ -23,8 +23,9 @@ import (
 
 	"github.com/charmbracelet/x/term"
 
-	"github.com/esenmx/stratalog/tools/strata/internal/record"
-	"github.com/esenmx/stratalog/tools/strata/internal/vmservice"
+	"github.com/esenmx/stratalog/tools/strata/record"
+	"github.com/esenmx/stratalog/tools/strata/termsafe"
+	"github.com/esenmx/stratalog/tools/strata/vmservice"
 )
 
 const (
@@ -72,8 +73,17 @@ func main() {
 	err := env.run(ctx, os.Args[1:])
 	stop()
 	if err != nil && !errors.Is(err, flag.ErrHelp) {
-		fmt.Fprintln(os.Stderr, "strata:", err)
+		reportError(os.Stderr, err)
 		os.Exit(1)
+	}
+}
+
+// reportError writes err one "strata:"-prefixed line per line of its text,
+// escaped: errors carry VM-supplied text (isolate names, RPC messages) that
+// must not drive the terminal.
+func reportError(w io.Writer, err error) {
+	for line := range strings.SplitSeq(err.Error(), "\n") {
+		_, _ = fmt.Fprintln(w, "strata:", termsafe.Line(line))
 	}
 }
 
@@ -257,6 +267,9 @@ func dialVM(ctx context.Context, wsURL string) (*vmservice.Client, error) {
 func (e runEnv) runCLI(ctx context.Context, cfg cliConfig) error {
 	resolved, client, err := e.acquireCLITarget(ctx, cfg)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil // interrupted while waiting for the target
+		}
 		return err
 	}
 	if client != nil {
@@ -302,7 +315,7 @@ func (e runEnv) acquireCLITarget(ctx context.Context, cfg cliConfig) (vmservice.
 		}
 		select {
 		case <-ctx.Done():
-			return vmservice.Target{}, nil, nil
+			return vmservice.Target{}, nil, ctx.Err()
 		case <-time.After(e.pollEvery()):
 		}
 	}
@@ -315,14 +328,10 @@ func (e runEnv) reportMalformed(n int64) {
 }
 
 func (e runEnv) runSnapshot(ctx context.Context, c *vmservice.Client, cfg cliConfig) error {
+	// A partial snapshot still prints what it got, then fails: a script must
+	// never mistake a missed isolate for one that logged nothing.
 	items, err := vmservice.Snapshot(ctx, c)
 	e.reportMalformed(c.Malformed())
-	if err != nil {
-		if ctx.Err() != nil {
-			return nil
-		}
-		return err
-	}
 	for _, it := range items {
 		if !cfg.filter.Match(it.Rec, "") {
 			continue
@@ -331,7 +340,10 @@ func (e runEnv) runSnapshot(ctx context.Context, c *vmservice.Client, cfg cliCon
 			return cleanPipeErr(werr)
 		}
 	}
-	return nil
+	if ctx.Err() != nil {
+		return nil
+	}
+	return err
 }
 
 func (e runEnv) runStream(ctx context.Context, c *vmservice.Client, cfg cliConfig) error {
@@ -406,11 +418,40 @@ func cleanPipeErr(err error) error {
 	return err
 }
 
+// readNDJSON emits each record line of r until EOF, an emit error, or ctx
+// ends. A blocked read never delays cancellation: reads run on their own
+// goroutine, which is abandoned until r yields or the process exits — an idle
+// pipe on stdin would otherwise hold quit or SIGINT hostage.
 func readNDJSON(ctx context.Context, r io.Reader, emit func(record.Record) error) (int64, error) {
-	br := bufio.NewReaderSize(r, 64*1024)
+	type chunk struct {
+		line []byte
+		err  error
+	}
+	chunks := make(chan chunk)
+	go func() {
+		br := bufio.NewReaderSize(r, 64*1024)
+		for {
+			line, err := br.ReadBytes('\n')
+			select {
+			case chunks <- chunk{line, err}:
+			case <-ctx.Done():
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
 	var malformed int64
-	for ctx.Err() == nil {
-		line, rerr := br.ReadBytes('\n')
+	for {
+		var c chunk
+		select {
+		case <-ctx.Done():
+			return malformed, ctx.Err()
+		case c = <-chunks:
+		}
+		line, rerr := c.line, c.err
 		trimmed := bytes.TrimSpace(line)
 		if len(trimmed) > 0 {
 			rec, derr := record.Decode(trimmed)
@@ -427,5 +468,4 @@ func readNDJSON(ctx context.Context, r io.Reader, emit func(record.Record) error
 			return malformed, rerr
 		}
 	}
-	return malformed, ctx.Err()
 }
