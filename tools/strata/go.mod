@@ -10,6 +10,7 @@ require (
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/coder/websocket v1.8.15
 	github.com/samber/lo v1.53.0
+	pgregory.net/rapid v1.3.0
 )
 
 require (

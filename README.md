@@ -57,7 +57,7 @@ When the app hot-restarts or relaunches, `strata` keeps its records, reconnects 
 | `/` (`n`/`N`, `Esc`) | substring filter with match highlighting (`n`/`N` next/prev hit; `Esc` clears anchored on current record) |
 | `f` / `F` | toggle layer filter chips (`←`/`→` move, `1`–`9` / `Space` toggle, `a` all); `F` clears layer filter |
 | `L` | cycle minimum chirp level (`trace` → `debug` → `info` → `notice` → `success` → `warning` → `error` → `critical` → `wtf`) |
-| `G`/`End`, `g`/`Home` | jump to the end and follow; jump to the top |
+| `G`/`End`, `g`/`Home` | jump to the end and follow (under wrap, a last row taller than the screen shows its last screenful); jump to the top |
 | `c`, `?`, `q`/`Ctrl-C` | clear, toggle key help bar, quit |
 
 To leave the stream out, call `configureLogging(vmStream: false)`.

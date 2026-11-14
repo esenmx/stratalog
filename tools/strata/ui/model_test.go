@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"math/rand/v2"
 	"regexp"
 	"strconv"
 	"strings"
@@ -14,6 +13,7 @@ import (
 	"charm.land/bubbles/v2/cursor"
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
+	"pgregory.net/rapid"
 
 	"github.com/esenmx/stratalog/tools/strata/record"
 	"github.com/esenmx/stratalog/tools/strata/vmservice"
@@ -1006,63 +1006,6 @@ func TestWrapEveryLineReachableByDownAloneAndUpAlone(t *testing.T) {
 	}
 }
 
-type walk struct {
-	rng     *rand.Rand
-	seq     int64
-	pending []tea.Msg
-}
-
-func (w *walk) record() tea.Msg {
-	w.seq++
-	r := appBoot()
-	r.Seq = w.seq
-	r.Layer = []string{"App", "Network", "State"}[w.rng.IntN(3)]
-	lvl := record.Levels[w.rng.IntN(len(record.Levels))]
-	r.Level, r.Severity = lvl.Name, lvl.Severity
-	r.Message = fmt.Sprintf("m%d %s", w.seq, strings.Repeat("word ", w.rng.IntN(300)))
-	switch w.rng.IntN(4) {
-	case 0:
-		r.Data = json.RawMessage(fmt.Sprintf(`{"blob":%q,"list":[1,2,{"k":"a\nb\nc"}]}`, strings.Repeat("x", w.rng.IntN(5000))))
-	case 1:
-		r.Error = strings.Repeat("err ", w.rng.IntN(400))
-		r.Stack = "f1\nf2\n" + strings.Repeat("frame ", w.rng.IntN(300))
-	}
-	return RecordMsg(vmservice.Item{Rec: r, Restarted: w.rng.IntN(20) == 0}, 0)
-}
-
-func (w *walk) next() tea.Msg {
-	if len(w.pending) > 0 {
-		msg := w.pending[0]
-		w.pending = w.pending[1:]
-		return msg
-	}
-	names := []string{
-		"pgup", "pgdown", "[", "]", "J", "K", "g", "G", "enter", "space", "right", "left",
-		"l", "h", "e", "e", "w", "w", "esc", "n", "N", "f", "1", "?", "L", "F",
-	}
-	switch n := w.rng.IntN(1000); {
-	case n < 1:
-		return key("c")
-	case n < 10:
-		w.pending = append(typed([]string{"m1", "word", "x", "zz"}[w.rng.IntN(4)]), key([]string{"enter", "esc"}[w.rng.IntN(2)]))
-		return key("/")
-	case n < 50:
-		return tea.WindowSizeMsg{Width: 1 + w.rng.IntN(140), Height: 1 + w.rng.IntN(50)}
-	case n < 120:
-		return w.record()
-	case n < 220:
-		return wheelDown
-	case n < 300:
-		return wheelUp
-	case n < 320:
-		return tea.KeyPressMsg{Code: []rune{'u', 'd'}[w.rng.IntN(2)], Mod: tea.ModCtrl}
-	case n < 500:
-		return key([]string{"up", "down", "j", "k"}[w.rng.IntN(4)])
-	default:
-		return key(names[w.rng.IntN(len(names))])
-	}
-}
-
 func steppedUp(msg tea.Msg) bool {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
@@ -1073,33 +1016,120 @@ func steppedUp(msg tea.Msg) bool {
 	return false
 }
 
-func TestWrapRandomWalkKeepsBodyAndLineOffsetInBoundsSeed20261114(t *testing.T) {
-	w := &walk{rng: rand.New(rand.NewPCG(20261114, 0))}
-	m := New("./.flutter.vmservice")
-	send(m, tea.WindowSizeMsg{Width: tallW, Height: tallH}, key("w"))
-	for step := range 3000 {
-		msg := w.next()
-		before, _ := m.current()
-		send(m, msg)
-		if after, _ := m.current(); after != before && m.lineOff != 0 && !steppedUp(msg) {
-			t.Fatalf("step %d (%T %v): moved to another row at lineOff %d, want its first line", step, msg, msg, m.lineOff)
-		}
-		bars := 0
-		for _, on := range []bool{m.layering, m.filtering, m.showHelp} {
-			if on {
-				bars++
+func walkRecord(t *rapid.T, seq int64) tea.Msg {
+	r := appBoot()
+	r.Seq = seq
+	r.Layer = rapid.SampledFrom([]string{"App", "Network", "State"}).Draw(t, "layer")
+	lvl := rapid.SampledFrom(record.Levels).Draw(t, "level")
+	r.Level, r.Severity = lvl.Name, lvl.Severity
+	r.Message = fmt.Sprintf("m%d %s", seq, strings.Repeat("word ", rapid.IntRange(0, 300).Draw(t, "words")))
+	switch rapid.SampledFrom([]string{"plain", "data", "error"}).Draw(t, "shape") {
+	case "data":
+		blob := strings.Repeat("x", rapid.IntRange(0, 5000).Draw(t, "blob"))
+		r.Data = json.RawMessage(fmt.Sprintf(`{"blob":%q,"list":[1,2,{"k":"a\nb\nc"}]}`, blob))
+	case "error":
+		r.Error = strings.Repeat("err ", rapid.IntRange(0, 400).Draw(t, "error"))
+		r.Stack = "f1\nf2\n" + strings.Repeat("frame ", rapid.IntRange(0, 300).Draw(t, "frames"))
+	}
+	return RecordMsg(vmservice.Item{Rec: r, Restarted: rapid.IntRange(0, 19).Draw(t, "restart") == 0}, 0)
+}
+
+func TestWrapWalkKeepsBodyAndLineOffsetInBounds(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		m := New("./.flutter.vmservice")
+		send(m, tea.WindowSizeMsg{Width: tallW, Height: tallH}, key("w"), key("e"))
+		var seq int64
+		do := func(msgs ...tea.Msg) {
+			for _, msg := range msgs {
+				before, _ := m.current()
+				send(m, msg)
+				checkWalkStep(t, m, before, msg)
 			}
 		}
-		if got, want := len(strings.Split(m.View().Content, "\n")), m.bodyHeight()+bars+1; got != want {
-			t.Fatalf("step %d (%T %v): view has %d lines, want body %d + %d bars + status", step, msg, msg, got, m.bodyHeight(), bars)
+		record := func(t *rapid.T) {
+			seq++
+			do(walkRecord(t, seq))
 		}
-		hi := 0
-		if m.wrap && len(m.rows) > 0 {
-			hi = max(len(m.wrappedLines(m.cursor))-m.bodyHeight(), 0)
+		for range 3 {
+			record(t)
 		}
-		if m.lineOff < 0 || m.lineOff > hi || (m.lineOff > 0 && m.offset != m.cursor) {
-			t.Fatalf("step %d (%T %v): lineOff %d outside [0, %d] or offset %d != cursor %d", step, msg, msg, m.lineOff, hi, m.offset, m.cursor)
+		t.Repeat(map[string]func(*rapid.T){
+			"record": record,
+			"step": func(t *rapid.T) {
+				do(key(rapid.SampledFrom([]string{"up", "down", "j", "k"}).Draw(t, "key")))
+			},
+			"wheel": func(t *rapid.T) {
+				do(rapid.SampledFrom([]tea.Msg{wheelDown, wheelUp}).Draw(t, "wheel"))
+			},
+			"half page": func(t *rapid.T) {
+				do(tea.KeyPressMsg{Code: rapid.SampledFrom([]rune{'u', 'd'}).Draw(t, "key"), Mod: tea.ModCtrl})
+			},
+			"resize": func(t *rapid.T) {
+				do(tea.WindowSizeMsg{Width: rapid.IntRange(1, 140).Draw(t, "width"), Height: rapid.IntRange(1, 50).Draw(t, "height")})
+			},
+			"filter": func(t *rapid.T) {
+				do(key("/"))
+				do(typed(rapid.SampledFrom([]string{"m1", "word", "x", "zz"}).Draw(t, "query"))...)
+				do(key(rapid.SampledFrom([]string{"enter", "esc"}).Draw(t, "end")))
+			},
+			"key": func(t *rapid.T) {
+				do(key(rapid.SampledFrom([]string{
+					"pgup", "pgdown", "[", "]", "J", "K", "g", "G", "enter", "space", "right", "left",
+					"l", "h", "e", "w", "esc", "n", "N", "f", "1", "?", "L", "F", "c",
+				}).Draw(t, "key")))
+			},
+		})
+	})
+}
+
+func checkWalkStep(t *rapid.T, m *Model, before row, msg tea.Msg) {
+	bars := 0
+	for _, on := range []bool{m.layering, m.filtering, m.showHelp} {
+		if on {
+			bars++
 		}
+	}
+	if got, want := len(strings.Split(m.View().Content, "\n")), m.bodyHeight()+bars+1; got != want {
+		t.Fatalf("%T %v: view has %d lines, want body %d + %d bars + status", msg, msg, got, m.bodyHeight(), bars)
+	}
+	hi := 0
+	if m.wrap && len(m.rows) > 0 {
+		hi = max(len(m.wrappedLines(m.cursor))-m.bodyHeight(), 0)
+	}
+	if m.lineOff < 0 || m.lineOff > hi || (m.lineOff > 0 && m.offset != m.cursor) {
+		t.Fatalf("%T %v: lineOff %d outside [0, %d] or offset %d != cursor %d", msg, msg, m.lineOff, hi, m.offset, m.cursor)
+	}
+	after, _ := m.current()
+	switch {
+	case m.follow && m.lineOff != hi:
+		t.Fatalf("%T %v: following at lineOff %d, want the last screenful %d", msg, msg, m.lineOff, hi)
+	case !m.follow && after != before && m.lineOff != 0 && !steppedUp(msg):
+		t.Fatalf("%T %v: moved to another row at lineOff %d, want its first line", msg, msg, m.lineOff)
+	}
+}
+
+func TestWrapFollowShowsTallLastRowsLastScreenful(t *testing.T) {
+	long := appBoot()
+	long.Message = "MSG-START " + strings.Repeat("word ", 800) + "MSG-END"
+	for name, tc := range map[string]struct {
+		after      []record.Record
+		then       []tea.Msg
+		end, start string
+	}{
+		"jump to end": {nil, keys("G"), "THE-END", "THE-START"},
+		"record arriving while following": {
+			[]record.Record{stateTrace()},
+			[]tea.Msg{key("G"), RecordMsg(vmservice.Item{Rec: long}, 0)},
+			"MSG-END", "MSG-START",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := tallModelThen(t, tc.after...)
+			send(m, tc.then...)
+			if !shows(m, tc.end) || shows(m, tc.start) {
+				t.Errorf("following did not show the last row's last screenful:\n%s", screen(m))
+			}
+		})
 	}
 }
 

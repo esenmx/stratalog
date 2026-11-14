@@ -907,7 +907,8 @@ func (m *Model) settle() {
 }
 
 // settleLine keeps lineOff on the cursor row: a row reached by stepping up
-// opens at its last screenful, any other new row at its first line.
+// opens at its last screenful, any other new row at its first line. While
+// following, the last row stays at its last screenful.
 // FIXME(P3, strata): rows compare by value, so an offset inside a tall row
 // drops to 0 when its row changes shape under the cursor (e on a folded
 // sibling) or leaves and returns (a full L cycle, a filter typed and erased).
@@ -923,7 +924,11 @@ func (m *Model) settleLine() {
 		}
 	}
 	m.lineRow, m.fromBelow = cur, false
-	m.lineOff = clamp(m.lineOff, 0, m.maxLineOff())
+	hi := m.maxLineOff()
+	if m.follow {
+		m.lineOff = hi
+	}
+	m.lineOff = clamp(m.lineOff, 0, hi)
 }
 
 // tall reports whether row i wraps to more lines than the body holds.
