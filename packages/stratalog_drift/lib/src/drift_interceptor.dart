@@ -19,7 +19,10 @@ final class LoggerQueryInterceptor({
   final LogLayer logger = .storage,
 
   /// Bound arguments carry row data — set `false` when tables hold
-  /// sensitive values that must not reach any sink.
+  /// sensitive values that must not reach any sink. When `false`, a
+  /// failure's attached error is reduced to its type and first line: the
+  /// engine's message, which names tables and columns and in some cases
+  /// (FTS5 `MATCH`, JSON paths, trigger `RAISE`) echoes a bound value.
   final bool logArgs = true,
 
   /// Statements beyond this length are ellipsized in the message — an
@@ -152,10 +155,21 @@ final class LoggerQueryInterceptor({
           if (logArgs && args.isNotEmpty) 'args': args,
           'duration_ms': watch.elapsedMilliseconds,
         },
-        error: error,
+        error: logArgs ? error : _withoutArgs(error),
         stackTrace: stackTrace,
       );
       rethrow;
+    }
+  }
+
+  // sqlite3 appends the statement and its bound values below the first line.
+  static String _withoutArgs(Object error) {
+    final type = '${error.runtimeType}';
+    try {
+      final text = error.toString().split('\n').first;
+      return text.startsWith(type) ? text : '$type: $text';
+    } on Object {
+      return type;
     }
   }
 
