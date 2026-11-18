@@ -170,7 +170,7 @@ final class _RejectedCall<Q, R>(
   CallOptions options,
   final Object _error,
 ) extends ClientCall<Q, R> {
-  this : super(method, const Stream.empty(), options);
+  this : super(method, const .empty(), options);
 
   @override
   Stream<R> get response => .error(_error);
@@ -420,7 +420,7 @@ void main() {
     final controller = StreamController<List<int>>();
     final call = client.collect(controller.stream);
     await call.cancel();
-    unawaited(controller.close());
+    controller.close().ignore();
     await check(call).throws<GrpcError>();
     await settle();
 

@@ -62,7 +62,7 @@ void main() {
       _record(
         level: .error,
         error: StateError('boom'),
-        stackTrace: StackTrace.fromString('#0 main (a.dart:1:1)'),
+        stackTrace: .fromString('#0 main (a.dart:1:1)'),
       ),
       7,
     );
@@ -88,9 +88,9 @@ void main() {
   test('caller info omits empty method', () {
     final record = LogRecord(
       message: 'partial caller',
-      timestamp: DateTime.utc(2026),
-      wallClock: DateTime.utc(2026),
-      caller: StackTrace.fromString('#0      (package:app/boot.dart:12:3)'),
+      timestamp: .utc(2026),
+      wallClock: .utc(2026),
+      caller: .fromString('#0      (package:app/boot.dart:12:3)'),
     );
     final json = VmStreamWriter(post: (_) {}).toRecordJson(record, 1);
 

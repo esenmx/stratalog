@@ -48,5 +48,5 @@ melos:
     shorthand:
       description: Rewrite Type.member to dot-shorthand via `shorthand` across every workspace member. Pair with `melos format`.
       exec:
-        command: shorthand .
+        command: shorthand . --skip=AsyncValue.error
         concurrency: 4

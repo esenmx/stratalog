@@ -87,7 +87,7 @@ final class VmStreamWriter({
       _shared ? _sharedRing : _localRing;
 
   /// The buffered records, oldest first.
-  List<Map<String, Object?>> get history => List.unmodifiable(_ring);
+  List<Map<String, Object?>> get history => .unmodifiable(_ring);
 
   @override
   void write(LogRecord record) {
@@ -175,9 +175,8 @@ final class VmStreamWriter({
     try {
       developer.registerExtension(
         historyExtension,
-        (method, params) async => developer.ServiceExtensionResponse.result(
-          jsonEncode({'records': _current?.history ?? const []}),
-        ),
+        (method, params) async =>
+            .result(jsonEncode({'records': _current?.history ?? const []})),
       );
       _registered = true;
     } on Object catch (_) {
