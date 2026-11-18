@@ -58,7 +58,7 @@ final class _HeaderlessCloseAdapter({final Uri? redirectedTo})
     RequestOptions options,
     Stream<Uint8List>? requestStream,
     Future<void>? cancelFuture,
-  ) => throw thrown = DioException.connectionError(
+  ) => throw thrown = .connectionError(
     requestOptions: options,
     reason: 'closed',
     error: HttpException(
@@ -496,6 +496,18 @@ void main() {
         'filter': {'ssn': 'ssn-secret'},
         'page': '1',
       },
+      {
+        'filter': [
+          {'ssn': 'ssn-secret'},
+        ],
+        'page': '1',
+      },
+      {
+        'filter': const ListParam([
+          {'ssn': 'ssn-secret'},
+        ], .multiCompatible),
+        'page': '1',
+      },
     ]) {
       test('a bracketed redactKeys entry masks query $query', () {
         LoggerDioInterceptor(redactKeys: {'filter[ssn]'}).onRequest(
@@ -512,6 +524,28 @@ void main() {
         check('${record.message}').contains('page=1');
       });
     }
+
+    test('query Uri and platform leaves redact and stringify', () {
+      LoggerDioInterceptor().onRequest(
+        RequestOptions(
+          path: 'https://api.example.com/oauth',
+          queryParameters: {
+            'next': Uri.parse('https://u:p@x.test/cb?access_token=s3cret&ok=1'),
+            'at': DateTime.utc(2026, 11, 14),
+            'tier': _Tier.gold,
+          },
+        ),
+        RequestInterceptorHandler(),
+      );
+
+      check(writer.records.single.data['query'])
+          .isA<Map<String, Object?>>()
+          .deepEquals({
+            'next': 'https://***@x.test/cb?access_token=***&ok=1',
+            'at': '2026-11-14 00:00:00.000Z',
+            'tier': '_Tier.gold',
+          });
+    });
 
     test('form leaves dio sends via toString log as their text', () {
       LoggerDioInterceptor(logBodies: true).onRequest(
@@ -545,11 +579,11 @@ void main() {
           ..method = 'POST'
           ..contentType = Headers.formUrlEncodedContentType
           ..data = {
-            'tags': const ListParam(['a', 'b'], ListFormat.csv),
-            'pins': const ListParam(['1234'], ListFormat.multi),
+            'tags': const ListParam(['a', 'b'], .csv),
+            'pins': const ListParam(['1234'], .multi),
             'people': const ListParam([
               {'name': 'jo', 'password': 'hunter2'},
-            ], ListFormat.multi),
+            ], .multi),
           },
         RequestInterceptorHandler(),
       );
@@ -803,7 +837,7 @@ void main() {
 
   test('a redirect target in the inner error is withheld', () async {
     final adapter = _HeaderlessCloseAdapter(
-      redirectedTo: Uri.parse(
+      redirectedTo: .parse(
         'https://api.example.com/next?access_token=redirect-secret&page=3',
       ),
     );
@@ -1227,5 +1261,66 @@ void main() {
     check('${warning.data['response_body']}').contains('boom');
     check(warning.data['type']).equals('badResponse');
     check(warning.data['duration_ms']).isA<int>();
+  });
+
+  test('logged DioException strips raw options and response', () {
+    final options = RequestOptions(
+      path: 'https://api.example.com/users',
+      method: 'POST',
+      headers: {'Authorization': 'Bearer hdr-secret'},
+      data: {'password': 'body-secret'},
+    );
+    final err = DioException(
+      requestOptions: options,
+      response: Response(
+        requestOptions: options,
+        statusCode: 401,
+        headers: .fromMap({
+          'set-cookie': ['sid=cookie-secret'],
+        }),
+        data: {'secret': 'resp-secret'},
+      ),
+      type: .badResponse,
+      message: 'unauthorised',
+    );
+
+    runZonedGuarded(
+      () => LoggerDioInterceptor().onError(err, ErrorInterceptorHandler()),
+      (_, _) {},
+    );
+
+    final logged = writer.records.single.error;
+    check(logged).isA<DioException>()
+      ..has((e) => e.requestOptions.headers, 'headers').isEmpty()
+      ..has((e) => e.requestOptions.data, 'data').isNull()
+      ..has((e) => e.response, 'response').isNull();
+  });
+
+  test('deep or throwing body never fails the HTTP call', () async {
+    Object deep = <String, Object?>{'password': 'secret'};
+    for (var i = 0; i < 120; i++) {
+      deep = <String, Object?>{'child': deep};
+    }
+    final dio = Dio(BaseOptions(baseUrl: 'https://api.example.com'))
+      ..httpClientAdapter = _StubAdapter(200, '{"ok":true}')
+      ..interceptors.add(LoggerDioInterceptor(logBodies: true));
+
+    final res = await dio.post<Object?>('/echo', data: deep);
+    check(res.statusCode).equals(200);
+    final reqBody = '${writer.records.first.data['body']}';
+    check(reqBody)
+      ..contains('<max depth>')
+      ..not((it) => it.contains('secret'));
+
+    writer.records.clear();
+    LoggerDioInterceptor(logBodies: true).onRequest(
+      RequestOptions(
+        path: 'https://api.example.com/echo',
+        data: Iterable<Object?>.generate(1, (_) => throw StateError('boom')),
+      ),
+      RequestInterceptorHandler(),
+    );
+    check(writer.records.single.data['body'])
+        .equals('<unloggable body: StateError>');
   });
 }

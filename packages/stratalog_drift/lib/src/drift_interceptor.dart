@@ -1,4 +1,5 @@
 import 'package:drift/drift.dart';
+import 'package:stratalog/redact.dart';
 import 'package:stratalog/stratalog.dart';
 
 /// Observability-only drift [QueryInterceptor] — wrap the executor when
@@ -155,21 +156,11 @@ final class LoggerQueryInterceptor({
           if (logArgs && args.isNotEmpty) 'args': args,
           'duration_ms': watch.elapsedMilliseconds,
         },
-        error: logArgs ? error : _withoutArgs(error),
+        // sqlite3 appends the statement and its bound values below line 1.
+        error: logArgs ? error : describeErrorFirstLine(error),
         stackTrace: stackTrace,
       );
       rethrow;
-    }
-  }
-
-  // sqlite3 appends the statement and its bound values below the first line.
-  static String _withoutArgs(Object error) {
-    final type = '${error.runtimeType}';
-    try {
-      final text = error.toString().split('\n').first;
-      return text.startsWith(type) ? text : '$type: $text';
-    } on Object {
-      return type;
     }
   }
 

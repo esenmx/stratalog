@@ -6,7 +6,7 @@ ConnectRPC integration for [stratalog](https://github.com/esenmx/stratalog) — 
 Transport(..., interceptors: [loggerConnectInterceptor()]);
 ```
 
-Works with the Connect, gRPC, and gRPC-Web protocols alike: procedure, Connect code, duration, allowlisted headers, and sensitive header redaction. Failures log at `warning` with a copy of the error attached — a `ConnectException` keeps its type, code and message but not its metadata, details or cause, and one wrapping a decode, I/O or transport error keeps only that error's type as its message; a `FormatException` or `ArgumentError` (the HTTP clients echo a rejected header value, masked or not) becomes its type alone; any other error becomes its type and message; messages keep their first line, cut to 256 characters, with URL queries removed (`logBodies: true` attaches the original, except on a procedure matched by `redactBodyPaths`) — plus the `error-code` trailer value (configurable via `errorCodeTrailer`) as `error_code` in the record data.
+Works with the Connect, gRPC, and gRPC-Web protocols alike: procedure, Connect code, duration, allowlisted headers, and sensitive header redaction. Failures log at `warning` with a sanitised copy of the error attached regardless of `logBodies` — a `ConnectException` keeps its type, code and scrubbed first-line message while dropping metadata, details and cause (and one wrapping a decode, I/O or transport error keeps only that error's type as its message); a `FormatException` or `ArgumentError` (the HTTP clients echo a rejected header value, masked or not) becomes its type alone; any other error becomes its type and scrubbed first line (URL userinfo masked and URL queries removed, clipped at 256 characters) — plus the `error-code` trailer value (configurable via `errorCodeTrailer`) as `error_code` in the record data.
 
 ## Bodies & `protobuf.omit_*_names`
 
@@ -26,14 +26,13 @@ loggerConnectInterceptor(
   // masking: maskSensitiveValues: false reveals headers and keeps these
   // masked. Pass an empty set to log bodies verbatim.
   redactKeys: {...defaultRedactKeys, 'holderName'},
-  // Whole body dropped — request, response and the failure line's original
-  // error — for procedures that are sensitive as such, matched as a
+  // Whole body dropped for procedures that are sensitive as such, matched as a
   // substring of the procedure path. Keeps covering the next field somebody
   // adds to that message, which a key list cannot.
   redactBodyPaths: {'/auth.v1.AuthService/'},
 )
 ```
 
-Limits: on a build compiled with the `protobuf.omit_*_names` defines the logged shape is keyed by tag numbers, so `redactKeys` matches nothing there — use `redactBodyPaths` for such builds. A non-protobuf message is logged via `toString()` and passes unparsed; cover its procedure with `redactBodyPaths`. On a procedure `redactBodyPaths` does not match, `logBodies: true` attaches the original error to the failure line, and its message, metadata, details and cause are not key-masked (a decode failure's message can quote the response body); a matched procedure attaches the sanitised copy, as with `logBodies: false`.
+Limits: on a build compiled with the `protobuf.omit_*_names` defines the logged shape is keyed by tag numbers, so `redactKeys` matches nothing there — use `redactBodyPaths` for such builds. A non-protobuf message is logged via `toString()` and passes unparsed; cover its procedure with `redactBodyPaths`.
 
 See the [stratalog README](https://github.com/esenmx/stratalog) for the layer taxonomy, theming, and crash-reporting setup.

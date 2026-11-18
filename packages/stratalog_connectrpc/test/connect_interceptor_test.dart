@@ -513,7 +513,7 @@ void main() {
     ]) {
       test('unary: $name', () async {
         Future<Response<String, String>> fails(Request<String, String> _) =>
-            Future.error(thrown);
+            .error(thrown);
 
         final wrapped = loggerConnectInterceptor()<String, String>(fails);
 
@@ -635,7 +635,7 @@ void main() {
       test('scrubs a long $name message in bounded time', () async {
         final thrown = ConnectException(.unknown, message);
         Future<Response<String, String>> fails(Request<String, String> _) =>
-            Future.error(thrown);
+            .error(thrown);
         final wrapped = loggerConnectInterceptor()<String, String>(fails);
         final watch = Stopwatch()..start();
 
@@ -649,7 +649,7 @@ void main() {
     test('an error whose toString throws logs its type', () async {
       final thrown = _UnprintableError();
       Future<Response<String, String>> fails(Request<String, String> _) =>
-          Future.error(thrown);
+          .error(thrown);
       final wrapped = loggerConnectInterceptor()<String, String>(fails);
 
       await check(wrapped(_request()))
@@ -657,13 +657,15 @@ void main() {
       check(writer.records.last.error).equals('_UnprintableError');
     });
 
-    test('logBodies keeps the original error', () async {
-      final thrown = ConnectException.from(
-        const FormatException('Bad JSON', '{"token": "secret-body"}'),
+    test('logBodies still sanitises errors and metadata', () async {
+      final thrown = ConnectException(
         .internal,
+        'FormatException: Bad JSON\n{"password": "secret-body"}',
+        cause: const FormatException('Bad JSON', '{"password": "secret-body"}'),
+        metadata: Headers()..add('set-cookie', 'sid=secret-cookie'),
       );
       Future<Response<String, String>> fails(Request<String, String> _) =>
-          Future.error(thrown);
+          .error(thrown);
 
       final wrapped = loggerConnectInterceptor(logBodies: true)<String, String>(
         fails,
@@ -671,7 +673,14 @@ void main() {
 
       await check(wrapped(_request()))
           .throws<Object>((it) => it.identicalTo(thrown));
-      check(writer.records.last.error).identicalTo(thrown);
+      final logged = writer.records.last.error;
+      check(logged)
+          .isA<ConnectException>()
+          .has((e) => e.metadata.entries.isEmpty, 'metadata empty')
+          .isTrue();
+      check(recordText(writer.records.last))
+        ..not((it) => it.contains('secret-body'))
+        ..not((it) => it.contains('secret-cookie'));
     });
   });
 
@@ -885,7 +894,7 @@ void main() {
         final response = UnaryResponse(spec, Headers(), received, Headers());
         Future<Response<Object, Object>> reply(Request<Object, Object> _) {
           calls++;
-          return Future.value(response);
+          return .value(response);
         }
 
         final got =
@@ -926,39 +935,26 @@ void main() {
     Condition<Object?> isCopy() =>
         (it) =>
             it.has((e) => '$e', 'text').equals('[internal] FormatException');
-    Condition<Object?> isOriginal() =>
-        (it) => it.identicalTo(thrown);
-
-    for (final (name, interceptor, path, want)
-        in <(String, Interceptor, String, Condition<Object?>)>[
-          (
-            'matched procedure attaches the copy',
-            loggerConnectInterceptor(
-              logBodies: true,
-              redactBodyPaths: {procedure},
-            ),
-            procedure,
-            isCopy(),
-          ),
-          (
-            'unmatched procedure attaches the original',
-            loggerConnectInterceptor(
-              logBodies: true,
-              redactBodyPaths: {procedure},
-            ),
-            '/acme.foo.v1.FooService/Bar',
-            isOriginal(),
-          ),
-          (
-            'matched procedure with logBodies off attaches the copy',
-            loggerConnectInterceptor(redactBodyPaths: {procedure}),
-            procedure,
-            isCopy(),
-          ),
-        ]) {
+    for (final (name, interceptor, path) in <(String, Interceptor, String)>[
+      (
+        'matched procedure attaches the sanitised copy',
+        loggerConnectInterceptor(logBodies: true, redactBodyPaths: {procedure}),
+        procedure,
+      ),
+      (
+        'unmatched procedure also attaches the sanitised copy',
+        loggerConnectInterceptor(logBodies: true, redactBodyPaths: {procedure}),
+        '/acme.foo.v1.FooService/Bar',
+      ),
+      (
+        'matched procedure with logBodies off attaches the sanitised copy',
+        loggerConnectInterceptor(redactBodyPaths: {procedure}),
+        procedure,
+      ),
+    ]) {
       test('unary failure: $name', () async {
         Future<Response<String, String>> fails(Request<String, String> _) =>
-            Future.error(thrown);
+            .error(thrown);
         final spec = Spec<String, String>(path, .unary, () => '', () => '');
 
         await check(
@@ -967,7 +963,7 @@ void main() {
           ),
         ).throws<Object>((it) => it.identicalTo(thrown));
 
-        check(writer.records.last.error).which(want);
+        check(writer.records.last.error).which(isCopy());
       });
 
       test('stream failure: $name', () async {
@@ -989,7 +985,7 @@ void main() {
 
         await check(response.message.toList())
             .throws<Object>((it) => it.identicalTo(thrown));
-        check(writer.records.last.error).which(want);
+        check(writer.records.last.error).which(isCopy());
       });
     }
   });

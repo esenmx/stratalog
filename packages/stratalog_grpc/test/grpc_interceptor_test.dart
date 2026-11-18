@@ -144,7 +144,11 @@ final class _EchoService extends Service {
       request;
 
   Future<List<int>> _boom(ServiceCall call, Future<List<int>> request) async {
-    await request;
+    final bytes = await request;
+    if (bytes case [1]) {
+      final auth = call.clientMetadata?['authorization'] ?? '';
+      throw GrpcError.unauthenticated('invalid token $auth');
+    }
     throw const GrpcError.custom(StatusCode.notFound, 'missing', null, null, {
       'error-code': 'geo.404',
       'set-cookie': 'sid=secret-session',
@@ -204,7 +208,7 @@ final class _RejectedCall<Q, R>(
   CallOptions options,
   final Object _error,
 ) extends ClientCall<Q, R> {
-  this : super(method, const Stream.empty(), options);
+  this : super(method, const .empty(), options);
 
   @override
   Stream<R> get response => .error(_error);
@@ -561,6 +565,79 @@ void main() {
         .equals('Error making call: Bad state: refresh failed for "***"');
   });
 
+  test('call-setup FormatException or ArgumentError from MetadataProvider '
+      'withholds unseen token and strips multiline source', () async {
+    for (final (throwError, want) in <(Never Function(), String)>[
+      (
+        () => throw ArgumentError.value(
+          'Bearer provider-secret',
+          'value',
+          'Contains invalid characters',
+        ),
+        'Error making call: ArgumentError',
+      ),
+      (
+        () => throw const FormatException(
+          'Invalid HTTP header field value',
+          'Bearer provider-secret\nextra-line-secret',
+        ),
+        'Error making call: FormatException',
+      ),
+    ]) {
+      writer.records.clear();
+      await check(
+        client.echo([
+          0,
+        ], options: CallOptions(providers: [(metadata, uri) => throwError()])),
+      ).throws<GrpcError>();
+      await settle();
+
+      final record = writer.records.last;
+      check(record).withholds('provider-secret');
+      check(record).withholds('extra-line-secret');
+      check(record.error)
+          .isA<GrpcError>()
+          .has((e) => e.message, 'message')
+          .equals(want);
+    }
+  });
+
+  test('peer status masks echoed sensitive metadata token', () async {
+    await check(
+      client.boom(
+        [1],
+        options: CallOptions(
+          metadata: {'authorization': 'Bearer echoed-peer-secret'},
+        ),
+      ),
+    ).throws<GrpcError>(
+      (it) => it
+          .has((e) => e.message, 'message')
+          .isNotNull()
+          .contains('echoed-peer-secret'),
+    );
+    await settle();
+
+    final record = writer.records.last;
+    check(record).withholds('echoed-peer-secret');
+    check(record.error)
+        .isA<GrpcError>()
+        .has((e) => e.message, 'message')
+        .equals('invalid token ***');
+  });
+
+  test('short sensitive metadata leaves peer status intact', () async {
+    await check(
+      client.boom([0], options: CallOptions(metadata: {'x-api-key': 'ss'})),
+    ).throws<GrpcError>();
+    await settle();
+
+    check(writer.records.last.error)
+        .isA<GrpcError>()
+        .has((e) => e.message, 'message')
+        .equals('missing');
+  });
+
   test('sensitive metadata verbatim when opted out', () async {
     final unmaskedClient = _EchoClient(
       channel,
@@ -636,7 +713,7 @@ void main() {
       'labels': {'new_password': '***', 'NEW-PASSWORD': '***', 'region': 'eu'},
     };
     Future<void> sendCredentials(_EchoClient client) =>
-        client.echoCredentials(_Credentials.fromJson(credentials));
+        client.echoCredentials(.fromJson(credentials));
     Future<void> sendBig(_EchoClient client) =>
         client.echoBig(_BigMessage()..text = 'hi');
     Future<void> sendBytes(_EchoClient client) => client.echo([1, 2, 3]);

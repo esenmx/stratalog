@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:grpc/grpc.dart';
 import 'package:protobuf/protobuf.dart';
+import 'package:stratalog/redact.dart' as redact;
 import 'package:stratalog/stratalog.dart';
 
 // The app's release dart-defines that tree-shake protobuf name metadata.
@@ -29,16 +30,16 @@ const bool _namesStripped =
 /// With [logBodies] at its default (`false`), records emit only the literal
 /// method path (a stub string that survives protobuf name stripping), the
 /// status code name, the [errorCodeTrailer] value, duration, allowlisted
-/// metadata, and on failure a [GrpcError] reduced to its code and status
-/// message — never message bodies, other trailers, or error details. Any
-/// other error is attached as its type alone when it is a [FormatException]
-/// or [ArgumentError] (they echo rejected header values), otherwise as the
-/// first line of its text. In either text the call's masked
-/// [sensitiveMetadata] values are masked as '***': grpc folds a call-setup
-/// failure's text into the status message, which can echo a header value. A
-/// value of any other header, or one a metadata provider adds, is not masked
-/// there. The caller still receives the original error. Trace records still
-/// reach any writer whose min level admits them; gate release sinks via
+/// metadata, and on failure a [GrpcError] reduced to its code and scrubbed
+/// first-line status message — never message bodies, other trailers, or error
+/// details. Call-setup `FormatException` and `ArgumentError` failures (whether
+/// thrown directly or wrapped by `package:grpc` into `Error making call: …`,
+/// including from `MetadataProvider`s or downstream interceptors) reduce to
+/// their error type so rejected header values never leak; peer statuses mask
+/// sensitive call metadata of at least 8 characters, and local call-setup or
+/// non-`GrpcError` failures mask any sensitive call metadata before clipping to
+/// the first line. The caller still receives the original error. Trace records
+/// still reach any writer whose min level admits them; gate release sinks via
 /// `configureLogging(minLevel:)` when trace volume is unwanted.
 ///
 /// With [logBodies] on, the unary request and response bodies are redacted at
@@ -55,7 +56,7 @@ final class LoggerGrpcInterceptor({
   final Set<String> metadataAllowlist = defaultMetadataAllowlist,
 
   /// Metadata keys affected by [maskSensitiveValues]; when masked they are
-  /// logged presence-only as '***'. Matched case-insensitively.
+  /// logged presence-only as `'***'`. Matched case-insensitively.
   final Set<String> sensitiveMetadata = defaultSensitiveMetadata,
 
   /// Whether to redact [sensitiveMetadata] values. Defaults to `true` — a
@@ -75,7 +76,7 @@ final class LoggerGrpcInterceptor({
   /// call proceeds untouched.
   final bool logBodies = false,
 
-  /// Keys whose values are replaced with '***' wherever they appear in a
+  /// Keys whose values are replaced with `'***'` wherever they appear in a
   /// logged body: at any depth — nested messages, elements of repeated
   /// fields, keys of map fields, `google.protobuf.Struct` content — whatever
   /// the value's type. Matched case-insensitively, ignoring `_` and `-`, so
@@ -93,7 +94,7 @@ final class LoggerGrpcInterceptor({
   final Set<String> redactKeys = defaultRedactKeys,
 
   /// Method paths whose bodies are dropped from the log entirely — request
-  /// and response alike, logged as '*** redacted body ***'. Matched as a
+  /// and response alike, logged as `'*** redacted body ***'`. Matched as a
   /// substring of the method path, so `/auth.v1.AuthService/` covers a whole
   /// service.
   ///
@@ -119,54 +120,22 @@ final class LoggerGrpcInterceptor({
   };
 
   final Set<String> _redactKeys = {
-    for (final key in redactKeys) _normalizeKey(key),
+    for (final key in redactKeys) redact.normalizeRedactKey(key),
   };
 
   /// Default for [metadataAllowlist].
-  static const Set<String> defaultMetadataAllowlist = {
-    'content-type',
-    'accept',
-    'accept-language',
-    'content-language',
-    'x-request-id',
-  };
+  static const Set<String> defaultMetadataAllowlist =
+      redact.defaultHeaderAllowlist;
 
   /// Default for [sensitiveMetadata].
-  static const Set<String> defaultSensitiveMetadata = {
-    'authorization',
-    'cookie',
-    'x-api-key',
-  };
+  static const Set<String> defaultSensitiveMetadata =
+      redact.defaultSensitiveHeaders;
 
-  /// Default for [redactKeys] — credential-bearing names, already
-  /// normalized. Names too generic to claim globally (`number`, `code`,
-  /// `token`) are left out on purpose: scope those with [redactBodyPaths],
-  /// or a blanket entry would gut every unrelated log line.
-  static const Set<String> defaultRedactKeys = {
-    'password',
-    'newpassword',
-    'oldpassword',
-    'currentpassword',
-    'passwordconfirmation',
-    'cvv',
-    'cvc',
-    'pin',
-    'otp',
-    'secret',
-    'clientsecret',
-    'apikey',
-    'accesstoken',
-    'refreshtoken',
-    'idtoken',
-    'authorization',
-    'cardnumber',
-    'pan',
-  };
+  /// Default for [redactKeys] — credential-bearing names, already normalized.
+  static const Set<String> defaultRedactKeys = redact.defaultRedactKeys;
 
-  static const _mask = '***';
-  static const _maskedBody = '*** redacted body ***';
-
-  static final _keySeparators = RegExp('[_-]');
+  static const _callSetupPrefix = 'Error making call: ';
+  static const _minPeerMaskLength = 8;
 
   @override
   ResponseFuture<R> interceptUnary<Q, R>(
@@ -185,8 +154,6 @@ final class LoggerGrpcInterceptor({
     logger.trace('→ ${method.path}', data: logData);
 
     final call = invoker(method, request, options);
-    // Side listener only — the caller's own await still receives the result
-    // or error untouched.
     call
         .then(
           (response) {
@@ -283,8 +250,6 @@ final class LoggerGrpcInterceptor({
     var status = '-';
     final Object logged;
     final data = <String, Object?>{'duration_ms': watch.elapsedMilliseconds};
-    // codeName comes from grpc's own StatusCode table, not protobuf-generated
-    // metadata — it survives the omit_*_names defines.
     if (error case GrpcError(
       :final code,
       :final codeName,
@@ -295,20 +260,18 @@ final class LoggerGrpcInterceptor({
       if (trailers?[errorCodeTrailer] case final errorCode?) {
         data['error_code'] = errorCode;
       }
-      // Sinks render the error via toString(), which dumps every trailer,
-      // details and rawResponse past the metadata allowlist. grpc folds a
-      // call-setup failure's text into the message ('Error making call: …'),
-      // which can echo a header value.
       logged = GrpcError.custom(
         code,
-        message == null ? null : _masked(message, metadata),
+        _scrubGrpcMessage(code, message, metadata),
       );
     } else {
       logged = switch (error) {
-        // dart:io and ascii.encode echo a rejected header value, which an
-        // interceptor after this one may have added out of sight.
         FormatException() || ArgumentError() => '${error.runtimeType}',
-        _ => _described(error, metadata),
+        _ => redact.describeErrorFirstLine(
+          error,
+          normalizedRedactKeys: _redactKeys,
+          preScrub: (text) => _maskMetadataValues(text, metadata),
+        ),
       };
     }
     logger.warning(
@@ -319,15 +282,38 @@ final class LoggerGrpcInterceptor({
     );
   }
 
-  // Error texts can dump their source on the lines below the first.
-  String _described(Object error, Map<String, String> metadata) {
-    final type = '${error.runtimeType}';
-    try {
-      final line = _masked('$error', metadata).split('\n').first;
-      return line.startsWith(type) ? line : '$type: $line';
-    } on Object catch (_) {
-      return type;
+  String? _scrubGrpcMessage(
+    int code,
+    String? message,
+    Map<String, String> metadata,
+  ) {
+    if (message == null) return null;
+    // ClientCall._terminateWithError wraps local setup/provider/header errors
+    // in GrpcError.unavailable('Error making call: $e'). Header-rejection
+    // FormatException/ArgumentError are collapsed to type alone so provider or
+    // downstream-interceptor credentials never leak; other local setup errors
+    // mask static sensitive metadata before first-line clipping. Peer status
+    // messages mask sensitive metadata of at least [_minPeerMaskLength] chars
+    // so echoed tokens are withheld while short secrets ('in', 'ss') never
+    // corrupt ordinary server statuses ('missing').
+    if (code == StatusCode.unavailable &&
+        message.startsWith(_callSetupPrefix)) {
+      final cause = message.substring(_callSetupPrefix.length);
+      if (cause.startsWith('FormatException')) {
+        return '${_callSetupPrefix}FormatException';
+      }
+      if (cause.startsWith('Invalid argument')) {
+        return '${_callSetupPrefix}ArgumentError';
+      }
+      return redact.scrubErrorLine(
+        _maskMetadataValues(message, metadata),
+        normalizedRedactKeys: _redactKeys,
+      );
     }
+    return redact.scrubErrorLine(
+      _maskMetadataValues(message, metadata, minLength: _minPeerMaskLength),
+      normalizedRedactKeys: _redactKeys,
+    );
   }
 
   // Sensitive values only: masking every unlisted value would cut short
@@ -335,40 +321,36 @@ final class LoggerGrpcInterceptor({
   // before encoding, so an echo carries the trimmed form. Longest first:
   // masking a shorter value inside a longer one first would leave the longer
   // one's remainder in clear.
-  String _masked(String text, Map<String, String> metadata) {
-    if (!maskSensitiveValues) return text;
+  String _maskMetadataValues(
+    String text,
+    Map<String, String> metadata, {
+    int minLength = 1,
+  }) {
+    if (!maskSensitiveValues || metadata.isEmpty) return text;
     final sensitive = [
       for (final MapEntry(:key, :value) in metadata.entries)
-        if (_sensitiveMetadata.contains(key.toLowerCase()) &&
-            value.trim().isNotEmpty)
-          value.trim(),
+        if (_sensitiveMetadata.contains(key.toLowerCase()))
+          if (value.trim() case final trimmed when trimmed.length >= minLength)
+            trimmed,
     ]..sort((a, b) => b.length.compareTo(a.length));
     return sensitive.fold(
       text,
-      (masked, value) => masked.replaceAll(value, '***'),
+      (masked, value) => masked.replaceAll(value, redact.redactedMask),
     );
   }
 
-  Map<String, Object?> _safeMetadata(Map<String, String>? metadata) {
-    if (metadata == null || metadata.isEmpty) return const {};
-    final safe = <String, Object?>{};
-    metadata.forEach((key, value) {
-      final k = key.toLowerCase();
-      if (_sensitiveMetadata.contains(k)) {
-        safe[k] = maskSensitiveValues ? '***' : value;
-      } else if (_metadataAllowlist.contains(k)) {
-        safe[k] = value;
-      }
-    });
-    return safe;
-  }
+  Map<String, Object?> _safeMetadata(Map<String, String>? metadata) =>
+      redact.redactHeaderMap(
+        metadata,
+        allowlist: _metadataAllowlist,
+        sensitive: _sensitiveMetadata,
+        maskSensitiveValues: maskSensitiveValues,
+      );
 
-  // A best-effort mapping to structure so ElidingFormatter can clip the
-  // leaves.
   Object? _formatMessage(Object message, String path) {
-    if (redactBodyPaths.any(path.contains)) return _maskedBody;
-    // Non-protobuf codecs (raw bytes, custom marshallers) carry no schema to
-    // map — their toString is the only shape available.
+    if (redactBodyPaths.any(path.contains)) {
+      return redact.redactedBodyPlaceholder;
+    }
     if (message is! GeneratedMessage) return message.toString();
     final Object? shape;
     try {
@@ -379,26 +361,8 @@ final class LoggerGrpcInterceptor({
       // redactKeys.
       return '<unloggable body: ${error.runtimeType}>';
     }
-    return _redactKeys.isEmpty ? shape : _redactBody(shape);
+    return _redactKeys.isEmpty ? shape : redact.redactData(shape, _redactKeys);
   }
-
-  // protoLogShape yields JSON-shaped data only: maps, lists and leaves, no
-  // cycles. Rebuilt string-keyed so readers keep a Map<String, Object?>.
-  Object? _redactBody(Object? data) => switch (data) {
-    final Map<Object?, Object?> map => <String, Object?>{
-      for (final MapEntry(:key, :value) in map.entries)
-        '$key': _redactKeys.contains(_normalizeKey('$key'))
-            ? _mask
-            : _redactBody(value),
-    },
-    final List<Object?> list => [
-      for (final element in list) _redactBody(element),
-    ],
-    _ => data,
-  };
-
-  static String _normalizeKey(String key) =>
-      key.toLowerCase().replaceAll(_keySeparators, '');
 }
 
 /// Loggable shape of [message]: proto3 JSON normally; on a build compiled

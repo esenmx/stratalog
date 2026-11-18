@@ -12,7 +12,7 @@ Redacts sensitive headers (`authorization`, `cookie`, `x-api-key`), allowlists t
 
 Query strings (and opted-in bodies) are redacted here, not at the sink, because `trace` is **not** release-gated: `configureLogging` filters by level only when handed an explicit `minLevel`, so these lines reach the release console writer and any extra `writers:` entry without its own level floor; the `warning` failure line is what reaches crash breadcrumbs by default.
 
-The warning's `error` is a redacted copy — the caller still receives the original `DioException`. URLs in its message are redacted like the message line; an inner `SocketException`, `TlsException` or `TimeoutException` keeps its text, an inner `FormatException` only its offset, and any other inner error logs as its type name (`<HttpException>`), since its text can quote a request body or a header value. The dart:io types are recognised by name, so a build compiled with `--obfuscate` logs those as their type name too.
+The warning's `error` is a redacted copy stripped of raw `requestOptions` headers/data and `response` — the caller still receives the original `DioException`. URLs in its message are redacted like the message line; an inner `SocketException`, `TlsException` or `TimeoutException` keeps its text (including in `--obfuscate` release builds), an inner `FormatException` only its offset, and any other inner error logs as its type name (`<HttpException>`), since its text can quote a request body or a header value.
 
 ```dart
 LoggerDioInterceptor(
