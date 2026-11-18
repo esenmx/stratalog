@@ -47,7 +47,7 @@ When the app hot-restarts or relaunches, `strata` keeps its records, reconnects 
 
 | Key | Action |
 |---|---|
-| `↑`/`↓`, `j`/`k`, mouse wheel, `PgUp`/`PgDn`, `Ctrl-B`/`Ctrl-F`, `Ctrl-U`/`Ctrl-D` | move / scroll / page / half page; under wrap, `↑`/`↓` and the wheel scroll through a row taller than the screen first (status shows `line a-b/n`) |
+| `↑`/`↓`, `j`/`k`, mouse wheel, `PgUp`/`PgDn`, `Ctrl-B`/`Ctrl-F`, `Ctrl-U`/`Ctrl-D` | move / scroll / page / half page; under wrap, all of them scroll through a row taller than the screen first (status shows `line a-b/n`) |
 | `[`/`]`, `K`/`J` | jump to previous / next record header |
 | `Enter`/`Space` | open or close the record, JSON node, multi-line string, or stack trace |
 | `→`/`l`, `←`/`h` | open; close, or jump to parent |

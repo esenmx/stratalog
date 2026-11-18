@@ -86,6 +86,8 @@ func key(name string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: tea.KeyPgUp}
 	case "pgdown":
 		return tea.KeyPressMsg{Code: tea.KeyPgDown}
+	case "ctrl+u", "ctrl+d", "ctrl+b", "ctrl+f":
+		return tea.KeyPressMsg{Code: rune(name[len(name)-1]), Mod: tea.ModCtrl}
 	case "space":
 		return tea.KeyPressMsg{Code: tea.KeySpace, Text: " "}
 	}
@@ -985,31 +987,88 @@ func TestWrapEveryLineReachableByDownAloneAndUpAlone(t *testing.T) {
 	send(m, keys("g", "]", "]", "e", "w", "g")...)
 	want := token.FindAllString(tokens("h", 120)+" "+tokens("d", 150)+" "+tokens("z", 100), -1)
 
-	// Down runs first so up starts from the bottom it reached.
-	for _, name := range []string{"down", "up"} {
-		seen := map[string]bool{}
-		for range 400 {
-			for _, tok := range token.FindAllString(screen(m), -1) {
-				seen[tok] = true
+	// Down runs first in each pair so up starts from the bottom it reached.
+	for _, pair := range [][2]string{
+		{"down", "up"},
+		{"pgdown", "pgup"},
+		{"ctrl+f", "ctrl+b"},
+		{"ctrl+d", "ctrl+u"},
+	} {
+		send(m, key("g"))
+		for _, name := range pair {
+			seen := map[string]bool{}
+			for range 400 {
+				for _, tok := range token.FindAllString(screen(m), -1) {
+					seen[tok] = true
+				}
+				send(m, key(name))
 			}
-			send(m, key(name))
-		}
-		var missing []string
-		for _, tok := range want {
-			if !seen[tok] {
-				missing = append(missing, tok)
+			var missing []string
+			for _, tok := range want {
+				if !seen[tok] {
+					missing = append(missing, tok)
+				}
+			}
+			if len(missing) > 0 {
+				t.Errorf("%s alone never showed %d of %d tokens, first %v", name, len(missing), len(want), missing[0])
 			}
 		}
-		if len(missing) > 0 {
-			t.Errorf("%s alone never showed %d of %d tokens, first %v", name, len(missing), len(want), missing[0])
-		}
+	}
+}
+
+func TestWrapSingleTallRowScrollsByPageAndHalfPage(t *testing.T) {
+	rec := appBoot()
+	rec.Message = "SOLO-START " + strings.Repeat("word ", 600) + "SOLO-END"
+	for _, pair := range [][2]string{
+		{"pgdown", "pgup"},
+		{"ctrl+f", "ctrl+b"},
+		{"ctrl+d", "ctrl+u"},
+	} {
+		t.Run(pair[0]+"_"+pair[1], func(t *testing.T) {
+			m := New("./.flutter.vmservice")
+			send(m, tea.WindowSizeMsg{Width: tallW, Height: tallH}, RecordMsg(vmservice.Item{Rec: rec}, 0))
+			send(m, keys("w", "g")...)
+			if !shows(m, "SOLO-START") || shows(m, "SOLO-END") {
+				t.Fatalf("initial screen did not start at top of solo tall row:\n%s", screen(m))
+			}
+			if !pressUntil(m, key(pair[0]), "SOLO-END") {
+				t.Fatalf("%s never reached SOLO-END on a single tall row:\n%s", pair[0], screen(m))
+			}
+			if !pressUntil(m, key(pair[1]), "SOLO-START") {
+				t.Fatalf("%s never returned to SOLO-START on a single tall row:\n%s", pair[1], screen(m))
+			}
+		})
+	}
+}
+
+func TestWrapLineOffSurvivesSiblingFoldAboveCursor(t *testing.T) {
+	rec := appBoot()
+	rec.Data = json.RawMessage(fmt.Sprintf(`{"a":{"nested":1,"extra":2},"z":%q}`, "THE-START "+strings.Repeat("word ", 600)+"THE-END"))
+	m := New("./.flutter.vmservice")
+	send(m, tea.WindowSizeMsg{Width: tallW, Height: tallH}, RecordMsg(vmservice.Item{Rec: rec}, 0))
+	// Open only the record header (leaving "a" folded), move onto tall "z", and scroll inside it.
+	send(m, keys("g", "enter", "w", "down", "down")...)
+	for range 5 {
+		send(m, key("down"))
+	}
+	wantLineOff := m.lineOff
+	if wantLineOff == 0 {
+		t.Fatalf("setup did not advance lineOff inside z:\n%s", screen(m))
+	}
+	// Pressing "e" expands folded sibling "a" above "z", changing z.parent without leaving z.
+	send(m, key("e"))
+	if m.lineOff != wantLineOff {
+		t.Errorf("expanding sibling above cursor reset lineOff from %d to %d", wantLineOff, m.lineOff)
 	}
 }
 
 func steppedUp(msg tea.Msg) bool {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
-		return msg.String() == "up" || msg.String() == "k"
+		switch msg.String() {
+		case "up", "k", "pgup", "ctrl+b", "ctrl+u":
+			return true
+		}
 	case tea.MouseWheelMsg:
 		return msg.Button == tea.MouseWheelUp
 	}
@@ -1041,7 +1100,7 @@ func TestWrapWalkKeepsBodyAndLineOffsetInBounds(t *testing.T) {
 		var seq int64
 		do := func(msgs ...tea.Msg) {
 			for _, msg := range msgs {
-				before, _ := m.current()
+				before, _ := m.cursorID()
 				send(m, msg)
 				checkWalkStep(t, m, before, msg)
 			}
@@ -1074,7 +1133,7 @@ func TestWrapWalkKeepsBodyAndLineOffsetInBounds(t *testing.T) {
 			},
 			"key": func(t *rapid.T) {
 				do(key(rapid.SampledFrom([]string{
-					"pgup", "pgdown", "[", "]", "J", "K", "g", "G", "enter", "space", "right", "left",
+					"pgup", "pgdown", "ctrl+b", "ctrl+f", "[", "]", "J", "K", "g", "G", "enter", "space", "right", "left",
 					"l", "h", "e", "w", "esc", "n", "N", "f", "1", "?", "L", "F", "c",
 				}).Draw(t, "key")))
 			},
@@ -1082,7 +1141,7 @@ func TestWrapWalkKeepsBodyAndLineOffsetInBounds(t *testing.T) {
 	})
 }
 
-func checkWalkStep(t *rapid.T, m *Model, before row, msg tea.Msg) {
+func checkWalkStep(t *rapid.T, m *Model, before rowID, msg tea.Msg) {
 	bars := 0
 	for _, on := range []bool{m.layering, m.filtering, m.showHelp} {
 		if on {
@@ -1099,12 +1158,32 @@ func checkWalkStep(t *rapid.T, m *Model, before row, msg tea.Msg) {
 	if m.lineOff < 0 || m.lineOff > hi || (m.lineOff > 0 && m.offset != m.cursor) {
 		t.Fatalf("%T %v: lineOff %d outside [0, %d] or offset %d != cursor %d", msg, msg, m.lineOff, hi, m.offset, m.cursor)
 	}
-	after, _ := m.current()
+	after, _ := m.cursorID()
 	switch {
 	case m.follow && m.lineOff != hi:
 		t.Fatalf("%T %v: following at lineOff %d, want the last screenful %d", msg, msg, m.lineOff, hi)
 	case !m.follow && after != before && m.lineOff != 0 && !steppedUp(msg):
 		t.Fatalf("%T %v: moved to another row at lineOff %d, want its first line", msg, msg, m.lineOff)
+	}
+}
+
+func TestWrapTallCursorDoesNotStallIncomingRecords(t *testing.T) {
+	huge := appBoot()
+	huge.Message = strings.Repeat("segment-with-delimiters/a?b=1&c=2 ", 3000) // ~102 KB
+	m := New("./.flutter.vmservice")
+	send(m, tea.WindowSizeMsg{Width: tallW, Height: tallH}, RecordMsg(vmservice.Item{Rec: huge}, 0))
+	send(m, keys("w", "g", "down")...)
+	_ = m.View()
+
+	start := time.Now()
+	for i := range 200 {
+		r := stateTrace()
+		r.Seq = int64(i + 2)
+		send(m, RecordMsg(vmservice.Item{Rec: r}, 0))
+		_ = m.View()
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("200 incoming records + views with 100 KB cursor row took %v", d)
 	}
 }
 

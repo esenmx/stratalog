@@ -141,15 +141,34 @@ type row struct {
 	parent int // rows back to the parent row; 0 = none
 }
 
+// rowID identifies a logical row independently of its rendered parent offset
+// or slice index.
+type rowID struct {
+	entry *Entry
+	node  *tree.Node
+	kind  rowKind
+	nth   int // ordinal among the entry's rows sharing node and kind
+}
+
 // anchor pins the cursor to a row across rebuilds.
 type anchor struct {
-	row
-	nth int // ordinal among the entry's rows sharing node and kind
+	rowID
 	seq int // the row's entry position in entryIdx
+}
+
+type wrapMemo struct {
+	in    string
+	width int
+	wrap  bool
+	out   []string
 }
 
 func (r row) sameSlot(o row) bool {
 	return r.entry == o.entry && r.node == o.node && r.kind == o.kind
+}
+
+func (r row) matchesSlot(id rowID) bool {
+	return r.entry == id.entry && r.node == id.node && r.kind == id.kind
 }
 
 type layerBadge struct {
@@ -176,13 +195,14 @@ type Model struct {
 
 	cursor, offset int
 	// lineOff is the first wrapped line shown of a cursor row taller than the
-	// body; it belongs to lineRow and is 0 for any row that fits.
-	lineOff   int
-	lineRow   row
-	fromBelow bool // the cursor stepped up onto its row this update
-	follow    bool
-	wrap      bool
-	showHelp  bool
+	// body; it belongs to lineID and is 0 for any row that fits.
+	lineOff    int
+	lineID     rowID
+	cursorWrap wrapMemo
+	fromBelow  bool // the cursor stepped up onto its row this update
+	follow     bool
+	wrap       bool
+	showHelp   bool
 
 	filter    textinput.Model
 	filtering bool
@@ -361,30 +381,17 @@ func (m *Model) key(msg tea.KeyPressMsg) tea.Cmd {
 	case "q":
 		return tea.Quit
 	case "up", "k":
-		m.follow = false
-		switch {
-		case m.lineOff > 0:
-			m.lineOff--
-		case m.cursor > 0:
-			m.cursor--
-			m.fromBelow = true
-		}
+		m.stepCursor(-1)
 	case "down", "j":
-		if m.lineOff < m.maxLineOff() {
-			m.lineOff++
-		} else {
-			m.cursor++
-		}
+		m.stepCursor(1)
 	case "pgup", "ctrl+b":
-		m.cursor -= max(m.bodyHeight()-1, 1)
-		m.follow = false
+		m.stepCursor(-max(m.bodyHeight()-1, 1))
 	case "pgdown", "ctrl+f":
-		m.cursor += max(m.bodyHeight()-1, 1)
+		m.stepCursor(max(m.bodyHeight()-1, 1))
 	case "ctrl+u":
-		m.cursor -= max(m.bodyHeight()/2, 1)
-		m.follow = false
+		m.stepCursor(-max(m.bodyHeight()/2, 1))
 	case "ctrl+d":
-		m.cursor += max(m.bodyHeight()/2, 1)
+		m.stepCursor(max(m.bodyHeight()/2, 1))
 	case "[", "K":
 		m.jumpRecord(-1)
 	case "]", "J":
@@ -443,11 +450,54 @@ func (m *Model) key(msg tea.KeyPressMsg) tea.Cmd {
 		m.showHelp = !m.showHelp
 	case "c":
 		m.entries, m.rows, m.lost, m.pendingDivider = nil, nil, nil, nil
+		m.cursorWrap = wrapMemo{}
 		clear(m.entryIdx)
 		m.cursor, m.offset, m.records, m.dropped = 0, 0, 0, 0
 		m.follow = !m.replay
 	}
 	return nil
+}
+
+// stepCursor moves the cursor or its within-row line offset by delta wrapped
+// lines (negative = up, positive = down), never skipping lines of a tall row
+// or pushing an unread row off screen.
+func (m *Model) stepCursor(delta int) {
+	if delta == 0 {
+		return
+	}
+	if delta < 0 {
+		m.follow = false
+		if m.lineOff > 0 {
+			m.lineOff = max(m.lineOff+delta, 0)
+			return
+		}
+	} else if hi := m.maxLineOff(); m.lineOff < hi {
+		m.lineOff = min(m.lineOff+delta, hi)
+		return
+	}
+	if !m.wrap {
+		m.cursor += delta
+		return
+	}
+	dir, budget := 1, delta
+	if delta < 0 {
+		dir, budget = -1, -delta
+	}
+	for spent := 0; spent < budget; {
+		next := m.cursor + dir
+		if next < 0 || next >= len(m.rows) {
+			break
+		}
+		prev := m.cursor
+		m.cursor = next
+		w := len(m.wrappedLines(next))
+		if spent > 0 && spent+w > budget {
+			m.cursor = prev
+			break
+		}
+		m.fromBelow = dir < 0
+		spent += w
+	}
 }
 
 func (m *Model) jumpRecord(dir int) {
@@ -798,16 +848,25 @@ func (m *Model) visible(e *Entry) bool {
 	return m.activeFilter().Match(e.Rec, e.search())
 }
 
+func (m *Model) cursorID() (rowID, bool) {
+	cur, ok := m.current()
+	if !ok {
+		return rowID{}, false
+	}
+	nth := 0
+	for i := m.cursor - 1; i >= 0 && m.rows[i].entry == cur.entry; i-- {
+		if m.rows[i].sameSlot(cur) {
+			nth++
+		}
+	}
+	return rowID{entry: cur.entry, node: cur.node, kind: cur.kind, nth: nth}, true
+}
+
 func (m *Model) rebuild() {
 	var at *anchor
 	if !m.follow {
-		if cur, ok := m.current(); ok {
-			at = &anchor{row: cur, seq: m.entryIdx[cur.entry]}
-			for i := m.cursor - 1; i >= 0 && m.rows[i].entry == cur.entry; i-- {
-				if m.rows[i].sameSlot(cur) {
-					at.nth++
-				}
-			}
+		if id, ok := m.cursorID(); ok {
+			at = &anchor{rowID: id, seq: m.entryIdx[id.entry]}
 		} else {
 			at = m.lost
 		}
@@ -848,7 +907,7 @@ func (m *Model) relocateAnchor(at anchor) int {
 	// 1. Exact (entry, node, kind) match, at its ordinal or the group's last.
 	last := -1
 	for i, r := range m.rows {
-		if r.sameSlot(at.row) {
+		if r.matchesSlot(at.rowID) {
 			if at.nth == 0 {
 				return i
 			}
@@ -906,24 +965,21 @@ func (m *Model) settle() {
 	m.offset = m.firstFitting(m.offset, m.cursor)
 }
 
-// settleLine keeps lineOff on the cursor row: a row reached by stepping up
+// settleLine keeps lineOff on the logical cursor row (identified by rowID so
+// sibling folds and rebuilds do not reset it): a row reached by stepping up
 // opens at its last screenful, any other new row at its first line. While
 // following, the last row stays at its last screenful.
-// FIXME(P3, strata): rows compare by value, so an offset inside a tall row
-// drops to 0 when its row changes shape under the cursor (e on a folded
-// sibling) or leaves and returns (a full L cycle, a filter typed and erased).
-// FIXME(P3, strata): maxLineOff re-wraps the cursor row on every message; a
-// value of about 100 KB under the cursor stalls the viewer while records
-// arrive.
+// FIXME(P3, strata): lineOff drops to 0 when the cursor row leaves the visible
+// rows and returns (a full L cycle, or a filter typed and erased).
 func (m *Model) settleLine() {
-	cur, _ := m.current()
-	if cur != m.lineRow {
+	id, _ := m.cursorID()
+	if id != m.lineID {
 		m.lineOff = 0
 		if m.fromBelow {
 			m.lineOff = m.maxLineOff()
 		}
 	}
-	m.lineRow, m.fromBelow = cur, false
+	m.lineID, m.fromBelow = id, false
 	hi := m.maxLineOff()
 	if m.follow {
 		m.lineOff = hi
@@ -1199,12 +1255,18 @@ func (m *Model) wrappedLines(i int) []string {
 	if !m.wrap || m.width <= 0 {
 		return []string{m.truncate(s)}
 	}
+	if i == m.cursor && m.cursorWrap.wrap && m.cursorWrap.width == m.width && m.cursorWrap.in == s {
+		return m.cursorWrap.out
+	}
 	// Each wrapped line must carry its own style: View drops the leading lines
 	// of a tall row, and ansi.Wrap opens a style only on the first.
 	wrapped := lipgloss.Wrap(s, m.width, "/?&=-_,.:;")
 	parts := strings.Split(wrapped, "\n")
 	for idx, p := range parts {
 		parts[idx] = m.truncate(p)
+	}
+	if i == m.cursor {
+		m.cursorWrap = wrapMemo{in: s, width: m.width, wrap: true, out: parts}
 	}
 	return parts
 }
