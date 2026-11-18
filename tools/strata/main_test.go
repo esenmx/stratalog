@@ -257,21 +257,85 @@ func fakeVMServerHidingHistory(t *testing.T, history []map[string]any, keepOpen 
 	return srv.URL
 }
 
-func TestWaitInterruptedExitsCleanly(t *testing.T) {
+func TestWaitInterruptedExitsCleanlyOnlyWhenStreaming(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing.vmservice")
-	for _, args := range [][]string{
-		{"--plain", "--wait", missing},
-		{"--once", "--json", "--wait", missing},
-	} {
-		t.Run(strings.Join(args[:len(args)-1], " "), func(t *testing.T) {
-			ctx, cancel := context.WithCancel(t.Context())
-			cancel() // SIGINT before the target ever appears
-			env := runEnv{stdout: io.Discard, stderr: io.Discard, poll: time.Millisecond}
-			if err := env.run(ctx, args); err != nil {
-				t.Errorf("run %q after interrupt = %v, want nil", args, err)
-			}
-		})
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel() // SIGINT before the target ever appears
+	env := runEnv{stdout: io.Discard, stderr: io.Discard, poll: time.Millisecond}
+	if err := env.run(ctx, []string{"--plain", "--wait", missing}); err != nil {
+		t.Errorf("stream --wait after interrupt = %v, want nil", err)
 	}
+	if err := env.run(ctx, []string{"--once", "--json", "--wait", missing}); !errors.Is(err, context.Canceled) || err.Error() != "interrupted" {
+		t.Errorf("--once --wait after interrupt = %v, want interrupted wrapping context.Canceled", err)
+	}
+}
+
+func TestOnceInterruptedMidSnapshotOrHistoryPollFails(t *testing.T) {
+	t.Run("during history poll", func(t *testing.T) {
+		srv := fakeVMServerHidingHistory(t, nil, false, -1)
+		ctx, cancel := context.WithCancel(t.Context())
+		time.AfterFunc(15*time.Millisecond, cancel)
+
+		env := runEnv{stdout: io.Discard, stderr: io.Discard, poll: 2 * time.Millisecond, historyGrace: 5 * time.Second}
+		if err := env.run(ctx, []string{"--once", "--json", "--wait", srv}); !errors.Is(err, context.Canceled) || err.Error() != "interrupted" {
+			t.Errorf("--once --wait interrupted during history poll = %v, want interrupted wrapping context.Canceled", err)
+		}
+	})
+
+	t.Run("mid multi-isolate snapshot", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			conn, err := websocket.Accept(w, r, nil)
+			if err != nil {
+				return
+			}
+			defer func() { _ = conn.CloseNow() }()
+			for {
+				_, raw, err := conn.Read(r.Context())
+				if err != nil {
+					return
+				}
+				var req struct {
+					ID     string `json:"id"`
+					Method string `json:"method"`
+					Params struct {
+						IsolateID string `json:"isolateId"`
+					} `json:"params"`
+				}
+				if json.Unmarshal(raw, &req) != nil {
+					continue
+				}
+				msg := map[string]any{"jsonrpc": "2.0", "id": req.ID}
+				switch {
+				case req.Method == "getVM":
+					msg["result"] = map[string]any{"startTime": 1000, "isolates": []map[string]any{
+						{"id": "isolates/1", "name": "main"},
+						{"id": "isolates/2", "name": "worker"},
+					}}
+				case req.Method == "getIsolate":
+					msg["result"] = map[string]any{"extensionRPCs": []string{vmservice.HistoryExtension}}
+				case req.Params.IsolateID == "isolates/1":
+					msg["result"] = map[string]any{"records": []map[string]any{{
+						"v": 1, "seq": 1, "time": "2026-04-14T06:04:05Z",
+						"level": "info", "severity": 200, "layer": "App", "message": "partial-ok",
+					}}}
+				default:
+					cancel()
+					return
+				}
+				b, _ := json.Marshal(msg)
+				_ = conn.Write(r.Context(), websocket.MessageText, b)
+			}
+		}))
+		t.Cleanup(srv.Close)
+
+		var out bytes.Buffer
+		env := runEnv{stdout: &out, stderr: io.Discard}
+		err := env.run(ctx, []string{"--once", "--plain", srv.URL})
+		if !errors.Is(err, context.Canceled) || err.Error() != "interrupted" {
+			t.Fatalf("--once interrupted mid-snapshot = %v (stdout = %q), want interrupted wrapping context.Canceled", err, out.String())
+		}
+	})
 }
 
 func TestStdinReplayStopsOnInterruptWhileProducerIdle(t *testing.T) {

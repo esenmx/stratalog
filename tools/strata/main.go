@@ -274,11 +274,19 @@ func dialVM(ctx context.Context, wsURL string) (*vmservice.Client, error) {
 	return vmservice.Dial(dctx, wsURL)
 }
 
+type interruptedErr struct{ cause error }
+
+func (interruptedErr) Error() string   { return "interrupted" }
+func (e interruptedErr) Unwrap() error { return e.cause }
+
 func (e runEnv) runCLI(ctx context.Context, cfg cliConfig) error {
 	resolved, client, err := e.acquireCLITarget(ctx, cfg)
 	if err != nil {
 		if ctx.Err() != nil {
-			return nil // interrupted while waiting for the target
+			if cfg.once {
+				return interruptedErr{ctx.Err()}
+			}
+			return nil // interrupted while waiting for a live stream target
 		}
 		return err
 	}
@@ -347,7 +355,7 @@ func (e runEnv) runSnapshot(ctx context.Context, c *vmservice.Client, cfg cliCon
 		for errors.Is(err, vmservice.ErrNoHistory) {
 			select {
 			case <-ctx.Done():
-				return nil
+				return interruptedErr{ctx.Err()}
 			case <-expired:
 				return noHistoryErr(err)
 			case <-time.After(e.pollEvery()):
@@ -367,8 +375,8 @@ func (e runEnv) runSnapshot(ctx context.Context, c *vmservice.Client, cfg cliCon
 			return cleanPipeErr(werr)
 		}
 	}
-	if ctx.Err() != nil {
-		return nil
+	if err != nil && ctx.Err() != nil {
+		return interruptedErr{errors.Join(ctx.Err(), err)}
 	}
 	return err
 }
@@ -431,6 +439,9 @@ func (e runEnv) replayReader(ctx context.Context, r io.Reader, cfg cliConfig) er
 	e.reportMalformed(malformed)
 	if err != nil {
 		if ctx.Err() != nil {
+			if cfg.once {
+				return interruptedErr{ctx.Err()}
+			}
 			return nil
 		}
 		return cleanPipeErr(err)
