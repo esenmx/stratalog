@@ -1,6 +1,6 @@
 ---
 name: dart-stratalog
-description: Wire structured logging via the stratalog package family — colored layer loggers on chirp, crash-reporter adapters (Crashlytics/Sentry), and taps for Dio/gRPC/ConnectRPC/Riverpod/bloc/auto_route/drift/FirebaseAuth/FirebaseAnalytics. Use when adding logging, wiring a new integration or crash backend, declaring log layers, or picking log colors. Skip for print-debugging one-offs.
+description: Wire structured logging via the stratalog package family — colored layer loggers on chirp, crash-reporter adapters (Crashlytics/Sentry), and taps for Dio/gRPC/ConnectRPC/Riverpod/bloc/auto_route/drift/FirebaseAuth/FirebaseAnalytics — and read a running app's records with the `strata` CLI. Use when adding logging, wiring a new integration or crash backend, declaring log layers, picking log colors, or inspecting/capturing a stratalog app's live logs while debugging. Skip for print-debugging one-offs.
 ---
 
 # stratalog
@@ -9,7 +9,7 @@ Core (`stratalog`) is pure Dart; every integration is a sibling package — add 
 
 |Package|Entry point|
 |---|---|
-|`stratalog_dio`|`dio.interceptors.add(LoggerDioInterceptor())` — add **FIRST**: dio runs hooks FIFO, so first position logs the raw wire (response before any interceptor can mutate/throw/swallow it, and the errors they raise — last position goes blind to both). Failure lines name their cause: `✗ 500` server, `✗ connectionError` wire, `✗ unknown` client pipeline (with `logBodies: true`, the raw body is on the `←` trace line above). Deserialized failures log via `stratalog_riverpod`|
+|`stratalog_dio`|`dio.interceptors.add(LoggerDioInterceptor())` — add **FIRST** (see invariants)|
 |`stratalog_grpc`|`Client(channel, interceptors: [LoggerGrpcInterceptor()])`|
 |`stratalog_connectrpc`|`Transport(..., interceptors: [loggerConnectInterceptor()])`|
 |`stratalog_riverpod`|`ProviderScope(observers: [const RiverpodLogger()])`|
@@ -24,9 +24,23 @@ Core (`stratalog`) is pure Dart; every integration is a sibling package — add 
 
 `configureLogging()` once, first line of `main()`, before `runApp`. Reconfigure by calling again — never mutate `Chirp.root` in place; `LogLayer` re-resolves automatically. Debug → colored structured console via `dart:developer` (never `print`); release → single-line JSON.
 
-Debug/profile builds also post every record, unelided, to the `stratalog` VM service stream (1000-record per-isolate ring buffer preserved across `configureLogging()` re-calls), which `strata` (`tools/strata`) reads interactively (`strata`) or non-interactively for scripts/agents (`strata --once --json`, `strata --plain --wait -l warning -L Network -g timeout`, or `strata session.jsonl` replay; accepts WS/HTTP URIs, `.flutter.vmservice`, `--write-service-info`, or `flutter run` stdout logs). `configureLogging(vmStream: false)` opts out and clears any buffered history.
-
 Global handlers route through the same pipeline: `FlutterError.onError` → `LogLayer.ui.error(details.context?.toDescription() ?? 'flutter framework error', error: details.exception, stackTrace: details.stack)` (guard `if (details.silent) return;` first); `PlatformDispatcher.instance.onError` → `LogLayer.app.critical(...)` then `return true`. Never also call `FlutterError.presentError`/chain the previous handler, and never `return false` — either re-prints the error as the framework's `════ Exception caught by ════` dump (console shows it twice). No `recordFlutterFatalError` wiring either: `CrashReporterWriter` already forwards `error`+ records, so direct SDK calls double-report to the backend.
+
+## Reading a running app — `strata`
+
+Debug/profile builds post every record, payload unelided, as JSON on the `stratalog` VM service stream and buffer the last 1000 per isolate (kept across `configureLogging()` re-calls); release never posts. `configureLogging(vmStream: false)` opts out and clears the buffer. The `strata` CLI reads that stream — a TUI on a terminal, line output for scripts and agents:
+
+```sh
+go install github.com/esenmx/stratalog/tools/strata@latest
+flutter run --vmservice-out-file=.flutter.vmservice      # app dir, kept running: writes strata's default target
+strata --once --json > run.jsonl                         # buffered history as lossless NDJSON, then exit
+strata --once -l warning -L Network,Storage -g timeout   # min level, layers, substring; one plain line per record
+strata run.jsonl -l error                                # replay a capture (`-` reads stdin); TUI on a terminal
+```
+
+- Target: `./.flutter.vmservice`, falling back to `$STRATA_TARGET`/`$VM_SERVICE_URI`; or pass a `ws://`/`http://` URI, a `--write-service-info` JSON, or a `flutter run`/`dart run` stdout log.
+- Agents use `--once`: without it `--plain`/`--json` follow the live stream until the app exits (exit 0, `strata: target disconnected` on stderr) — bound a live tail with `timeout`. Piped output is plain automatically.
+- Exit 1: `--once` when no isolate serves history; any CLI mode whose target is missing — `--wait` polls for it instead.
 
 ## Layers
 
@@ -42,7 +56,7 @@ payments.info('Order captured', data: {'id': 8123});
 
 ## Colors — never hand-pick
 
-Every color must pass WCAG ≥ 3.0 on solarized light/dark AND soft-gray light/dark. Sweep candidates with `dart run tool/contrast_report.dart` (in the stratalog repo); `test/palette_contrast_test.dart` enforces. Red/orange/hot-pink band = severity only, never a layer.
+Every color must pass WCAG ≥ 3.0 on solarized light/dark AND soft-gray light/dark. Sweep candidates with `dart run tool/contrast_report.dart` from `packages/stratalog` in the stratalog repo; its `test/palette_contrast_test.dart` enforces. Red/orange/hot-pink band = severity only, never a layer.
 
 ## Crash reporting
 
@@ -69,10 +83,11 @@ Apps ship release AOT with `protobuf.omit_enum_names` / `omit_field_names` / `om
 ## Non-obvious invariants
 
 - Network taps log failures at `warning`, never `error` — non-2xx/non-OK is control flow the repository maps to a typed failure. Reserve `error` for bugs — judged by **nature, not Dart type**: mapped/expected control flow → `warning` (usually surfaces as `Exception`); bug-grade conditions → `error` even when they arrive as an `Exception` (canonical case: a failed startup init `.wait` — half-initialized app must reach the crash reporter); `Error` → `error` always.
-- Sensitive header/metadata redaction is allowlist-based across `stratalog_dio`, `stratalog_grpc`, and `stratalog_connectrpc` (`headerAllowlist`/`metadataAllowlist` + `sensitiveHeaders`/`sensitiveMetadata`); extending it means passing `headerAllowlist`/`metadataAllowlist` or `sensitiveHeaders`/`sensitiveMetadata`, not logging raw dumps.
+- Sensitive header/metadata redaction is allowlist-based across `stratalog_dio`, `stratalog_grpc`, and `stratalog_connectrpc` (`headerAllowlist`/`metadataAllowlist` + `sensitiveHeaders`/`sensitiveMetadata`); extend it through those parameters, never by logging raw dumps.
 - **`trace` has no release floor.** `configureLogging` calls `setMinLogLevel` only when handed an explicit `minLevel`, and chirp defaults to none — so the taps' `→`/`←` trace lines reach the release console writer (or its `console:` replacement) and every extra writer without its own level floor; crash breadcrumbs start at `info`, so there only the `✗` warning line lands. Anything that must not survive a release build is redacted at the tap, never left to the sink or to `kReleaseMode`.
 - Default release output is single-line JSON on raw `stdout`, which reaches neither logcat nor os_log; a device-log-scraping pipeline passes its own `console:` writer.
-- `stratalog_dio`: `logBodies` defaults to `false`. `redactKeys` masks values `***` in query strings (message-line URI included) whatever `logBodies` is, and at any depth of bodies once `logBodies: true` (defaults cover passwords, `cvv`/`cvc`, `pin`, `otp`, tokens, secrets; matching ignores case and `_`/`-`). Header masking and `redactKeys` are both on by default and independent: `maskSensitiveValues: false` reveals header values for local debugging, `redactKeys: const {}` turns key redaction off. String bodies pass through unparsed. `redactBodyPaths` drops a whole body — request, response and error — for endpoints sensitive as such (`{'/checkout/pay'}`); prefer it over key lists there, since it still covers the next field added to that payload. Card PAN/CVV under PCI-DSS is the canonical case.
+- `stratalog_dio` goes **first** in `dio.interceptors`: dio runs hooks FIFO, so first position logs the raw wire — the response before any later interceptor can mutate, throw or swallow it, plus the errors those raise; last position is blind to both. Failure lines name their cause: `✗ 500` server, `✗ connectionError` wire, `✗ unknown` client pipeline (with `logBodies: true` the raw body is on the `←` trace line above). The tap is wire-only: deserialized results and their failures log where they land (e.g. `stratalog_riverpod`).
+- `stratalog_dio` redaction: `redactKeys` masks values `***` in query strings (message-line URI included) whatever `logBodies` is, and at any depth of bodies once `logBodies: true` (defaults cover passwords, `cvv`/`cvc`, `pin`, `otp`, tokens, secrets; matching ignores case and `_`/`-`). Header masking and `redactKeys` are both on by default and independent: `maskSensitiveValues: false` reveals header values for local debugging, `redactKeys: const {}` turns key redaction off. String bodies pass through unparsed. `redactBodyPaths` drops a whole body — request, response and error — for endpoints sensitive as such (`{'/checkout/pay'}`); prefer it over key lists there, since it still covers the next field added to that payload. Card PAN/CVV under PCI-DSS is the canonical case.
 - `stratalog_grpc`, `stratalog_connectrpc`: once `logBodies: true`, `redactKeys` (same defaults and matching as Dio) masks values `***` at any depth of unary request and response bodies; `redactBodyPaths` drops both bodies for a method path matched as a substring (`{'/auth.v1.AuthService/'}`); failure errors are always sanitised across both taps regardless of `logBodies`. Under the omit defines keys are tag numbers, so `redactKeys` matches nothing — release builds that log bodies need `redactBodyPaths`. A body proto3 JSON rejects (a packed `Any`) logs as `<unloggable body: ArgumentError>` and the call proceeds.
 - `stratalog_firebase_auth` logs streams only — sign-in *failures* throw at the call site; catch and `LogLayer.auth.warning(...)` there. OAuth providers surface as `google.com`/`apple.com`/`oidc.*` in `providers`.
 - `stratalog_drift`: `logArgs: false` when tables hold PII — bound args are row data.
