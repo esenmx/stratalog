@@ -1,6 +1,6 @@
 ---
 name: dart-stratalog
-description: Wire structured logging via the stratalog package family — colored layer loggers on chirp, crash-reporter adapters (Crashlytics/Sentry), and taps for Dio/gRPC/ConnectRPC/Riverpod/bloc/auto_route/drift/FirebaseAuth/FirebaseAnalytics — and read a running app's records with the `strata` CLI. Use when adding logging, wiring a new integration or crash backend, declaring log layers, picking log colors, or inspecting/capturing a stratalog app's live logs while debugging. Skip for print-debugging one-offs.
+description: Wire structured logging via the stratalog package family — colored layer loggers on chirp, crash-reporter adapters (Crashlytics/Sentry), and taps for Dio/gRPC/ConnectRPC/Riverpod/bloc/auto_route/drift/FirebaseAuth/FirebaseAnalytics — and read a running app's records with the `strata` CLI. Use when adding logging, wiring a new integration or crash backend, declaring log layers, picking log colors, or inspecting a stratalog app's live logs. Skip for print-debugging one-offs.
 ---
 
 # stratalog
