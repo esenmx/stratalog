@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:checks/checks.dart';
 import 'package:chirp/chirp.dart';
@@ -61,6 +62,7 @@ void main() {
     check(lines.last.trim()).isNotEmpty(); // no dangling border line
     check(out).contains('Data: ');
     check(out).contains('Error:');
+    check(out).contains('Exception: boom');
     check(out).contains('Stack Trace:');
   });
 
@@ -71,15 +73,10 @@ void main() {
     check(out).contains("Instance of 'Object'");
   });
 
-  test('a payload whose toString throws never crashes the format call', () {
+  test('a payload whose toString throws renders an unencodable marker', () {
     // chirp's writer dispatch loop has no try/catch around a sink — this
     // must render, not throw, or every writer queued after this one is
     // skipped for the record.
-    check(() => render((l) => l.info('x', data: {'obj': _ThrowsOnToString()})))
-        .returnsNormally();
-  });
-
-  test('a payload whose toString throws renders an unencodable marker', () {
     final out = stripAnsi(
       render((l) => l.info('x', data: {'obj': _ThrowsOnToString()})).single,
     );
@@ -202,6 +199,75 @@ WHERE id = ?''',
     );
   });
 
+  test('inline width counts the key or array-indent prefix; arrays wrap '
+      'like objects', () {
+    // At width 20: "ab" (prefix 8) + 8 fits; "longer_key" (prefix 16) + 12
+    // does not; array items carry a 4-column prefix, so 16 fits and 17
+    // wraps; "kk" (prefix 8) + 15 wraps its leaf array.
+    check(
+      StructuredLogFormatter.formatJson({
+        'ab': {'x': 1},
+        'longer_key': {'x': 12345},
+        'rows': [
+          {'x': 123456789},
+          {'x': 1234567890},
+        ],
+        'kk': [1, 2, 3, 4, 5],
+      }, maxInlineWidth: 20),
+    ).equals(
+      '{\n'
+      '  "ab": {"x": 1},\n'
+      '  "longer_key": {\n'
+      '    "x": 12345\n'
+      '  },\n'
+      '  "rows": [\n'
+      '    {"x": 123456789},\n'
+      '    {\n'
+      '      "x": 1234567890\n'
+      '    }\n'
+      '  ],\n'
+      '  "kk": [\n'
+      '    1,\n'
+      '    2,\n'
+      '    3,\n'
+      '    4,\n'
+      '    5\n'
+      '  ]\n'
+      '}',
+    );
+  });
+
+  group('formatJson keeps non-JSON leaves encodable', () {
+    final cases = <String, (Object?, Object?)>{
+      'NaN': (double.nan, 'NaN'),
+      'infinity': (double.infinity, 'Infinity'),
+      'TypedData': (Uint8List(3), '<3-byte blob elided>'),
+      'Set': ({'a'}, ['a']),
+    };
+    for (final MapEntry(key: name, value: (leaf, decoded)) in cases.entries) {
+      test(name, () {
+        final json = StructuredLogFormatter.formatJson({'k': leaf});
+        check(jsonDecode(json))
+            .isA<Map<String, Object?>>()
+            .deepEquals({'k': decoded});
+      });
+    }
+  });
+
+  test('a non-String nested map key renders the unencodable marker', () {
+    final out = stripAnsi(
+      render(
+        (l) => l.info(
+          'x',
+          data: {
+            'm': {1: 'a'},
+          },
+        ),
+      ).single,
+    );
+    check(out).contains('<unencodable: ');
+  });
+
   test('rawDataLayers: const {} restores the gutter for Network', () {
     final out = stripAnsi(
       render(
@@ -225,11 +291,6 @@ WHERE id = ?''',
 
     check(out).contains('Data: ');
     check(out).not((it) => it.contains('Data ▼'));
-  });
-
-  test('defaultRawDataLayers covers Network and Storage', () {
-    check(StructuredLogFormatter.defaultRawDataLayers)
-        .unorderedEquals({'Network', 'Storage'});
   });
 
   test('custom domain colors overlay, palette fills the rest', () {

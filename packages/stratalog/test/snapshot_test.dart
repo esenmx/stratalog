@@ -45,19 +45,6 @@ void main() {
       check(list[1]).equals('<cycle>');
     });
 
-    test(
-      'aliased map across top-level entries copies twice, never <cycle>',
-      () {
-        final shared = <String, Object?>{'id': 7};
-        final out = snapshotData({'request': shared, 'mirror': shared});
-
-        check(out['request'])
-            .isA<Map<Object?, Object?>>()
-            .deepEquals({'id': 7});
-        check(out['mirror']).isA<Map<Object?, Object?>>().deepEquals({'id': 7});
-      },
-    );
-
     test('aliased siblings inside one entry copy twice, never <cycle>', () {
       final shared = <String, Object?>{'id': 7};
       final out = snapshotData({

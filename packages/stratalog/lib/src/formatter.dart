@@ -115,87 +115,71 @@ final class StructuredLogFormatter({
     LogSpan bordered(LogSpan child) =>
         isRaw ? child : LeftBordered(color: themeColor, child: child);
 
-    final bodySpans = <LogSpan>[
-      // MESSAGE
-      bordered(
-        AnsiStyled(
-          foreground: record.level >= .warning ? levelColor : null,
-          child: LogMessage(record.message),
-        ),
-      ),
-    ];
-
-    // DATA
-    if (record.data.isNotEmpty) {
-      final jsonStr = _encodeData(record.data);
-      bodySpans.addAll([
-        NewLine(),
-        if (isRaw) ...[
-          AnsiStyled(dim: true, child: PlainText('Data ▼')),
+    LogSpan section(String title, LogSpan body) => bordered(
+      SpanSequence(
+        children: [
+          AnsiStyled(
+            foreground: LogPalette.error,
+            bold: true,
+            child: PlainText(title),
+          ),
           NewLine(),
-          PlainText(jsonStr),
-        ] else
-          LeftBordered(
-            color: themeColor,
-            child: SpanSequence(
-              children: [
-                AnsiStyled(dim: true, child: PlainText('Data: ')),
-                PlainText(jsonStr),
-              ],
-            ),
-          ),
-      ]);
-    }
-
-    // ERROR
-    if (record.error != null) {
-      bodySpans.addAll([
-        NewLine(),
-        bordered(
-          SpanSequence(
-            children: [
-              AnsiStyled(
-                foreground: LogPalette.error,
-                bold: true,
-                child: PlainText('Error:'),
-              ),
-              NewLine(),
-              AnsiStyled(
-                foreground: LogPalette.errorBody,
-                child: ErrorSpan(record.error),
-              ),
-            ],
-          ),
-        ),
-      ]);
-    }
-
-    // STACK TRACE
-    if (record.stackTrace case final stackTrace?) {
-      bodySpans.addAll([
-        NewLine(),
-        bordered(
-          SpanSequence(
-            children: [
-              AnsiStyled(
-                foreground: LogPalette.error,
-                bold: true,
-                child: PlainText('Stack Trace:'),
-              ),
-              NewLine(),
-              AnsiStyled(dim: true, child: StackTraceSpan(stackTrace)),
-            ],
-          ),
-        ),
-      ]);
-    }
+          body,
+        ],
+      ),
+    );
 
     return SpanSequence(
       children: [
         _header(record, themeColor, levelColor),
         NewLine(),
         // INDENTED BODY SECTION(S)
-        SpanSequence(children: bodySpans),
+        SpanSequence(
+          children: [
+            // MESSAGE
+            bordered(
+              AnsiStyled(
+                foreground: record.level >= .warning ? levelColor : null,
+                child: LogMessage(record.message),
+              ),
+            ),
+            // DATA
+            if (record.data.isNotEmpty) ...[
+              NewLine(),
+              if (isRaw) ...[
+                AnsiStyled(dim: true, child: PlainText('Data ▼')),
+                NewLine(),
+                PlainText(_encodeData(record.data)),
+              ] else
+                LeftBordered(
+                  color: themeColor,
+                  child: SpanSequence(
+                    children: [
+                      AnsiStyled(dim: true, child: PlainText('Data: ')),
+                      PlainText(_encodeData(record.data)),
+                    ],
+                  ),
+                ),
+            ],
+            if (record.error != null) ...[
+              NewLine(),
+              section(
+                'Error:',
+                AnsiStyled(
+                  foreground: LogPalette.errorBody,
+                  child: ErrorSpan(record.error),
+                ),
+              ),
+            ],
+            if (record.stackTrace case final stackTrace?) ...[
+              NewLine(),
+              section(
+                'Stack Trace:',
+                AnsiStyled(dim: true, child: StackTraceSpan(stackTrace)),
+              ),
+            ],
+          ],
+        ),
       ],
     );
   }
@@ -282,6 +266,8 @@ final class StructuredLogFormatter({
     Set<Object> active,
     int maxInlineWidth,
   ) {
+    String child(Object? v, int prefix) =>
+        _formatJsonValue(v, depth + 1, prefix, active, maxInlineWidth);
     switch (value) {
       case null || bool() || String():
         return jsonEncode(value);
@@ -293,45 +279,16 @@ final class StructuredLogFormatter({
         if (map.isEmpty) return '{}';
         if (!active.add(map)) throw JsonCyclicError(map);
         try {
-          final indent = '  ' * depth;
-          final childIndent = '  ' * (depth + 1);
-          if (!map.values.any(_isCompound)) {
-            final inlineParts = <String>[];
-            for (final entry in map.entries) {
-              final key = entry.key;
-              if (key is! String) throw JsonUnsupportedObjectError(map);
-              final v = _formatJsonValue(
-                entry.value,
-                depth + 1,
-                0,
-                active,
-                maxInlineWidth,
-              );
-              inlineParts.add('${jsonEncode(key)}: $v');
-            }
-            final inline = '{${inlineParts.join(', ')}}';
-            if (prefixWidth + inline.length <= maxInlineWidth) {
-              return inline;
-            }
-            final body = inlineParts.map((p) => '$childIndent$p').join(',\n');
-            return '{\n$body\n$indent}';
-          }
-          final lines = <String>[];
-          for (final entry in map.entries) {
-            final key = entry.key;
+          final budget = map.values.any(_isCompound)
+              ? null
+              : maxInlineWidth - prefixWidth;
+          final parts = <String>[];
+          for (final MapEntry(:key, :value) in map.entries) {
             if (key is! String) throw JsonUnsupportedObjectError(map);
-            final encodedKey = jsonEncode(key);
-            final childPrefix = childIndent.length + encodedKey.length + 2;
-            final v = _formatJsonValue(
-              entry.value,
-              depth + 1,
-              childPrefix,
-              active,
-              maxInlineWidth,
-            );
-            lines.add('$childIndent$encodedKey: $v');
+            final k = jsonEncode(key);
+            parts.add('$k: ${child(value, (depth + 1) * 2 + k.length + 2)}');
           }
-          return '{\n${lines.join(',\n')}\n$indent}';
+          return _container(parts, '{', '}', depth, budget);
         } finally {
           active.remove(map);
         }
@@ -339,38 +296,35 @@ final class StructuredLogFormatter({
         if (list.isEmpty) return '[]';
         if (!active.add(list)) throw JsonCyclicError(list);
         try {
-          final indent = '  ' * depth;
-          final childIndent = '  ' * (depth + 1);
-          if (!list.any(_isCompound)) {
-            final inlineParts = [
-              for (final item in list)
-                _formatJsonValue(item, depth + 1, 0, active, maxInlineWidth),
-            ];
-            final inline = '[${inlineParts.join(', ')}]';
-            if (prefixWidth + inline.length <= maxInlineWidth) {
-              return inline;
-            }
-            final body = inlineParts.map((p) => '$childIndent$p').join(',\n');
-            return '[\n$body\n$indent]';
-          }
-          final lines = <String>[];
-          for (final item in list) {
-            final v = _formatJsonValue(
-              item,
-              depth + 1,
-              childIndent.length,
-              active,
-              maxInlineWidth,
-            );
-            lines.add('$childIndent$v');
-          }
-          return '[\n${lines.join(',\n')}\n$indent]';
+          final budget = list.any(_isCompound)
+              ? null
+              : maxInlineWidth - prefixWidth;
+          final parts = [for (final item in list) child(item, (depth + 1) * 2)];
+          return _container(parts, '[', ']', depth, budget);
         } finally {
           active.remove(list);
         }
       default:
         return jsonEncode(_jsonFallback(value));
     }
+  }
+
+  /// [parts] between [open] and [close]: on one line when that fits
+  /// [inlineBudget] (`null` for containers with non-empty children: never),
+  /// else one part per line, indented one level past [depth].
+  static String _container(
+    List<String> parts,
+    String open,
+    String close,
+    int depth,
+    int? inlineBudget,
+  ) {
+    if (inlineBudget != null) {
+      final inline = '$open${parts.join(', ')}$close';
+      if (inline.length <= inlineBudget) return inline;
+    }
+    final indent = '  ' * depth;
+    return '$open\n$indent  ${parts.join(',\n$indent  ')}\n$indent$close';
   }
 
   static Object? _jsonFallback(Object? o) {

@@ -89,6 +89,17 @@ void main() {
           .equals('<${uri.length}-char blob elided>');
     });
 
+    test('long prose clips instead of blob-eliding', () {
+      final prose = 'hello world ' * 60; // 720 chars, past the blob floor
+      check(_elideMap({'note': prose}, maxStringChars: 8)['note'])
+          .equals('hello wo…(+712 chars)');
+    });
+
+    test('a data URI of 64 chars or fewer is kept', () {
+      final uri = 'data:${'Z' * 59}';
+      check(_elideMap({'img': uri})['img']).equals(uri);
+    });
+
     test('summarizes TypedData instead of boxing bytes as an Iterable', () {
       final bytes = Uint8List.fromList(.filled(64, 7));
       check(_elideMap({'raw': bytes})['raw']).equals('<64-byte blob elided>');
@@ -102,6 +113,25 @@ void main() {
       check(items.length).equals(11);
       check(items.first).equals(0);
       check(items.last).equals('…(+40 more)');
+    });
+
+    test('list elements elide with the same budget and keepKeys', () {
+      final out = _elideMap(
+        {
+          'items': [
+            'x' * 100,
+            {'id': 'A' * 2000},
+            [1, 2, 3, 4],
+          ],
+        },
+        maxStringChars: 8,
+        maxArrayItems: 3,
+      );
+      check(out['items']).isA<List<Object?>>().deepEquals([
+        '${'x' * 8}…(+92 chars)',
+        {'id': 'A' * 2000},
+        [1, 2, 3, '…(+1 more)'],
+      ]);
     });
 
     test('passes numbers, bools and null through untouched', () {
@@ -173,6 +203,15 @@ void main() {
       }, maxStringChars: 8);
       check(out['id']).equals('A' * 2000);
       check(out['note']).equals('${'x' * 8}…(+92 chars)');
+    });
+
+    test('nested values elide with the same budget and keepKeys', () {
+      final out = elideData({
+        'body': {'id': 'A' * 2000, 'note': 'x' * 100},
+      }, maxStringChars: 8);
+      check(out['body'])
+          .isA<Map<Object?, Object?>>()
+          .deepEquals({'id': 'A' * 2000, 'note': '${'x' * 8}…(+92 chars)'});
     });
 
     test('an aliased map across entries elides at every occurrence, never '
@@ -253,19 +292,6 @@ void main() {
     });
   });
 
-  group('ElisionConfig', () {
-    test('none disables elision', () {
-      check(ElisionConfig.none.enabled).isFalse();
-    });
-
-    test('vital carries the tight budget with elision enabled', () {
-      check(ElisionConfig.vital.enabled).isTrue();
-      check(ElisionConfig.vital.maxStringChars).equals(200);
-      check(ElisionConfig.vital.maxArrayItems).equals(8);
-      check(ElisionConfig.vital.keepKeys).deepEquals(defaultKeepKeys);
-    });
-  });
-
   group('layerElision', () {
     LogRecord layerRecord(String layer, Map<String, Object?> data) => LogRecord(
       message: 'm',
@@ -286,36 +312,35 @@ void main() {
       check(inner.seen).identicalTo(record);
     });
 
-    test('defaultLayerElision elides Network and Storage with the instance '
-        'budget while clipping State at vital', () {
-      final inner = _CaptureFormatter();
-      ElidingFormatter(
-        inner,
-        maxStringChars: 8,
-        layerElision: defaultLayerElision,
-      ).format(layerRecord('Network', {'body': 'x' * 100}), .file());
-      check(inner.seen!.data['body']).equals('${'x' * 8}…(+92 chars)');
-    });
+    for (final layer in ['Network', 'Storage', 'Payments']) {
+      test('$layer uses the instance budget under defaultLayerElision', () {
+        final inner = _CaptureFormatter();
+        ElidingFormatter(
+          inner,
+          maxStringChars: 8,
+          layerElision: defaultLayerElision,
+        ).format(layerRecord(layer, {'note': 'x' * 100}), .file());
+        check(inner.seen!.data['note']).equals('${'x' * 8}…(+92 chars)');
+      });
+    }
 
     test('a State record clips at the vital budget, keepKeys verbatim', () {
       final inner = _CaptureFormatter();
       final id = 'A' * 600; // long + base64-ish → would normally blob-elide
-      ElidingFormatter(
-        inner,
-        layerElision: defaultLayerElision,
-      ).format(layerRecord('State', {'id': id, 'note': 'x' * 500}), .file());
+      ElidingFormatter(inner, layerElision: defaultLayerElision).format(
+        layerRecord('State', {
+          'id': id,
+          'note': 'x' * 500,
+          'tags': List.filled(20, 0),
+        }),
+        .file(),
+      );
       check(inner.seen!.data['id']).equals(id);
       check(inner.seen!.data['note']).equals('${'x' * 200}…(+300 chars)');
-    });
-
-    test('an unlisted layer uses the instance budget', () {
-      final inner = _CaptureFormatter();
-      ElidingFormatter(
-        inner,
-        maxStringChars: 8,
-        layerElision: defaultLayerElision,
-      ).format(layerRecord('Payments', {'note': 'x' * 100}), .file());
-      check(inner.seen!.data['note']).equals('${'x' * 8}…(+92 chars)');
+      check(inner.seen!.data['tags'])
+          .isA<List<Object?>>()
+          .deepEquals([...List.filled(8, 0), '…(+12 more)']);
+      check(ElisionConfig.vital.keepKeys).deepEquals(defaultKeepKeys);
     });
 
     test('of(none) disables the instance budget — unlisted layers pass '

@@ -57,68 +57,51 @@ Object? elideJson(
   int maxStringChars = _defaultMaxStringChars,
   int maxArrayItems = _defaultMaxArrayItems,
   Set<String> keepKeys = defaultKeepKeys,
-}) => _elideJson(
-  value,
-  maxStringChars: maxStringChars,
-  maxArrayItems: maxArrayItems,
-  keepKeys: keepKeys,
-  seen: .identity(),
-);
+}) => _elider(maxStringChars, maxArrayItems, keepKeys)(value);
 
-Object? _elideJson(
-  Object? value, {
-  required int maxStringChars,
-  required int maxArrayItems,
-  required Set<String> keepKeys,
-  required Set<Object?> seen,
-}) {
+/// One traversal's walker over a fixed budget.
+Object? Function(Object?) _elider(
+  int maxStringChars,
+  int maxArrayItems,
+  Set<String> keepKeys,
+) {
   // `seen` holds the current traversal path, not all visited nodes — each
   // node is removed after its subtree is walked, so an alias reached twice
   // via different paths elides both times and only a true back-edge is a
   // cycle.
-  switch (value) {
-    case final Map<Object?, Object?> map:
-      if (!seen.add(map)) return '<cycle>';
-      final out = {
-        for (final MapEntry(:key, :value) in map.entries)
-          key: keepKeys.contains(key)
-              ? value
-              : _elideJson(
-                  value,
-                  maxStringChars: maxStringChars,
-                  maxArrayItems: maxArrayItems,
-                  keepKeys: keepKeys,
-                  seen: seen,
-                ),
-      };
-      seen.remove(map);
-      return out;
-    case final TypedData bytes:
-      return '<${bytes.lengthInBytes}-byte blob elided>';
-    case final Iterable<Object?> iterable:
-      if (!seen.add(iterable)) return '<cycle>';
-      final out = <Object?>[
-        for (final e in iterable.take(maxArrayItems))
-          _elideJson(
-            e,
-            maxStringChars: maxStringChars,
-            maxArrayItems: maxArrayItems,
-            keepKeys: keepKeys,
-            seen: seen,
-          ),
-      ];
-      if (iterable.length > maxArrayItems) {
-        out.add('…(+${iterable.length - maxArrayItems} more)');
-      }
-      seen.remove(iterable);
-      return out;
-    case final String s when _looksBinary(s):
-      return '<${s.length}-char blob elided>';
-    case final String s:
-      return clipString(s, maxStringChars);
-    default:
-      return value; // num, bool, null — cheap, keep verbatim
+  final seen = Set<Object?>.identity();
+  Object? walk(Object? value) {
+    switch (value) {
+      case final Map<Object?, Object?> map:
+        if (!seen.add(map)) return '<cycle>';
+        final out = {
+          for (final MapEntry(:key, :value) in map.entries)
+            key: keepKeys.contains(key) ? value : walk(value),
+        };
+        seen.remove(map);
+        return out;
+      case final TypedData bytes:
+        return '<${bytes.lengthInBytes}-byte blob elided>';
+      case final Iterable<Object?> iterable:
+        if (!seen.add(iterable)) return '<cycle>';
+        final out = <Object?>[
+          for (final e in iterable.take(maxArrayItems)) walk(e),
+        ];
+        if (iterable.length > maxArrayItems) {
+          out.add('…(+${iterable.length - maxArrayItems} more)');
+        }
+        seen.remove(iterable);
+        return out;
+      case final String s when _looksBinary(s):
+        return '<${s.length}-char blob elided>';
+      case final String s:
+        return clipString(s, maxStringChars);
+      default:
+        return value; // num, bool, null — cheap, keep verbatim
+    }
   }
+
+  return walk;
 }
 
 /// [elideJson] specialised to a record's `data` map — returns a typed
@@ -130,18 +113,10 @@ Map<String, Object?> elideData(
   int maxArrayItems = _defaultMaxArrayItems,
   Set<String> keepKeys = defaultKeepKeys,
 }) {
-  final seen = Set<Object?>.identity();
+  final walk = _elider(maxStringChars, maxArrayItems, keepKeys);
   return {
     for (final MapEntry(:key, :value) in data.entries)
-      key: keepKeys.contains(key)
-          ? value
-          : _elideJson(
-              value,
-              maxStringChars: maxStringChars,
-              maxArrayItems: maxArrayItems,
-              keepKeys: keepKeys,
-              seen: seen,
-            ),
+      key: keepKeys.contains(key) ? value : walk(value),
   };
 }
 
@@ -281,12 +256,8 @@ final class ElidingFormatter extends ChirpFormatter {
 
   @override
   void format(LogRecord record, MessageBuffer buffer) {
-    if (record.data.isEmpty) {
-      inner.format(record, buffer);
-      return;
-    }
     final config = layerElision[record.loggerName];
-    if (!(config?.enabled ?? enabled)) {
+    if (record.data.isEmpty || !(config?.enabled ?? enabled)) {
       inner.format(record, buffer);
       return;
     }

@@ -6,21 +6,7 @@ import 'package:stratalog/src/snapshot.dart';
 /// whichever SDK it uses (Crashlytics, Sentry, Datadog, ...). Keeps this
 /// package free of any vendor dependency.
 ///
-/// Crashlytics:
-/// ```dart
-/// final class CrashlyticsReporter implements CrashReporter {
-///   @override
-///   void recordError(Object error, StackTrace? stackTrace,
-///           {String? reason, bool fatal = false}) =>
-///       FirebaseCrashlytics.instance
-///           .recordError(error, stackTrace, reason: reason, fatal: fatal);
-///
-///   @override
-///   void addBreadcrumb(String message, {Map<String, Object?>? data}) =>
-///       FirebaseCrashlytics.instance
-///           .log(data == null ? message : '$message $data');
-/// }
-/// ```
+/// Crashlytics: `CrashlyticsCrashReporter` in `stratalog_crashlytics`.
 ///
 /// Sentry: `SentryCrashReporter` in `stratalog_sentry`. A Sentry `Hint` is
 /// never serialized, so `reason` has to ride a scope context to reach the

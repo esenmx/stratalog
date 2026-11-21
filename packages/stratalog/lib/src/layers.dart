@@ -93,18 +93,7 @@ final class const LogLayer(
     Object? error,
     StackTrace? stackTrace,
     Map<String, Object?>? data,
-  }) {
-    // skipFrames hides the delegation frame so caller info points at the
-    // call site, not this file.
-    logger.log(
-      message,
-      level: level,
-      error: error,
-      stackTrace: stackTrace,
-      data: data,
-      skipFrames: 1,
-    );
-  }
+  }) => _log(level, message, error, stackTrace, data);
 
   /// Logs at `trace`.
   void trace(
@@ -185,8 +174,8 @@ final class const LogLayer(
     StackTrace? stackTrace,
     Map<String, Object?>? data,
   ) {
-    // skipFrames hides the two delegation frames so caller info points at
-    // the call site, not this file.
+    // skipFrames hides the two delegation frames (public method + this) so
+    // caller info points at the call site, not this file.
     logger.log(
       message,
       level: level,

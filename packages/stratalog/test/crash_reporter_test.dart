@@ -77,6 +77,23 @@ void main() {
     check(reporter.breadcrumbs[1].$2).isNull();
   });
 
+  test('breadcrumb data is snapshotted at write time, not aliased', () {
+    final reporter = _FakeReporter();
+    final stats = <String, Object?>{'attempt': 1};
+    loggerWith(CrashReporterWriter(reporter)).info('retrying', data: stats);
+
+    // Caller keeps reusing its own map after the log call — a Sentry-style
+    // SDK serializing the breadcrumb later would otherwise see the mutation.
+    stats['attempt'] = 2;
+
+    final captured = reporter.breadcrumbs.single.$2;
+    check(
+      identical(captured, stats),
+      because: 'writer must hand the SDK a snapshot, not the live caller map',
+    ).isFalse();
+    check(captured).isNotNull().deepEquals({'attempt': 1});
+  });
+
   test('message stands in when no error object is attached', () {
     final reporter = _FakeReporter();
     loggerWith(CrashReporterWriter(reporter)).error('plain message');

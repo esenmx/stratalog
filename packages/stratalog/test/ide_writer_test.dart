@@ -48,4 +48,31 @@ void main() {
 
     check(emitted).deepEquals([('one', 800), ('two', 900)]);
   });
+
+  test('mapToDeveloperLevel maps every chirp level onto package:logging', () {
+    check({
+      for (final level in <ChirpLogLevel>[
+        .trace,
+        .debug,
+        .info,
+        .notice,
+        .success,
+        .warning,
+        .error,
+        .critical,
+        .wtf,
+      ])
+        level.name: IdeDebugConsoleWriter.mapToDeveloperLevel(level),
+    }).deepEquals({
+      'trace': 300,
+      'debug': 500,
+      'info': 800,
+      'notice': 800,
+      'success': 800,
+      'warning': 900,
+      'error': 1000,
+      'critical': 1200,
+      'wtf': 1200,
+    });
+  });
 }

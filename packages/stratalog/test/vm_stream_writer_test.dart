@@ -178,7 +178,7 @@ void main() {
     final later = <LogRecord>[];
     ChirpLogger()
         .addWriter(VmStreamWriter(post: (_) => throw StateError('closed')))
-        .addWriter(_CaptureWriter(later.add))
+        .addWriter(DelegatedChirpWriter(later.add))
         .info('survives');
 
     check(later.single.message).equals('survives');
@@ -188,10 +188,4 @@ void main() {
 final class _Bad {
   @override
   String toString() => throw StateError('no');
-}
-
-final class _CaptureWriter(final void Function(LogRecord) onWrite)
-    extends ChirpWriter {
-  @override
-  void write(LogRecord record) => onWrite(record);
 }

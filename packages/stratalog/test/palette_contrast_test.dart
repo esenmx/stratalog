@@ -1,8 +1,9 @@
-import 'dart:math' as math;
-
+import 'package:checks/checks.dart';
 import 'package:chirp/chirp.dart';
 import 'package:stratalog/stratalog.dart';
 import 'package:test/test.dart';
+
+import '../tool/contrast_report.dart' show contrast, luminance;
 
 /// The palette's core promise, enforced: every color stays readable on the
 /// four target backgrounds. Sweep replacements with
@@ -15,22 +16,6 @@ const _backgrounds = <String, (int, int, int)>{
 };
 
 const _minRatio = 3.0;
-
-double _channel(int c) {
-  final s = c / 255.0;
-  return s <= 0.03928
-      ? s / 12.92
-      : math.pow((s + 0.055) / 1.055, 2.4).toDouble();
-}
-
-double _luminance(int r, int g, int b) =>
-    0.2126 * _channel(r) + 0.7152 * _channel(g) + 0.0722 * _channel(b);
-
-double _contrast(double l1, double l2) {
-  final hi = math.max(l1, l2);
-  final lo = math.min(l1, l2);
-  return (hi + 0.05) / (lo + 0.05);
-}
 
 void main() {
   final foregrounds = <String, ConsoleColor>{
@@ -45,14 +30,14 @@ void main() {
 
   for (final MapEntry(key: bgName, value: (r, g, b)) in _backgrounds.entries) {
     test('palette passes >= $_minRatio contrast on $bgName', () {
-      final bgLum = _luminance(r, g, b);
+      final bgLum = luminance(r, g, b);
       final failures = <String>[
         for (final MapEntry(key: name, value: color) in foregrounds.entries)
-          if (_contrast(_luminance(color.r, color.g, color.b), bgLum)
+          if (contrast(luminance(color.r, color.g, color.b), bgLum)
               case final ratio when ratio < _minRatio)
             '$name -> ${ratio.toStringAsFixed(2)}',
       ];
-      expect(failures, isEmpty, reason: failures.join('\n'));
+      check(because: failures.join('\n'), failures).isEmpty();
     });
   }
 
@@ -64,14 +49,56 @@ void main() {
       LogPalette.warning,
       LogPalette.errorBody,
     };
-    final layerColors = [...LogPalette.domains.values, ...LogPalette.hashPool];
-    for (final color in layerColors) {
-      expect(severity, isNot(contains(color)));
-    }
+    check(
+      severity.intersection({
+        ...LogPalette.domains.values,
+        ...LogPalette.hashPool,
+      }),
+    ).isEmpty();
   });
 
   test('pre-defined layer colors are pairwise distinct', () {
     final colors = LogPalette.domains.values.toList();
-    expect(colors.toSet().length, colors.length);
+    check(colors.toSet()).length.equals(colors.length);
+  });
+
+  test('levelColor colors severities; low levels keep the default', () {
+    check({
+      for (final level in <ChirpLogLevel>[
+        .trace,
+        .debug,
+        .info,
+        .notice,
+        .success,
+        .warning,
+        .error,
+        .critical,
+        .wtf,
+      ])
+        level.name: LogPalette.levelColor(level),
+    }).deepEquals({
+      'trace': null,
+      'debug': null,
+      'info': null,
+      'notice': null,
+      'success': LogPalette.success,
+      'warning': LogPalette.warning,
+      'error': LogPalette.error,
+      'critical': LogPalette.critical,
+      'wtf': LogPalette.critical,
+    });
+  });
+
+  test('resolve: override beats the declared layer color, which beats '
+      'colorFor', () {
+    const name = 'PaletteResolve';
+    Chirp.root = ChirpLogger();
+    addTearDown(() => Chirp.root = null);
+    const LogLayer(name, color: Ansi256.green3_34).info('registers');
+
+    check(LogPalette.colorFor(name)).not((it) => it.equals(Ansi256.green3_34));
+    check(LogPalette.resolve(name)).equals(Ansi256.green3_34);
+    check(LogPalette.resolve(name, overrides: {name: Ansi256.springGreen4_29}))
+        .equals(Ansi256.springGreen4_29);
   });
 }

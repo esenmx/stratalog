@@ -39,6 +39,16 @@ void main() {
         ..not((it) => it.contains('secret'));
     });
 
+    test('bounds list nesting depth too', () {
+      Object nested = 'leaf';
+      for (var i = 0; i < 80; i++) {
+        nested = [nested];
+      }
+      check('${redactData(nested, defaultRedactKeys, maxDepth: 8)}')
+        ..contains('<max depth>')
+        ..not((it) => it.contains('leaf'));
+    });
+
     test('handles cycles, TypedData, and bracketed paths', () {
       final cycle = <String, Object?>{'ok': 1};
       cycle['self'] = cycle;
@@ -59,6 +69,24 @@ void main() {
         'bytes': '<3-byte body>',
         'cycle': {'ok': 1, 'self': '<cycle>'},
       });
+    });
+
+    test('encodeCustomObject recurses with path, depth and redaction', () {
+      Object? encode(Object value, Object? Function(Object?) nested) =>
+          value is _Fields ? nested(value.fields) : '$value';
+      final data = {
+        'wrap': _Fields({'password': 'p', 'ssn': '1', 'ok': 1}),
+      };
+      final keys = {...defaultRedactKeys, normalizeRedactKey('wrap[ssn]')};
+
+      check(redactData(data, keys, encodeCustomObject: encode))
+          .isA<Map<String, Object?>>()
+          .deepEquals({
+            'wrap': {'password': '***', 'ssn': '***', 'ok': 1},
+          });
+      check(redactData(data, keys, maxDepth: 2, encodeCustomObject: encode))
+          .isA<Map<String, Object?>>()
+          .deepEquals({'wrap': '<max depth>'});
     });
   });
 
@@ -112,4 +140,49 @@ void main() {
       ).equals('StateError: Bad state: line1 ***');
     });
   });
+
+  group('redactHeaderEntries', () {
+    final entries = [
+      ('Accept', 'a'),
+      ('accept', 'b'),
+      ('Cookie', 'c1'),
+      ('cookie', 'c2'),
+      ('X-Trace', 't'),
+    ];
+    Map<String, String> redact({required bool mask}) => redactHeaderEntries(
+      entries,
+      allowlist: {'accept'},
+      sensitive: {'cookie'},
+      maskSensitiveValues: mask,
+    );
+
+    test('masked repeats collapse to one mask; allowlisted ones join', () {
+      check(redact(mask: true)).deepEquals({'accept': 'a, b', 'cookie': '***'});
+    });
+
+    test('unmasked sensitive repeats join', () {
+      check(redact(mask: false))
+          .deepEquals({'accept': 'a, b', 'cookie': 'c1, c2'});
+    });
+  });
+
+  group('clean and malformed URLs', () {
+    test('redactUri returns a clean URL as the identical instance', () {
+      final uri = Uri.parse('https://a.example/x?b=2&a=1');
+      check(redactUri(uri, defaultRedactKeys)).identicalTo(uri);
+    });
+
+    test('redactUri masks an undecodable query whole', () {
+      final uri = Uri.parse('https://a.example/x?a=%FF');
+      check('${redactUri(uri, defaultRedactKeys)}')
+          .equals('https://a.example/x?***');
+    });
+
+    test('redactUrlString keeps a clean URL byte-identical', () {
+      const url = 'HTTPS://Api.Example.com/x?q=1'; // Uri would lowercase it
+      check(redactUrlString(url, defaultRedactKeys)).equals(url);
+    });
+  });
 }
+
+final class _Fields(final Map<String, Object?> fields);

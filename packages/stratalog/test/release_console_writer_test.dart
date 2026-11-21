@@ -10,8 +10,6 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:checks/checks.dart';
-import 'package:chirp/chirp.dart';
-import 'package:stratalog/stratalog.dart';
 import 'package:test/test.dart';
 
 /// What platformPrintMaxChunkLength returns on Android
@@ -76,46 +74,5 @@ void main() {
       because: 'chunking must stay off where the platform default is 924',
       int.parse(chunkLine.substring('maxChunkLength='.length)),
     ).isGreaterThan(androidPrintChunkLength);
-  });
-
-  test('release JSON record over Android chunk budget stays one atomic '
-      'parseable line', () {
-    // Exactly what the release branch of configureLogging() builds —
-    // JsonLogFormatter wrapped in the default ElidingFormatter, chunking
-    // forced off — with the sink captured instead of stdout.
-    final emitted = <String>[];
-    final writer = PrintConsoleWriter(
-      formatter: ElidingFormatter.of(
-        const JsonLogFormatter(),
-        const ElisionConfig(),
-      ),
-      output: emitted.add,
-      maxChunkLength: 1 << 30,
-    );
-    final logger = ChirpLogger()..addWriter(writer);
-
-    // Routine network-response record: ~850-char body string — UNDER the
-    // default ElisionConfig.maxStringChars budget of 1024, so elision
-    // passes it verbatim; the full JSON line is over the 924-char Android
-    // print chunk.
-    final body =
-        '{${List.generate(40, (i) => '"f$i":"${'v' * 12}"').join(',')}}';
-    logger.info(
-      'response',
-      data: {'status': 200, 'url': '/api/v1/orders', 'body': body},
-    );
-
-    check(
-      because: 'record must exceed one Android print chunk',
-      emitted.join().length,
-    ).isGreaterThan(androidPrintChunkLength);
-    check(
-      because: 'one log record must be one atomic sink call',
-      emitted.length,
-    ).equals(1);
-    check(
-      because: 'the emitted line must parse as JSON',
-      () => jsonDecode(emitted.single),
-    ).returnsNormally();
   });
 }

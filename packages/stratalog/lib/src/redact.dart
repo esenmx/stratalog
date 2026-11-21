@@ -263,108 +263,58 @@ Object? redactData(
   int maxDepth = defaultMaxRedactDepth,
   Object? Function(Object value, Object? Function(Object? nested) redactNested)?
   encodeCustomObject,
-}) => _redactData(
-  data,
-  normalizedRedactKeys,
-  seen: .identity(),
-  parent: '',
-  depth: 0,
-  maxDepth: maxDepth,
-  matchesKeyPaths: normalizedRedactKeys.any((k) => k.startsWith('[')),
-  stringifyPlatformLeaves: stringifyPlatformLeaves,
-  encodeCustomObject: encodeCustomObject,
-);
-
-Object? _redactData(
-  Object? data,
-  Set<String> normalizedRedactKeys, {
-  required Set<Object?> seen,
-  required String parent,
-  required int depth,
-  required int maxDepth,
-  required bool matchesKeyPaths,
-  required bool stringifyPlatformLeaves,
-  required Object? Function(
-    Object value,
-    Object? Function(Object? nested) redactNested,
-  )?
-  encodeCustomObject,
 }) {
-  if (depth >= maxDepth) return '<max depth>';
-  switch (data) {
-    case final TypedData bytes:
-      return '<${bytes.lengthInBytes}-byte body>';
-    case final Map<Object?, Object?> map:
-      if (!seen.add(map)) return '<cycle>';
-      try {
-        return <String, Object?>{
-          for (final MapEntry(:key, :value) in map.entries)
-            '$key': switch (matchesKeyPaths && parent.isNotEmpty
-                ? '$parent[$key]'
-                : '$key') {
-              final name when isRedactedKey(name, normalizedRedactKeys) =>
-                redactedMask,
-              final name => _redactData(
-                value,
-                normalizedRedactKeys,
-                seen: seen,
-                parent: name,
-                depth: depth + 1,
-                maxDepth: maxDepth,
-                matchesKeyPaths: matchesKeyPaths,
-                stringifyPlatformLeaves: stringifyPlatformLeaves,
-                encodeCustomObject: encodeCustomObject,
-              ),
-            },
-        };
-      } finally {
-        seen.remove(map);
-      }
-    case final Iterable<Object?> iterable:
-      if (!seen.add(iterable)) return '<cycle>';
-      try {
-        return [
-          for (final element in iterable)
-            _redactData(
-              element,
-              normalizedRedactKeys,
-              seen: seen,
-              parent: parent,
-              depth: depth + 1,
-              maxDepth: maxDepth,
-              matchesKeyPaths: matchesKeyPaths,
-              stringifyPlatformLeaves: stringifyPlatformLeaves,
-              encodeCustomObject: encodeCustomObject,
-            ),
-        ];
-      } finally {
-        seen.remove(iterable);
-      }
-    case null || bool() || num() || String():
-      return data;
-    case DateTime() || Enum() || BigInt() || Duration()
-        when stringifyPlatformLeaves:
-      return '$data';
-    case final Uri uri when stringifyPlatformLeaves:
-      return redactUrlString('$uri', normalizedRedactKeys);
-    case final Object object when encodeCustomObject != null:
-      return encodeCustomObject(
-        object,
-        (nested) => _redactData(
-          nested,
-          normalizedRedactKeys,
-          seen: seen,
-          parent: parent,
-          depth: depth + 1,
-          maxDepth: maxDepth,
-          matchesKeyPaths: matchesKeyPaths,
-          stringifyPlatformLeaves: stringifyPlatformLeaves,
-          encodeCustomObject: encodeCustomObject,
-        ),
-      );
-    default:
-      return data;
+  final seen = Set<Object?>.identity();
+  final matchesKeyPaths = normalizedRedactKeys.any((k) => k.startsWith('['));
+
+  Object? walk(Object? node, String parent, int depth) {
+    if (depth >= maxDepth) return '<max depth>';
+    switch (node) {
+      case final TypedData bytes:
+        return '<${bytes.lengthInBytes}-byte body>';
+      case final Map<Object?, Object?> map:
+        if (!seen.add(map)) return '<cycle>';
+        try {
+          return <String, Object?>{
+            for (final MapEntry(:key, :value) in map.entries)
+              '$key': switch (matchesKeyPaths && parent.isNotEmpty
+                  ? '$parent[$key]'
+                  : '$key') {
+                final name when isRedactedKey(name, normalizedRedactKeys) =>
+                  redactedMask,
+                final name => walk(value, name, depth + 1),
+              },
+          };
+        } finally {
+          seen.remove(map);
+        }
+      case final Iterable<Object?> iterable:
+        if (!seen.add(iterable)) return '<cycle>';
+        try {
+          return [
+            for (final element in iterable) walk(element, parent, depth + 1),
+          ];
+        } finally {
+          seen.remove(iterable);
+        }
+      case null || bool() || num() || String():
+        return node;
+      case DateTime() || Enum() || BigInt() || Duration()
+          when stringifyPlatformLeaves:
+        return '$node';
+      case final Uri uri when stringifyPlatformLeaves:
+        return redactUrlString('$uri', normalizedRedactKeys);
+      case final Object object when encodeCustomObject != null:
+        return encodeCustomObject(
+          object,
+          (nested) => walk(nested, parent, depth + 1),
+        );
+      default:
+        return node;
+    }
   }
+
+  return walk(data, '', 0);
 }
 
 /// Scrubs [text] down to its first line, bounded in time and surrogate-safe:
