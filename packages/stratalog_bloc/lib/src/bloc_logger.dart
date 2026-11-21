@@ -59,20 +59,13 @@ final class const BlocLogger({
 
   @override
   void onError(BlocBase<dynamic> bloc, Object error, StackTrace stackTrace) {
-    // Exception = expected/recoverable -> warning; Error = programming bug.
-    if (error is Exception) {
-      logger.warning(
-        '✗ ${bloc.runtimeType}',
-        error: error,
-        stackTrace: stackTrace,
-      );
-    } else {
-      logger.error(
-        '✗ ${bloc.runtimeType}',
-        error: error,
-        stackTrace: stackTrace,
-      );
-    }
+    logger.log(
+      '✗ ${bloc.runtimeType}',
+      // Exception = expected/recoverable -> warning; Error = programming bug.
+      level: error is Exception ? .warning : .error,
+      error: error,
+      stackTrace: stackTrace,
+    );
     super.onError(bloc, error, stackTrace);
   }
 

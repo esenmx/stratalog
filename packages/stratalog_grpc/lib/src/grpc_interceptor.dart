@@ -208,35 +208,30 @@ final class LoggerGrpcInterceptor({
     // grpc emits done after an error, and cancel surfaces a CANCELLED error,
     // so later events stay silent here while still reaching the caller.
     var terminal = false;
-    void done() {
+    void once(void Function() log) {
       if (terminal) return;
       terminal = true;
-      logger.trace(
-        '⇄ done ${method.path}',
-        data: {'duration_ms': watch.elapsedMilliseconds},
-      );
+      log();
     }
 
-    void failure(Object error, StackTrace stackTrace) {
-      if (terminal) return;
-      terminal = true;
-      _logFailure(method.path, error, stackTrace, watch, options.metadata);
-    }
-
-    void cancelled() {
-      if (terminal) return;
-      terminal = true;
-      logger.trace(
-        '⇄ cancelled ${method.path}',
-        data: {'duration_ms': watch.elapsedMilliseconds},
-      );
-    }
+    void traceEnd(String outcome) => logger.trace(
+      '⇄ $outcome ${method.path}',
+      data: {'duration_ms': watch.elapsedMilliseconds},
+    );
 
     return _TerminalObservingStream(
       invoker(method, requests, options),
-      onDone: done,
-      onFailure: failure,
-      onCancel: cancelled,
+      onDone: () => once(() => traceEnd('done')),
+      onFailure: (error, stackTrace) => once(
+        () => _logFailure(
+          method.path,
+          error,
+          stackTrace,
+          watch,
+          options.metadata,
+        ),
+      ),
+      onCancel: () => once(() => traceEnd('cancelled')),
     );
   }
 

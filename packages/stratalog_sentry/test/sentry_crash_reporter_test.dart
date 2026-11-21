@@ -10,14 +10,17 @@ import 'package:test/test.dart';
 
 void main() {
   final captured = <SentryEvent>[];
+  final hints = <Hint>[];
 
   setUp(() async {
     captured.clear();
+    hints.clear();
     await Sentry.init((options) {
       options
         ..dsn = 'https://public@sentry.example.com/1'
         ..beforeSend = (event, hint) {
           captured.add(event);
+          hints.add(hint);
           return null; // capture locally, never send
         };
     });
@@ -64,6 +67,13 @@ void main() {
     }
   });
 
+  test('beforeSend receives the reason as a hint', () async {
+    LogLayer.auth.error('Refresh failed', error: Exception('boom'));
+    await settle();
+
+    check(hints.single.get('reason')).equals('[Auth] Refresh failed');
+  });
+
   test('above-error records are fatal', () async {
     LogLayer.app.wtf('Invariant violated', error: StateError('x'));
     await settle();
@@ -103,9 +113,20 @@ void main() {
         .returnsNormally();
   });
 
-  test(
-    'a rejected captureException future never surfaces as a zone error',
-    () async {
+  for (final (name, arm, emit)
+      in <(String, void Function(SentryOptions), void Function())>[
+        (
+          'captureException',
+          (o) => o.beforeSend = (event, hint) => throw StateError('sdk down'),
+          () => LogLayer.app.error('boom', error: Exception('x')),
+        ),
+        (
+          'addBreadcrumb',
+          (o) => o.beforeBreadcrumb = (crumb, hint) => throw StateError('down'),
+          () => LogLayer.network.info('token refreshed'),
+        ),
+      ]) {
+    test('a rejected $name future never surfaces as a zone error', () async {
       await Sentry.close();
       await Sentry.init((options) {
         options
@@ -115,41 +136,17 @@ void main() {
           // without it, the hub always self-catches and this bug is
           // unreachable through public API.
           // ignore: invalid_use_of_internal_member
-          ..automatedTestMode = true
-          ..beforeSend = (event, hint) => throw StateError('sdk unreachable');
+          ..automatedTestMode = true;
+        arm(options);
       });
       final uncaught = <Object>[];
 
       await runZonedGuarded(() async {
-        LogLayer.app.error('boom', error: Exception('x'));
+        emit();
         await settle();
       }, (error, stackTrace) => uncaught.add(error));
 
       check(uncaught).isEmpty();
-    },
-  );
-
-  test(
-    'a rejected addBreadcrumb future never surfaces as a zone error',
-    () async {
-      await Sentry.close();
-      await Sentry.init((options) {
-        options
-          ..dsn = 'https://public@sentry.example.com/1'
-          // See the captureException test above for why this is needed.
-          // ignore: invalid_use_of_internal_member
-          ..automatedTestMode = true
-          ..beforeBreadcrumb = (crumb, hint) =>
-              throw StateError('sdk unreachable');
-      });
-      final uncaught = <Object>[];
-
-      await runZonedGuarded(() async {
-        LogLayer.network.info('token refreshed');
-        await settle();
-      }, (error, stackTrace) => uncaught.add(error));
-
-      check(uncaught).isEmpty();
-    },
-  );
+    });
+  }
 }

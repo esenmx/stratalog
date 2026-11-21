@@ -12,27 +12,23 @@ final class _Counter extends Notifier<int> {
   void increment() => state++;
 }
 
-final class _CapturingWriter extends ChirpWriter {
+void main() {
   final records = <LogRecord>[];
 
-  @override
-  void write(LogRecord record) => records.add(record);
-}
-
-void main() {
-  late _CapturingWriter writer;
-
   setUp(() {
-    writer = _CapturingWriter();
-    Chirp.root = ChirpLogger().addWriter(writer);
+    records.clear();
+    Chirp.root = ChirpLogger().addWriter(DelegatedChirpWriter(records.add));
   });
 
   tearDown(() => Chirp.root = null);
 
-  Iterable<String> messages() => writer.records.map((r) => '${r.message}');
+  Iterable<String> messages() => records.map((r) => '${r.message}');
+
+  ProviderContainer newContainer([RiverpodLogger l = const RiverpodLogger()]) =>
+      .test(observers: [l]);
 
   test('provider add and dispose are traced', () {
-    final container = ProviderContainer(observers: [const RiverpodLogger()]);
+    final container = newContainer();
     final provider = Provider((ref) => 'hello');
     container
       ..read(provider)
@@ -43,44 +39,40 @@ void main() {
   });
 
   test('update is traced with both values', () {
-    final container = ProviderContainer(observers: [const RiverpodLogger()]);
     final provider = NotifierProvider<_Counter, int>(_Counter.new);
-    container.read(provider.notifier).increment();
+    newContainer().read(provider.notifier).increment();
 
     check(messages().any((m) => m.contains('0 ➔ 1'))).isTrue();
-    container.dispose();
   });
 
   test('fat states are ellipsized', () {
-    final container = ProviderContainer(
-      observers: [const RiverpodLogger(maxValueLength: 16)],
-    );
     final provider = Provider((ref) => 'x' * 100);
-    container
-      ..read(provider)
-      ..dispose();
+    newContainer(const RiverpodLogger(maxValueLength: 16)).read(provider);
 
     final add = messages().firstWhere((m) => m.startsWith('✚'));
     check(add).contains('…(+84 chars)');
   });
 
   test('Exception failure -> warning, Error failure -> error', () {
-    final container = ProviderContainer(observers: [const RiverpodLogger()]);
-
-    final throwsException = Provider<int>((ref) => throw Exception('x'));
-    check(() => container.read(throwsException)).throws<Object>();
-    check(writer.records.last.level).equals(.warning);
-
-    final throwsError = Provider<int>((ref) => throw StateError('y'));
-    check(() => container.read(throwsError)).throws<Object>();
-    check(writer.records.last.level).equals(.error);
-
-    container.dispose();
+    final container = newContainer();
+    for (final (thrown, level) in <(Object, ChirpLogLevel)>[
+      (Exception('x'), .warning),
+      (StateError('y'), .error),
+    ]) {
+      final provider = Provider<int>(
+        (ref) => Error.throwWithStackTrace(thrown, .current),
+      );
+      check(() => container.read(provider)).throws<Object>();
+      check(records.last)
+        ..has((r) => r.level, 'level').equals(level)
+        ..has((r) => r.error, 'error').identicalTo(thrown)
+        ..has((r) => r.stackTrace, 'stackTrace').isNotNull();
+    }
   });
 
   test('mutation lifecycle logs provider name and label without literal null '
       'or duplicate keys', () async {
-    final container = ProviderContainer(observers: [const RiverpodLogger()]);
+    final container = newContainer();
     final save = Mutation<String>(label: 'saveUser');
 
     await save.run(container, (tsx) async => 'ok');
@@ -104,7 +96,24 @@ void main() {
         ..contains('mutation error: saveUser(key: 42)')
         ..not((m) => m.startsWith('⚡ 42 |')),
     );
+  });
 
-    container.dispose();
+  test('mutation error: Exception -> warning, Error -> error', () async {
+    final container = newContainer();
+    final save = Mutation<void>(label: 'save');
+    for (final (thrown, level) in <(Object, ChirpLogLevel)>[
+      (Exception('x'), .warning),
+      (StateError('y'), .error),
+    ]) {
+      await check(save.run(container, (tsx) => .error(thrown)))
+          .throws<Object>();
+      final failure = records.lastWhere(
+        (r) => '${r.message}'.contains('mutation error'),
+      );
+      check(failure)
+        ..has((r) => r.level, 'level').equals(level)
+        ..has((r) => r.error, 'error').identicalTo(thrown)
+        ..has((r) => r.stackTrace, 'stackTrace').isNotNull();
+    }
   });
 }

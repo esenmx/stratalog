@@ -4,17 +4,6 @@ import 'package:chirp/chirp.dart';
 import 'package:stratalog_bloc/stratalog_bloc.dart';
 import 'package:test/test.dart';
 
-final class _CapturingWriter extends ChirpWriter {
-  final records = <LogRecord>[];
-
-  @override
-  void write(LogRecord record) => records.add(record);
-}
-
-final class _NoopObserver extends BlocObserver {
-  const new();
-}
-
 final class _FatCubit extends Cubit<String> {
   new() : super('x' * 100);
 }
@@ -34,20 +23,20 @@ final class _CounterBloc extends Bloc<String, int> {
 }
 
 void main() {
-  late _CapturingWriter writer;
+  final records = <LogRecord>[];
 
   setUp(() {
-    writer = _CapturingWriter();
-    Chirp.root = ChirpLogger().addWriter(writer);
+    records.clear();
+    Chirp.root = ChirpLogger().addWriter(DelegatedChirpWriter(records.add));
+    final previous = Bloc.observer;
     Bloc.observer = const BlocLogger();
+    addTearDown(() {
+      Bloc.observer = previous;
+      Chirp.root = null;
+    });
   });
 
-  tearDown(() {
-    Bloc.observer = const _NoopObserver();
-    Chirp.root = null;
-  });
-
-  Iterable<String> messages() => writer.records.map((r) => '${r.message}');
+  Iterable<String> messages() => records.map((r) => '${r.message}');
 
   test('cubit create, change, and close are traced', () async {
     final cubit = _CounterCubit()..increment();
@@ -60,29 +49,28 @@ void main() {
     ]);
   });
 
-  test(
-    'bloc logs event + transition without a duplicate change line',
-    () async {
-      final bloc = _CounterBloc()..add('inc');
-      await Future<void>.delayed(.zero);
-      await bloc.close();
+  test('bloc logs event + transition, no duplicate change line', () async {
+    final bloc = _CounterBloc()..add('inc');
+    await Future<void>.delayed(.zero);
+    await bloc.close();
 
-      check(messages()).contains('⚡ _CounterBloc | event: inc');
-      check(messages()).contains('↻ transition _CounterBloc | inc: 0 ➔ 1');
-      check(messages().where((m) => m.startsWith('↻'))).length.equals(1);
-    },
-  );
+    check(messages()).contains('⚡ _CounterBloc | event: inc');
+    check(messages()).contains('↻ transition _CounterBloc | inc: 0 ➔ 1');
+    check(messages().where((m) => m.startsWith('↻'))).length.equals(1);
+  });
 
   test('Exception -> warning, Error -> error', () {
+    final (exception, error) = (Exception('x'), StateError('y'));
     _CounterCubit()
-      ..fail(Exception('x'))
-      ..fail(StateError('y'));
+      ..fail(exception)
+      ..fail(error);
 
-    final failures = writer.records
-        .where((r) => '${r.message}'.startsWith('✗'))
-        .toList();
-    check(failures[0].level).equals(.warning);
-    check(failures[1].level).equals(.error);
+    final failures = records.where((r) => '${r.message}'.startsWith('✗'));
+    check(failures.map((r) => (r.level, r.error))).deepEquals([
+      (ChirpLogLevel.warning, exception),
+      (ChirpLogLevel.error, error),
+    ]);
+    check(failures.map((r) => r.stackTrace)).every((it) => it.isNotNull());
   });
 
   test('fat states are ellipsized', () async {

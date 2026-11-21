@@ -5,13 +5,6 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:stratalog_auto_route/stratalog_auto_route.dart';
 
-final class _CapturingWriter extends ChirpWriter {
-  final records = <LogRecord>[];
-
-  @override
-  void write(LogRecord record) => records.add(record);
-}
-
 final class _TestRoute extends PageRouteBuilder<void> {
   new({String? name, Object? arguments})
     : super(
@@ -32,18 +25,18 @@ TabPageRoute _tab(String name, {int index = 0}) => TabPageRoute(
 );
 
 void main() {
-  late _CapturingWriter writer;
+  late List<LogRecord> records;
   late AppRouterObserver observer;
 
   setUp(() {
-    writer = _CapturingWriter();
-    Chirp.root = ChirpLogger().addWriter(writer);
+    records = [];
+    Chirp.root = ChirpLogger().addWriter(DelegatedChirpWriter(records.add));
     observer = AppRouterObserver();
   });
 
   tearDown(() => Chirp.root = null);
 
-  Iterable<String> messages() => writer.records.map((r) => '${r.message}');
+  Iterable<String> messages() => records.map((r) => '${r.message}');
 
   test('push, pop, remove, and replace format named and unnamed routes', () {
     final home = _TestRoute(name: 'HomeRoute');
@@ -68,6 +61,19 @@ void main() {
     ]);
   });
 
+  test('replace with a missing side logs only the present route', () {
+    observer
+      ..didReplace(newRoute: _TestRoute(name: 'DetailRoute'))
+      ..didReplace(oldRoute: _TestRoute(name: 'HomeRoute'))
+      ..didReplace();
+
+    check(messages()).deepEquals([
+      'replace{DetailRoute{}}',
+      'replace{HomeRoute{}}',
+      'replace{}',
+    ]);
+  });
+
   test('tab init and change omit null previousRoute on initial mount', () {
     final feed = _tab('FeedRoute');
     final profile = _tab('ProfileRoute', index: 1);
@@ -80,6 +86,12 @@ void main() {
       'initTab{FeedRoute}',
       'changeTab{FeedRoute => ProfileRoute}',
     ]);
+  });
+
+  test('tab init after a previous tab logs the transition', () {
+    observer.didInitTabRoute(_tab('ProfileRoute', index: 1), _tab('FeedRoute'));
+
+    check(messages().single).equals('initTab{FeedRoute => ProfileRoute}');
   });
 
   test('oversized route arguments are clipped by maxArgumentLength', () {

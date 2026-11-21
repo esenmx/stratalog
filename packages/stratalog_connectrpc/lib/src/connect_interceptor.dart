@@ -118,15 +118,49 @@ Interceptor loggerConnectInterceptor({
           ? redactedBodyPlaceholder
           : _formatMessage(message, normalizedRedactKeys);
       final logBody = logBodies ? body : null;
+
+      void logFailure(Object error, StackTrace stackTrace) {
+        final connect = error is ConnectException ? error : null;
+        logger.warning(
+          '✗ ${connect?.code.name ?? '-'} $procedure',
+          data: {
+            'duration_ms': watch.elapsedMilliseconds,
+            'error_code': ?connect?.metadata[errorCodeTrailer],
+          },
+          error: _withheld(error),
+          stackTrace: stackTrace,
+        );
+      }
+
+      // Logs the terminal line once the message stream ends.
+      Stream<O> terminalTapped(Stream<O> messages) async* {
+        try {
+          await for (final message in messages) {
+            yield message;
+          }
+        } on Object catch (error, stackTrace) {
+          logFailure(error, stackTrace);
+          rethrow;
+        }
+        logger.trace(
+          '⇄ done $procedure',
+          data: {'duration_ms': watch.elapsedMilliseconds},
+        );
+      }
+
       logger.trace(
         '$arrow $procedure',
-        data: _requestData(
-          request,
-          headerAllowlist: normalizedAllowlist,
-          sensitiveHeaders: normalizedSensitive,
-          maskSensitiveValues: maskSensitiveValues,
-          logBody: logBody,
-        ),
+        data: {
+          'headers': redactHeaderEntries(
+            request.headers.entries.map((e) => (e.name, e.value)),
+            allowlist: normalizedAllowlist,
+            sensitive: normalizedSensitive,
+            maskSensitiveValues: maskSensitiveValues,
+          ),
+          if (request case UnaryRequest<I, O>(:final message)
+              when logBody != null)
+            'request_body': logBody(message),
+        },
       );
 
       try {
@@ -135,7 +169,11 @@ Interceptor loggerConnectInterceptor({
           case UnaryResponse<I, O>():
             logger.trace(
               '← OK $procedure',
-              data: _responseData(response, watch, logBody: logBody),
+              data: {
+                'duration_ms': watch.elapsedMilliseconds,
+                if (logBody case final log?)
+                  'response_body': log(response.message),
+              },
             );
             return response;
           // Protocol.stream completes this future right after headers —
@@ -146,107 +184,16 @@ Interceptor loggerConnectInterceptor({
             return StreamResponse(
               response.spec,
               response.headers,
-              _terminalTapped(
-                message,
-                logger,
-                procedure,
-                watch,
-                errorCodeTrailer: errorCodeTrailer,
-              ),
+              terminalTapped(message),
               response.trailers,
             );
         }
       } on Object catch (error, stackTrace) {
-        _logFailure(
-          logger,
-          procedure,
-          error,
-          stackTrace,
-          watch,
-          errorCodeTrailer: errorCodeTrailer,
-        );
+        logFailure(error, stackTrace);
         rethrow;
       }
     };
   };
-}
-
-Map<String, Object?> _requestData<I extends Object, O extends Object>(
-  Request<I, O> request, {
-  required Set<String> headerAllowlist,
-  required Set<String> sensitiveHeaders,
-  required bool maskSensitiveValues,
-  required Object? Function(Object message)? logBody,
-}) => {
-  'headers': redactHeaderEntries(
-    request.headers.entries.map((e) => (e.name, e.value)),
-    allowlist: headerAllowlist,
-    sensitive: sensitiveHeaders,
-    maskSensitiveValues: maskSensitiveValues,
-  ),
-  if (request case UnaryRequest<I, O>(:final message) when logBody != null)
-    'request_body': logBody(message),
-};
-
-Map<String, Object?> _responseData<I extends Object, O extends Object>(
-  UnaryResponse<I, O> response,
-  Stopwatch watch, {
-  required Object? Function(Object message)? logBody,
-}) => {
-  'duration_ms': watch.elapsedMilliseconds,
-  if (logBody case final log?) 'response_body': log(response.message),
-};
-
-Stream<O> _terminalTapped<O>(
-  Stream<O> messages,
-  LogLayer logger,
-  String procedure,
-  Stopwatch watch, {
-  required String errorCodeTrailer,
-}) async* {
-  try {
-    await for (final message in messages) {
-      yield message;
-    }
-  } on Object catch (error, stackTrace) {
-    _logFailure(
-      logger,
-      procedure,
-      error,
-      stackTrace,
-      watch,
-      errorCodeTrailer: errorCodeTrailer,
-    );
-    rethrow;
-  }
-  logger.trace(
-    '⇄ done $procedure',
-    data: {'duration_ms': watch.elapsedMilliseconds},
-  );
-}
-
-void _logFailure(
-  LogLayer logger,
-  String procedure,
-  Object error,
-  StackTrace stackTrace,
-  Stopwatch watch, {
-  required String errorCodeTrailer,
-}) {
-  var code = '-';
-  final data = <String, Object?>{'duration_ms': watch.elapsedMilliseconds};
-  if (error case ConnectException(code: final connectCode, :final metadata)) {
-    code = connectCode.name;
-    if (metadata[errorCodeTrailer] case final value?) {
-      data['error_code'] = value;
-    }
-  }
-  logger.warning(
-    '✗ $code $procedure',
-    data: data,
-    error: _withheld(error),
-    stackTrace: stackTrace,
-  );
 }
 
 // ConnectException.from copies a foreign error's toString() — a decode path

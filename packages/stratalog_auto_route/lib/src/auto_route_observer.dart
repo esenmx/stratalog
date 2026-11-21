@@ -31,9 +31,7 @@ final class AppRouterObserver({
 
   @override
   void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) {
-    final target = previousRoute == null
-        ? _describe(route)
-        : '${_describe(route)} => ${_describe(previousRoute)}';
+    final target = [route, ?previousRoute].map(_describe).join(' => ');
     logger.trace('pop{$target}');
     super.didPop(route, previousRoute);
   }
@@ -46,21 +44,14 @@ final class AppRouterObserver({
 
   @override
   void didReplace({Route<dynamic>? newRoute, Route<dynamic>? oldRoute}) {
-    final target = switch ((oldRoute, newRoute)) {
-      (final oldR?, final newR?) => '${_describe(oldR)} => ${_describe(newR)}',
-      (null, final newR?) => _describe(newR),
-      (final oldR?, null) => _describe(oldR),
-      (null, null) => '',
-    };
+    final target = [?oldRoute, ?newRoute].map(_describe).join(' => ');
     logger.trace('replace{$target}');
     super.didReplace(newRoute: newRoute, oldRoute: oldRoute);
   }
 
   @override
   void didInitTabRoute(TabPageRoute route, TabPageRoute? previousRoute) {
-    final transition = previousRoute == null
-        ? route.name
-        : '${previousRoute.name} => ${route.name}';
+    final transition = [?previousRoute?.name, route.name].join(' => ');
     logger.trace('initTab{$transition}');
     super.didInitTabRoute(route, previousRoute);
   }

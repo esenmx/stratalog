@@ -49,16 +49,13 @@ final class const RiverpodLogger({
     Object error,
     StackTrace stackTrace,
   ) {
-    // Exception = expected/recoverable -> warning; Error = programming bug.
-    if (error is Exception) {
-      logger.warning(
-        '✗ ${_name(context)}',
-        error: error,
-        stackTrace: stackTrace,
-      );
-    } else {
-      logger.error('✗ ${_name(context)}', error: error, stackTrace: stackTrace);
-    }
+    logger.log(
+      '✗ ${_name(context)}',
+      // Exception = expected/recoverable -> warning; Error = programming bug.
+      level: error is Exception ? .warning : .error,
+      error: error,
+      stackTrace: stackTrace,
+    );
   }
 
   @override
@@ -90,12 +87,12 @@ final class const RiverpodLogger({
     Object error,
     StackTrace stackTrace,
   ) {
-    final desc = '⚡ ${_name(context)} | mutation error: ${_describe(mutation)}';
-    if (error is Exception) {
-      logger.warning(desc, error: error, stackTrace: stackTrace);
-    } else {
-      logger.error(desc, error: error, stackTrace: stackTrace);
-    }
+    logger.log(
+      '⚡ ${_name(context)} | mutation error: ${_describe(mutation)}',
+      level: error is Exception ? .warning : .error,
+      error: error,
+      stackTrace: stackTrace,
+    );
   }
 
   @override

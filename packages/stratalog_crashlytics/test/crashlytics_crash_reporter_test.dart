@@ -17,18 +17,6 @@ void main() {
 
   setUp(() {
     crashlytics = MockFirebaseCrashlytics();
-    when(
-      crashlytics.recordError(
-        any,
-        any,
-        reason: anyNamed('reason'),
-        fatal: anyNamed('fatal'),
-        information: anyNamed('information'),
-        printDetails: anyNamed('printDetails'),
-      ),
-    ).thenAnswer((_) async {});
-    when(crashlytics.log(any)).thenAnswer((_) async {});
-
     Chirp.root = ChirpLogger().addWriter(
       CrashReporterWriter(CrashlyticsCrashReporter(crashlytics)),
     );
@@ -36,53 +24,37 @@ void main() {
 
   tearDown(() => Chirp.root = null);
 
+  // Matches recordError on the given values, any other argument wildcarded.
+  Future<void> recordError({Object? error, String? reason, bool? fatal}) =>
+      crashlytics.recordError(
+        error ?? any,
+        any,
+        reason: reason ?? anyNamed('reason'),
+        fatal: fatal ?? anyNamed('fatal'),
+        information: anyNamed('information'),
+        printDetails: anyNamed('printDetails'),
+      );
+
   test('error record forwards with reason and non-fatal', () {
     final boom = Exception('boom');
     LogLayer.auth.error('Refresh failed', error: boom);
 
     verify(
-      crashlytics.recordError(
-        boom,
-        any,
-        reason: '[Auth] Refresh failed',
-        // Asserting the non-fatal path explicitly, not passing a default.
-        // ignore: avoid_redundant_argument_values
-        fatal: false,
-        information: anyNamed('information'),
-        printDetails: anyNamed('printDetails'),
-      ),
+      recordError(error: boom, reason: '[Auth] Refresh failed', fatal: false),
     ).called(1);
   });
 
   test('above-error records forward as fatal', () {
     LogLayer.app.wtf('Invariant violated', error: StateError('x'));
 
-    verify(
-      crashlytics.recordError(
-        any,
-        any,
-        reason: anyNamed('reason'),
-        fatal: true,
-        information: anyNamed('information'),
-        printDetails: anyNamed('printDetails'),
-      ),
-    ).called(1);
+    verify(recordError(fatal: true)).called(1);
   });
 
   test('info records become Crashlytics log breadcrumbs', () {
     LogLayer.network.info('token refreshed');
 
     verify(crashlytics.log('[Network/info] token refreshed')).called(1);
-    verifyNever(
-      crashlytics.recordError(
-        any,
-        any,
-        reason: anyNamed('reason'),
-        fatal: anyNamed('fatal'),
-        information: anyNamed('information'),
-        printDetails: anyNamed('printDetails'),
-      ),
-    );
+    verifyNever(recordError());
   });
 
   test('breadcrumb data is inlined into the Crashlytics log string', () {
@@ -104,40 +76,29 @@ void main() {
     check(() => LogLayer.app.info('crumb')).returnsNormally();
   });
 
-  test(
-    'a rejected recordError future never surfaces as a zone error',
-    () async {
-      when(
-        crashlytics.recordError(
-          any,
-          any,
-          reason: anyNamed('reason'),
-          fatal: anyNamed('fatal'),
-          information: anyNamed('information'),
-          printDetails: anyNamed('printDetails'),
-        ),
-      ).thenAnswer((_) => Future<void>.error(StateError('sdk unreachable')));
+  for (final (method, call, emit) in [
+    (
+      'recordError',
+      recordError,
+      () => LogLayer.app.error('boom', error: Exception('x')),
+    ),
+    (
+      'log',
+      () => crashlytics.log(any),
+      () => LogLayer.network.info('token refreshed'),
+    ),
+  ]) {
+    test('a rejected $method future never surfaces as a zone error', () async {
+      when(call())
+          .thenAnswer((_) => Future<void>.error(StateError('sdk unreachable')));
       final uncaught = <Object>[];
 
       await runZonedGuarded(() async {
-        LogLayer.app.error('boom', error: Exception('x'));
+        emit();
         await Future<void>.delayed(.zero);
       }, (error, stackTrace) => uncaught.add(error));
 
       check(uncaught).isEmpty();
-    },
-  );
-
-  test('a rejected log future never surfaces as a zone error', () async {
-    when(crashlytics.log(any))
-        .thenAnswer((_) => Future<void>.error(StateError('sdk unreachable')));
-    final uncaught = <Object>[];
-
-    await runZonedGuarded(() async {
-      LogLayer.network.info('token refreshed');
-      await Future<void>.delayed(.zero);
-    }, (error, stackTrace) => uncaught.add(error));
-
-    check(uncaught).isEmpty();
-  });
+    });
+  }
 }

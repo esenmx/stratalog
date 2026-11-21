@@ -8,13 +8,6 @@ import 'package:dio/dio.dart';
 import 'package:stratalog_dio/stratalog_dio.dart';
 import 'package:test/test.dart';
 
-final class _CapturingWriter extends ChirpWriter {
-  final records = <LogRecord>[];
-
-  @override
-  void write(LogRecord record) => records.add(record);
-}
-
 final class _StubAdapter(final int statusCode, final String body)
     implements HttpClientAdapter {
   @override
@@ -34,22 +27,7 @@ final class _StubAdapter(final int statusCode, final String body)
   void close({bool force = false}) {}
 }
 
-final class _RefusingAdapter implements HttpClientAdapter {
-  @override
-  Future<ResponseBody> fetch(
-    RequestOptions options,
-    Stream<Uint8List>? requestStream,
-    Future<void>? cancelFuture,
-  ) => throw DioException.connectionError(
-    requestOptions: options,
-    reason: 'connection refused',
-  );
-
-  @override
-  void close({bool force = false}) {}
-}
-
-final class _HeaderlessCloseAdapter({final Uri? redirectedTo})
+final class _ThrowingAdapter(final DioException Function(RequestOptions) error)
     implements HttpClientAdapter {
   DioException? thrown;
 
@@ -58,36 +36,32 @@ final class _HeaderlessCloseAdapter({final Uri? redirectedTo})
     RequestOptions options,
     Stream<Uint8List>? requestStream,
     Future<void>? cancelFuture,
-  ) => throw thrown = .connectionError(
-    requestOptions: options,
-    reason: 'closed',
-    error: HttpException(
-      'Connection closed before full header was received',
-      uri: redirectedTo ?? options.uri,
-    ),
-  );
+  ) => throw thrown = error(options);
 
   @override
   void close({bool force = false}) {}
 }
 
-final class _FailingAdapter(final Object? error) implements HttpClientAdapter {
-  DioException? thrown;
-
-  @override
-  Future<ResponseBody> fetch(
-    RequestOptions options,
-    Stream<Uint8List>? requestStream,
-    Future<void>? cancelFuture,
-  ) => throw thrown = DioException(requestOptions: options, error: error);
-
-  @override
-  void close({bool force = false}) {}
-}
+DioException _headerlessClose(RequestOptions options, [Uri? redirectedTo]) =>
+    .connectionError(
+      requestOptions: options,
+      reason: 'closed',
+      error: HttpException(
+        'Connection closed before full header was received',
+        uri: redirectedTo ?? options.uri,
+      ),
+    );
 
 enum _Tier { gold }
 
 final class _Throwing {
+  @override
+  String toString() => throw StateError('access_token=secret-token');
+}
+
+final class _ThrowingTimeout extends TimeoutException {
+  new() : super(null);
+
   @override
   String toString() => throw StateError('access_token=secret-token');
 }
@@ -107,14 +81,13 @@ final class _Unencodable {
 }
 
 void main() {
-  late _CapturingWriter writer;
+  final records = <LogRecord>[];
 
   setUp(() {
-    writer = _CapturingWriter();
-    Chirp.root = ChirpLogger().addWriter(writer);
+    records.clear();
+    Chirp.root = ChirpLogger().addWriter(DelegatedChirpWriter(records.add));
+    addTearDown(() => Chirp.root = null);
   });
-
-  tearDown(() => Chirp.root = null);
 
   RequestOptions request() => RequestOptions(
     path: 'https://api.example.com/users',
@@ -127,26 +100,55 @@ void main() {
     },
   );
 
+  LogRecord logRequest(RequestOptions options, [LoggerDioInterceptor? tap]) {
+    (tap ?? LoggerDioInterceptor()).onRequest(
+      options,
+      RequestInterceptorHandler(),
+    );
+    return records.single;
+  }
+
+  // Logs a POST of [data] (logBodies on unless [tap] says otherwise) and
+  // returns the logged body.
+  Map<String, Object?> loggedBody(
+    Map<String, Object?> data, [
+    LoggerDioInterceptor? tap,
+  ]) => switch (logRequest(
+    request()
+      ..method = 'POST'
+      ..data = data,
+    tap ?? LoggerDioInterceptor(logBodies: true),
+  ).data['body']) {
+    final Map<String, Object?> body => body,
+    final other => throw StateError('expected body map, got $other'),
+  };
+
+  // next(err) rejects the handler's future; nobody awaits it here, so
+  // swallow the unhandled async error in a guarded zone.
+  void logError(DioException err, [LoggerDioInterceptor? tap]) =>
+      runZonedGuarded(
+        () => (tap ?? LoggerDioInterceptor()).onError(
+          err,
+          ErrorInterceptorHandler(),
+        ),
+        (_, _) {},
+      );
+
   test('sensitive headers masked by default, unlisted dropped, allowlisted '
       'kept', () {
-    LoggerDioInterceptor().onRequest(request(), RequestInterceptorHandler());
+    logRequest(request());
 
-    final headers =
-        writer.records.single.data['headers']! as Map<String, Object?>;
+    final headers = records.single.data['headers']! as Map<String, Object?>;
     check(headers['authorization']).equals('***');
     check(headers['cookie']).equals('***');
     check(headers['content-type']).equals('application/json');
     check(headers).not((it) => it.containsKey('x-internal-envelope'));
-    check('${writer.records.single.data}')
-        .not((it) => it.contains('secret-token'));
+    check('${records.single.data}').not((it) => it.contains('secret-token'));
   });
 
   test('custom sensitiveHeaders and headerAllowlist match regardless of '
       'caller casing', () {
-    LoggerDioInterceptor(
-      sensitiveHeaders: {'X-Firebase-AppCheck'},
-      headerAllowlist: {'X-Trace-Id'},
-    ).onRequest(
+    logRequest(
       RequestOptions(
         path: 'https://api.example.com/users',
         headers: {
@@ -154,40 +156,38 @@ void main() {
           'x-trace-id': 'tr-99',
         },
       ),
-      RequestInterceptorHandler(),
+      LoggerDioInterceptor(
+        sensitiveHeaders: {'X-Firebase-AppCheck'},
+        headerAllowlist: {'X-Trace-Id'},
+      ),
     );
 
-    final headers =
-        writer.records.single.data['headers']! as Map<String, Object?>;
+    final headers = records.single.data['headers']! as Map<String, Object?>;
     check(headers['x-firebase-appcheck']).equals('***');
     check(headers['x-trace-id']).equals('tr-99');
   });
 
   test('sensitive header values pass through verbatim when opted out', () {
-    LoggerDioInterceptor(maskSensitiveValues: false)
-        .onRequest(request(), RequestInterceptorHandler());
+    logRequest(request(), LoggerDioInterceptor(maskSensitiveValues: false));
 
-    final headers =
-        writer.records.single.data['headers']! as Map<String, Object?>;
+    final headers = records.single.data['headers']! as Map<String, Object?>;
     check(headers['authorization']).equals('Bearer secret-token');
     check(headers['cookie']).equals('session=abc');
   });
 
-  test('body is logged as full structured data when logBodies is true, not '
-      'truncated here', () {
-    // Elision is the sink's job (ElidingFormatter). The interceptor keeps the
-    // JSON shape and the full payload so no downstream sink is forced to.
-    LoggerDioInterceptor(logBodies: true).onResponse(
-      Response<Object?>(
-        requestOptions: request(),
-        statusCode: 200,
-        data: {'blob': 'x' * 200},
+  test('opting out of header masking leaves redactKeys masked', () {
+    final record = logRequest(
+      RequestOptions(
+        path: 'https://api.example.com/users',
+        queryParameters: {'access_token': 'secret-token'},
       ),
-      ResponseInterceptorHandler(),
+      LoggerDioInterceptor(maskSensitiveValues: false),
     );
 
-    final body = writer.records.single.data['body']! as Map<String, Object?>;
-    check(body['blob']).equals('x' * 200);
+    check(record.data['query'])
+        .isA<Map<String, Object?>>()
+        .deepEquals({'access_token': '***'});
+    check('${record.message}').endsWith('access_token=***');
   });
 
   // When opted in via logBodies: true, the producer passes bodies verbatim
@@ -207,14 +207,7 @@ void main() {
     // A fresh largeBody() is the independent oracle: it fails on in-place
     // clipping, clipped copies, and deep-leaf truncation alike.
     test('large request body reaches record.data unclipped', () {
-      final options = request()
-        ..method = 'POST'
-        ..data = largeBody();
-
-      LoggerDioInterceptor(logBodies: true)
-          .onRequest(options, RequestInterceptorHandler());
-
-      final body = writer.records.single.data['body']! as Map<String, Object?>;
+      final body = loggedBody(largeBody());
       check(body).deepEquals(largeBody());
     });
 
@@ -228,7 +221,7 @@ void main() {
         ResponseInterceptorHandler(),
       );
 
-      final body = writer.records.single.data['body']! as Map<String, Object?>;
+      final body = records.single.data['body']! as Map<String, Object?>;
       check(body).deepEquals(largeBody());
     });
   });
@@ -262,24 +255,21 @@ void main() {
           ),
           ResponseInterceptorHandler(),
         );
-      runZonedGuarded(
-        () => interceptor.onError(
-          DioException(
+      logError(
+        DioException(
+          requestOptions: options,
+          response: Response<Object?>(
             requestOptions: options,
-            response: Response<Object?>(
-              requestOptions: options,
-              statusCode: 402,
-              data: {'card': '4242424242424242'},
-            ),
-            type: .badResponse,
+            statusCode: 402,
+            data: {'card': '4242424242424242'},
           ),
-          ErrorInterceptorHandler(),
+          type: .badResponse,
         ),
-        (_, _) {},
+        interceptor,
       );
 
-      check(writer.records).length.equals(3);
-      for (final record in writer.records) {
+      check(records).length.equals(3);
+      for (final record in records) {
         check(
             because: 'record ${record.message} leaked the payload',
             '${record.data}',
@@ -290,27 +280,23 @@ void main() {
     });
 
     test('path matching is scoped — an unlisted endpoint still logs', () {
-      LoggerDioInterceptor(
-        logBodies: true,
-        redactBodyPaths: {'/checkout/pay'},
-      ).onRequest(
-        request()
-          ..method = 'POST'
-          ..data = {'query': 'concerts'},
-        RequestInterceptorHandler(),
+      final body = loggedBody(
+        {'query': 'concerts'},
+        LoggerDioInterceptor(
+          logBodies: true,
+          redactBodyPaths: {'/checkout/pay'},
+        ),
       );
-
-      final body = writer.records.single.data['body']! as Map<String, Object?>;
       check(body['query']).equals('concerts');
     });
 
     test('sensitive keys are masked at any depth, siblings kept', () {
-      LoggerDioInterceptor(
-        logBodies: true,
-        redactKeys: {'cvv'},
-      ).onRequest(payment(), RequestInterceptorHandler());
+      logRequest(
+        payment(),
+        LoggerDioInterceptor(logBodies: true, redactKeys: {'cvv'}),
+      );
 
-      final body = writer.records.single.data['body']! as Map<String, Object?>;
+      final body = records.single.data['body']! as Map<String, Object?>;
       final card = body['card']! as Map<String, Object?>;
       check(card['cvv']).equals('***');
       check(card['expMonth']).equals('04');
@@ -318,70 +304,41 @@ void main() {
     });
 
     test('key matching ignores case and word separators', () {
-      LoggerDioInterceptor(
-        logBodies: true,
-        redactKeys: {'new_password'},
-      ).onRequest(
-        request()
-          ..method = 'POST'
-          ..data = {
-            'newPassword': 'hunter2',
-            'NEW-PASSWORD': 'hunter2',
-            'passwords': 'not-a-match',
-          },
-        RequestInterceptorHandler(),
-      );
-
-      final body = writer.records.single.data['body']! as Map<String, Object?>;
+      final body = loggedBody({
+        'newPassword': 'hunter2',
+        'NEW-PASSWORD': 'hunter2',
+        'passwords': 'not-a-match',
+      }, LoggerDioInterceptor(logBodies: true, redactKeys: {'new_password'}));
       check(body['newPassword']).equals('***');
       check(body['NEW-PASSWORD']).equals('***');
       check(body['passwords']).equals('not-a-match');
     });
 
     test('masking reaches inside lists and non-List Iterables', () {
-      LoggerDioInterceptor(logBodies: true, redactKeys: {'cvv'}).onRequest(
-        request()
-          ..method = 'POST'
-          ..data = {
-            'cards': {
-              {'cvv': '123'},
-              {'cvv': '456'},
-            },
-          },
-        RequestInterceptorHandler(),
-      );
+      loggedBody({
+        'cards': {
+          {'cvv': '123'},
+          {'cvv': '456'},
+        },
+      }, LoggerDioInterceptor(logBodies: true, redactKeys: {'cvv'}));
 
-      check('${writer.records.single.data}').not((it) => it.contains('123'));
+      check('${records.single.data}').not((it) => it.contains('123'));
     });
 
     test('cyclic body renders <cycle> instead of overflowing the stack', () {
       final cyclic = <String, Object?>{'password': 'hunter2'};
       cyclic['self'] = cyclic;
 
-      LoggerDioInterceptor(logBodies: true).onRequest(
-        request()
-          ..method = 'POST'
-          ..data = cyclic,
-        RequestInterceptorHandler(),
-      );
-
-      final body = writer.records.single.data['body']! as Map<String, Object?>;
+      final body = loggedBody(cyclic);
       check(body['password']).equals('***');
       check(body['self']).equals('<cycle>');
     });
 
     test('a DTO nested in a body is masked through its toJson', () {
-      LoggerDioInterceptor(logBodies: true).onRequest(
-        request()
-          ..method = 'POST'
-          ..data = {
-            'card': _Card('4242424242424242', '123'),
-            'cards': [_Card('4000056655665556', '456')],
-          },
-        RequestInterceptorHandler(),
-      );
-
-      final body = writer.records.single.data['body']! as Map<String, Object?>;
+      final body = loggedBody({
+        'card': _Card('4242424242424242', '123'),
+        'cards': [_Card('4000056655665556', '456')],
+      });
       check(body['card']).isA<Map<String, Object?>>()
         ..has((it) => it['cvv'], 'cvv').equals('***')
         ..has((it) => it['number'], 'number').equals('4242424242424242');
@@ -391,40 +348,23 @@ void main() {
     });
 
     test('an object toJson cannot encode logs as a type placeholder', () {
-      LoggerDioInterceptor(logBodies: true).onRequest(
-        request()
-          ..method = 'POST'
-          ..data = {'item': _Unencodable()},
-        RequestInterceptorHandler(),
-      );
-
-      final body = writer.records.single.data['body']! as Map<String, Object?>;
+      final body = loggedBody({'item': _Unencodable()});
       check(body['item']).equals('<_Unencodable>');
     });
 
     test('defaults mask a password without any configuration when logBodies '
         'is opted in', () {
-      LoggerDioInterceptor(logBodies: true).onRequest(
-        request()
-          ..method = 'POST'
-          ..data = {'password': 'hunter2'},
-        RequestInterceptorHandler(),
-      );
-
-      final body = writer.records.single.data['body']! as Map<String, Object?>;
+      final body = loggedBody({'password': 'hunter2'});
       check(body['password']).equals('***');
     });
 
     test('sensitive query values masked in query data and message line', () {
-      LoggerDioInterceptor().onRequest(
+      final record = logRequest(
         RequestOptions(
           path: 'https://api.example.com/users',
           queryParameters: {'access_token': 'secret-token', 'page': '2'},
         ),
-        RequestInterceptorHandler(),
       );
-
-      final record = writer.records.single;
       check('${record.message}')
         ..not((it) => it.contains('secret-token'))
         ..contains('access_token=***')
@@ -435,7 +375,7 @@ void main() {
     });
 
     test('bracketed query keys are masked on the message line too', () {
-      LoggerDioInterceptor().onRequest(
+      final record = logRequest(
         RequestOptions(
           path: 'https://api.example.com/login',
           queryParameters: {
@@ -444,10 +384,7 @@ void main() {
             'page': '1',
           },
         ),
-        RequestInterceptorHandler(),
       );
-
-      final record = writer.records.single;
       check('${record.message} ${record.data}')
         ..not((it) => it.contains('leak-one'))
         ..not((it) => it.contains('leak-two'));
@@ -455,15 +392,12 @@ void main() {
     });
 
     test('a flat bracketed query key is masked in the query data too', () {
-      LoggerDioInterceptor().onRequest(
+      final record = logRequest(
         RequestOptions(
           path: 'https://api.example.com/login',
           queryParameters: {'user[password]': 'flat-secret', 'page': '1'},
         ),
-        RequestInterceptorHandler(),
       );
-
-      final record = writer.records.single;
       check('${record.message} ${record.data}')
           .not((it) => it.contains('flat-secret'));
       check(record.data['query']).isA<Map<String, Object?>>()
@@ -476,15 +410,14 @@ void main() {
       {'password': 'x'},
     ]) {
       test('URI userinfo is masked on the message line, query $query', () {
-        LoggerDioInterceptor().onRequest(
+        logRequest(
           RequestOptions(
             path: 'https://admin:s3cret@api.example.com/users',
             queryParameters: query,
           ),
-          RequestInterceptorHandler(),
         );
 
-        check('${writer.records.single.message}')
+        check('${records.single.message}')
           ..not((it) => it.contains('s3cret'))
           ..contains('https://***@api.example.com/users');
       });
@@ -510,15 +443,13 @@ void main() {
       },
     ]) {
       test('a bracketed redactKeys entry masks query $query', () {
-        LoggerDioInterceptor(redactKeys: {'filter[ssn]'}).onRequest(
+        final record = logRequest(
           RequestOptions(
             path: 'https://api.example.com/people',
             queryParameters: query,
           ),
-          RequestInterceptorHandler(),
+          LoggerDioInterceptor(redactKeys: {'filter[ssn]'}),
         );
-
-        final record = writer.records.single;
         check('${record.message} ${record.data}')
             .not((it) => it.contains('ssn-secret'));
         check('${record.message}').contains('page=1');
@@ -526,7 +457,7 @@ void main() {
     }
 
     test('query Uri and platform leaves redact and stringify', () {
-      LoggerDioInterceptor().onRequest(
+      logRequest(
         RequestOptions(
           path: 'https://api.example.com/oauth',
           queryParameters: {
@@ -535,10 +466,9 @@ void main() {
             'tier': _Tier.gold,
           },
         ),
-        RequestInterceptorHandler(),
       );
 
-      check(writer.records.single.data['query'])
+      check(records.single.data['query'])
           .isA<Map<String, Object?>>()
           .deepEquals({
             'next': 'https://***@x.test/cb?access_token=***&ok=1',
@@ -548,7 +478,7 @@ void main() {
     });
 
     test('form leaves dio sends via toString log as their text', () {
-      LoggerDioInterceptor(logBodies: true).onRequest(
+      logRequest(
         request()
           ..method = 'POST'
           ..contentType = Headers.formUrlEncodedContentType
@@ -559,10 +489,10 @@ void main() {
             'big': BigInt.parse('123456789012345678901234567890'),
             'wait': const Duration(seconds: 90),
           },
-        RequestInterceptorHandler(),
+        LoggerDioInterceptor(logBodies: true),
       );
 
-      check(writer.records.single.data['body'])
+      check(records.single.data['body'])
           .isA<Map<String, Object?>>()
           .deepEquals({
             'at': '2026-11-14 00:00:00.000Z',
@@ -574,7 +504,7 @@ void main() {
     });
 
     test('a ListParam in a form body logs the values dio sends', () {
-      LoggerDioInterceptor(logBodies: true).onRequest(
+      logRequest(
         request()
           ..method = 'POST'
           ..contentType = Headers.formUrlEncodedContentType
@@ -585,10 +515,10 @@ void main() {
               {'name': 'jo', 'password': 'hunter2'},
             ], .multi),
           },
-        RequestInterceptorHandler(),
+        LoggerDioInterceptor(logBodies: true),
       );
 
-      check(writer.records.single.data['body'])
+      check(records.single.data['body'])
           .isA<Map<String, Object?>>()
           .deepEquals({
             'tags': ['a', 'b'],
@@ -605,22 +535,20 @@ void main() {
         queryParameters: {'q': 'a b+c', 'page': '2'},
       );
 
-      LoggerDioInterceptor().onRequest(options, RequestInterceptorHandler());
+      logRequest(options);
 
-      check('${writer.records.single.message}').endsWith('${options.uri}');
+      check('${records.single.message}').endsWith('${options.uri}');
     });
 
     test('an empty key set passes a JSON map body through by identity', () {
       final data = {'password': 'hunter2'};
 
-      LoggerDioInterceptor(logBodies: true, redactKeys: const {}).onRequest(
-        request()
-          ..method = 'POST'
-          ..data = data,
-        RequestInterceptorHandler(),
-      );
-
-      check(writer.records.single.data['body']).identicalTo(data);
+      check(
+        loggedBody(
+          data,
+          LoggerDioInterceptor(logBodies: true, redactKeys: const {}),
+        ),
+      ).identicalTo(data);
     });
 
     test('a TypedData body is summarized even when redactKeys is empty, '
@@ -639,17 +567,27 @@ void main() {
         ResponseInterceptorHandler(),
       );
 
-      check(writer.records.single.data['body'])
+      check(records.single.data['body'])
         ..isA<String>()
         ..equals('<${bytes.lengthInBytes}-byte body>');
+    });
+
+    test('a FormData body logs its field and file counts only', () {
+      final record = logRequest(
+        request()
+          ..method = 'POST'
+          ..data = FormData.fromMap({
+            'password': 'hunter2',
+            'avatar': MultipartFile.fromBytes([1, 2]),
+          }),
+        LoggerDioInterceptor(logBodies: true),
+      );
+
+      check(record.data['body']).equals('FormData(1 fields, 1 files)');
     });
   });
 
   group('logBodies', () {
-    test('defaults to false — bodies are stripped out of the box', () {
-      check(LoggerDioInterceptor().logBodies).isFalse();
-    });
-
     test('default strips the request and response body on success', () {
       final interceptor = LoggerDioInterceptor();
       final options = request()
@@ -667,7 +605,7 @@ void main() {
           ResponseInterceptorHandler(),
         );
 
-      for (final record in writer.records) {
+      for (final record in records) {
         check(record.data).not((it) => it.containsKey('body'));
       }
     });
@@ -675,24 +613,19 @@ void main() {
     test('default strips the response body on failure', () {
       final options = request();
 
-      runZonedGuarded(
-        () => LoggerDioInterceptor().onError(
-          DioException(
+      logError(
+        DioException(
+          requestOptions: options,
+          response: Response<Object?>(
             requestOptions: options,
-            response: Response<Object?>(
-              requestOptions: options,
-              statusCode: 500,
-              data: {'message': 'boom'},
-            ),
-            type: .badResponse,
+            statusCode: 500,
+            data: {'message': 'boom'},
           ),
-          ErrorInterceptorHandler(),
+          type: .badResponse,
         ),
-        (_, _) {},
       );
 
-      check(writer.records.single.data)
-          .not((it) => it.containsKey('response_body'));
+      check(records.single.data).not((it) => it.containsKey('response_body'));
     });
   });
 
@@ -700,23 +633,18 @@ void main() {
     final interceptor = LoggerDioInterceptor();
     final options = request();
     interceptor.onRequest(options, RequestInterceptorHandler());
-    writer.records.clear();
+    records.clear();
 
-    // next(err) rejects the handler's future; nobody awaits it here, so
-    // swallow the unhandled async error in a guarded zone.
-    runZonedGuarded(
-      () => interceptor.onError(
-        DioException(
-          requestOptions: options,
-          response: Response<Object?>(requestOptions: options, statusCode: 404),
-          type: .badResponse,
-        ),
-        ErrorInterceptorHandler(),
+    logError(
+      DioException(
+        requestOptions: options,
+        response: Response<Object?>(requestOptions: options, statusCode: 404),
+        type: .badResponse,
       ),
-      (_, _) {},
+      interceptor,
     );
 
-    final record = writer.records.single;
+    final record = records.single;
     check(record.level).equals(.warning);
     check('${record.message}')
         .equals('✗ 404 GET https://api.example.com/users');
@@ -737,24 +665,17 @@ void main() {
         ),
       );
 
-    Object? caught;
-    try {
-      await dio.get<Object?>('/users');
-    } on DioException catch (e) {
-      caught = e;
-    }
-    check(caught).isNotNull();
+    await check(dio.get<Object?>('/users')).throws<DioException>();
 
-    final trace = writer.records.singleWhere(
-      (r) => '${r.message}'.startsWith('←'),
-    );
+    final trace = records.singleWhere((r) => '${r.message}'.startsWith('←'));
     check('${trace.message}').equals('← 200 GET https://api.example.com/users');
     check(trace.data['body']).isA<Map<String, Object?>>();
+    check(trace.data['duration_ms']).isA<int>();
 
     // Dio dropped the response from the wrapped exception; with logBodies on,
     // the raw body sits on the `←` trace line above, the warning names the
     // pipeline failure.
-    final warning = writer.records.singleWhere((r) => r.level == .warning);
+    final warning = records.singleWhere((r) => r.level == .warning);
     check('${warning.message}')
         .equals('✗ unknown GET https://api.example.com/users');
     check(warning.data['type']).equals('unknown');
@@ -762,18 +683,15 @@ void main() {
 
   test('network errors carry the dio type in the message', () async {
     final dio = Dio(BaseOptions(baseUrl: 'https://api.example.com'))
-      ..httpClientAdapter = _RefusingAdapter();
+      ..httpClientAdapter = _ThrowingAdapter(
+        (o) =>
+            .connectionError(requestOptions: o, reason: 'connection refused'),
+      );
     dio.interceptors.add(LoggerDioInterceptor());
 
-    Object? caught;
-    try {
-      await dio.get<Object?>('/users');
-    } on DioException catch (e) {
-      caught = e;
-    }
-    check(caught).isNotNull();
+    await check(dio.get<Object?>('/users')).throws<DioException>();
 
-    final warning = writer.records.singleWhere((r) => r.level == .warning);
+    final warning = records.singleWhere((r) => r.level == .warning);
     check('${warning.message}')
         .equals('✗ connectionError GET https://api.example.com/users');
     check(warning.data['type']).equals('connectionError');
@@ -781,24 +699,22 @@ void main() {
   });
 
   test('logged error masks the URI, the caller gets the original', () async {
-    final adapter = _HeaderlessCloseAdapter();
+    final adapter = _ThrowingAdapter(_headerlessClose);
     final dio = Dio()..httpClientAdapter = adapter;
     dio.interceptors.add(LoggerDioInterceptor());
 
-    Object? caught;
-    try {
-      await dio.get<Object?>(
+    await check(
+      dio.get<Object?>(
         'https://api.example.com/users',
         queryParameters: {'access_token': 'secret-token', 'page': '2'},
-      );
-    } on DioException catch (e) {
-      caught = e;
-    }
-    check(caught).isNotNull();
-    check(identical(caught, adapter.thrown)).isTrue();
-    check('$caught').contains('secret-token');
+      ),
+    ).throws<DioException>(
+      (it) => it
+        ..has((e) => identical(e, adapter.thrown), 'same exception').isTrue()
+        ..has((e) => '$e', 'text').contains('secret-token'),
+    );
 
-    final warning = writer.records.singleWhere((r) => r.level == .warning);
+    final warning = records.singleWhere((r) => r.level == .warning);
     check(warning.error).isA<DioException>();
     check(identical(warning.stackTrace, adapter.thrown?.stackTrace)).isTrue();
     check('${warning.message} ${warning.data} ${warning.error}')
@@ -823,12 +739,9 @@ void main() {
       message: 'cannot reach ${options.uri}',
     );
 
-    runZonedGuarded(
-      () => LoggerDioInterceptor().onError(err, ErrorInterceptorHandler()),
-      (_, _) {},
-    );
+    logError(err);
 
-    final error = writer.records.single.error;
+    final error = records.single.error;
     check(error).isA<DioException>();
     check('$error')
       ..not((it) => it.contains('secret-token'))
@@ -836,27 +749,29 @@ void main() {
   });
 
   test('a redirect target in the inner error is withheld', () async {
-    final adapter = _HeaderlessCloseAdapter(
-      redirectedTo: .parse(
-        'https://api.example.com/next?access_token=redirect-secret&page=3',
+    final adapter = _ThrowingAdapter(
+      (o) => _headerlessClose(
+        o,
+        .parse(
+          'https://api.example.com/next?access_token=redirect-secret&page=3',
+        ),
       ),
     );
     final dio = Dio()..httpClientAdapter = adapter;
     dio.interceptors.add(LoggerDioInterceptor());
 
-    Object? caught;
-    try {
-      await dio.get<Object?>(
+    await check(
+      dio.get<Object?>(
         'https://api.example.com/start',
         queryParameters: {'access_token': 'secret-token'},
-      );
-    } on DioException catch (e) {
-      caught = e;
-    }
-    check(identical(caught, adapter.thrown)).isTrue();
-    check('$caught').contains('redirect-secret');
+      ),
+    ).throws<DioException>(
+      (it) => it
+        ..has((e) => identical(e, adapter.thrown), 'same exception').isTrue()
+        ..has((e) => '$e', 'text').contains('redirect-secret'),
+    );
 
-    final warning = writer.records.singleWhere((r) => r.level == .warning);
+    final warning = records.singleWhere((r) => r.level == .warning);
     check(warning.error).isA<DioException>();
     check('${warning.message} ${warning.data} ${warning.error}')
       ..not((it) => it.contains('redirect-secret'))
@@ -864,26 +779,85 @@ void main() {
     check('${warning.error}').contains('Error: <HttpException>');
   });
 
-  test('a malformed URL in the inner error is masked whole', () {
-    final err = DioException(
-      requestOptions: RequestOptions(path: 'https://api.example.com/users'),
-      error: const SocketException(
+  for (final (name, inner, want) in <(String, Object, String?)>[
+    (
+      'a malformed URL in the inner error is masked whole',
+      const SocketException(
         'see http://[::1/x?access_token=secret-token for details',
       ),
-    );
+      'SocketException: see *** for details',
+    ),
+    (
+      'a URL in a kept inner error is masked',
+      const SocketException(
+        'lookup failed at https://api.example.com/x?access_token=secret-token',
+      ),
+      'SocketException: lookup failed at '
+          'https://api.example.com/x?access_token=***',
+    ),
+    (
+      'an echoing inner HttpException logs as its type',
+      const HttpException(
+        'Content size exceeds specified contentLength. 37 bytes written while '
+        'expected 36. [{"user":"jo","password":"hunter2"}]',
+      ),
+      '<HttpException>',
+    ),
+    (
+      'an echoing inner String logs as its type',
+      "'Bearer hunter2' is not a valid HTTP header field value.",
+      '<String>',
+    ),
+    (
+      'an inner ArgumentError logs as its type',
+      ArgumentError.value('secret-token', 'token'),
+      '<ArgumentError>',
+    ),
+    (
+      'an inner error whose toString throws logs as its type',
+      _Throwing(),
+      '<_Throwing>',
+    ),
+    (
+      'a kept inner error whose toString throws logs as its type',
+      _ThrowingTimeout(),
+      '<_ThrowingTimeout>',
+    ),
+    // A null want: the inner error keeps its own text.
+    (
+      'an inner SocketException keeps its text',
+      const SocketException('Connection refused', port: 443),
+      null,
+    ),
+    (
+      'an inner HandshakeException keeps its text',
+      const HandshakeException('CERTIFICATE_VERIFY_FAILED'),
+      null,
+    ),
+    (
+      'an inner TimeoutException keeps its text',
+      TimeoutException('no answer', const Duration(seconds: 5)),
+      null,
+    ),
+  ]) {
+    test(name, () {
+      final err = DioException(
+        requestOptions: RequestOptions(path: 'https://api.example.com/users'),
+        error: inner,
+      );
 
-    runZonedGuarded(
-      () => LoggerDioInterceptor().onError(err, ErrorInterceptorHandler()),
-      (_, _) {},
-    );
+      logError(err);
 
-    check('${writer.records.single.error}')
-      ..not((it) => it.contains('secret-token'))
-      ..contains('see *** for details');
-  });
+      check('${records.single.error}')
+        ..not((it) => it.contains('secret-token'))
+        ..not((it) => it.contains('hunter2'))
+        ..endsWith('Error: ${want ?? inner}');
+      check(err.error).identicalTo(inner);
+    });
+  }
 
   test('a FormatException body excerpt never reaches the record', () async {
-    Object? seen;
+    DioException? seen;
     final dio = Dio(BaseOptions(baseUrl: 'https://api.example.com'))
       ..transformer = SyncTransformer()
       ..httpClientAdapter = _StubAdapter(
@@ -901,16 +875,13 @@ void main() {
         ),
       );
 
-    Object? caught;
-    try {
-      await dio.get<Object?>('/users');
-    } on DioException catch (e) {
-      caught = e;
-    }
-    check(identical(caught, seen)).isTrue();
-    check('$caught').contains('body-secret-token');
+    await check(dio.get<Object?>('/users')).throws<DioException>(
+      (it) => it
+        ..has((e) => identical(e, seen), 'same exception').isTrue()
+        ..has((e) => '$e', 'text').contains('body-secret-token'),
+    );
 
-    final warning = writer.records.singleWhere((r) => r.level == .warning);
+    final warning = records.singleWhere((r) => r.level == .warning);
     check(warning.error).isA<DioException>()
       ..has((it) => it.type, 'type').equals(.unknown)
       ..has((it) => it.error, 'error').isA<FormatException>();
@@ -928,12 +899,9 @@ void main() {
       ),
     );
 
-    runZonedGuarded(
-      () => LoggerDioInterceptor().onError(err, ErrorInterceptorHandler()),
-      (_, _) {},
-    );
+    logError(err);
 
-    final error = writer.records.single.error;
+    final error = records.single.error;
     check(error)
         .isA<DioException>()
         .has((it) => it.error, 'error')
@@ -941,67 +909,6 @@ void main() {
     check('$error')
       ..not((it) => it.contains('hunter2'))
       ..contains('FormatException: message withheld');
-  });
-
-  for (final inner in [
-    const HttpException(
-      'Content size exceeds specified contentLength. 37 bytes written while '
-      'expected 36. [{"user":"jo","password":"hunter2"}]',
-    ),
-    "'Bearer hunter2' is not a valid HTTP header field value.",
-  ]) {
-    test('an echoing inner ${inner.runtimeType} logs as its type', () {
-      final err = DioException(
-        requestOptions: RequestOptions(path: 'https://api.example.com/users'),
-        error: inner,
-      );
-
-      runZonedGuarded(
-        () => LoggerDioInterceptor().onError(err, ErrorInterceptorHandler()),
-        (_, _) {},
-      );
-
-      check('${writer.records.single.error}')
-        ..not((it) => it.contains('hunter2'))
-        ..endsWith('Error: <${inner.runtimeType}>');
-      check(err.error).identicalTo(inner);
-    });
-  }
-
-  for (final inner in [
-    const SocketException('Connection refused', port: 443),
-    const HandshakeException('CERTIFICATE_VERIFY_FAILED'),
-    TimeoutException('no answer', const Duration(seconds: 5)),
-  ]) {
-    test('an inner ${inner.runtimeType} keeps its text', () {
-      final err = DioException(
-        requestOptions: RequestOptions(path: 'https://api.example.com/users'),
-        error: inner,
-      );
-
-      runZonedGuarded(
-        () => LoggerDioInterceptor().onError(err, ErrorInterceptorHandler()),
-        (_, _) {},
-      );
-
-      check('${writer.records.single.error}').endsWith('Error: $inner');
-    });
-  }
-
-  test('an inner ArgumentError logs as its type', () {
-    final err = DioException(
-      requestOptions: RequestOptions(path: 'https://api.example.com/users'),
-      error: ArgumentError.value('secret-token', 'token'),
-    );
-
-    runZonedGuarded(
-      () => LoggerDioInterceptor().onError(err, ErrorInterceptorHandler()),
-      (_, _) {},
-    );
-
-    check('${writer.records.single.error}')
-      ..not((it) => it.contains('secret-token'))
-      ..contains('Error: <ArgumentError>');
   });
 
   test('an invalid masked header value never reaches the record', () async {
@@ -1012,19 +919,17 @@ void main() {
     addTearDown(() => dio.close(force: true));
     dio.interceptors.add(LoggerDioInterceptor());
 
-    Object? caught;
-    try {
-      await dio.get<Object?>(
+    await check(
+      dio.get<Object?>(
         '/users',
         options: Options(headers: {'authorization': 'Bearer secret-token\n'}),
-      );
-    } on DioException catch (e) {
-      caught = e;
-    }
-    check('$caught').contains('secret-token');
+      ),
+    ).throws<DioException>(
+      (it) => it.has((e) => '$e', 'text').contains('secret-token'),
+    );
 
-    check(writer.records).length.equals(2);
-    for (final record in writer.records) {
+    check(records).length.equals(2);
+    for (final record in records) {
       check('${record.message} ${record.data} ${record.error}')
           .not((it) => it.contains('secret-token'));
     }
@@ -1037,13 +942,10 @@ void main() {
     );
     final stopwatch = Stopwatch()..start();
 
-    runZonedGuarded(
-      () => LoggerDioInterceptor().onError(err, ErrorInterceptorHandler()),
-      (_, _) {},
-    );
+    logError(err);
 
     check(stopwatch.elapsed).isLessThan(const Duration(seconds: 1));
-    check(writer.records).length.equals(1);
+    check(records).length.equals(1);
   });
 
   test('an undecodable query is sent and logged masked whole', () async {
@@ -1055,30 +957,41 @@ void main() {
     );
 
     check(response.statusCode).equals(200);
-    check([for (final record in writer.records) '${record.message}'])
-        .deepEquals([
-          '→ GET https://api.example.com/search?***',
-          '← 200 GET https://api.example.com/search?***',
-        ]);
+    check([for (final record in records) '${record.message}']).deepEquals([
+      '→ GET https://api.example.com/search?***',
+      '← 200 GET https://api.example.com/search?***',
+    ]);
   });
 
   test('an undecodable query logs verbatim with no redactKeys', () {
-    LoggerDioInterceptor(redactKeys: const {}).onRequest(
+    logRequest(
       RequestOptions(path: 'https://api.example.com/search?name=Jos%E9'),
-      RequestInterceptorHandler(),
+      LoggerDioInterceptor(redactKeys: const {}),
     );
 
-    check('${writer.records.single.message}')
+    check('${records.single.message}')
         .equals('→ GET https://api.example.com/search?name=Jos%E9');
   });
 
-  test('an unparseable request URI logs a placeholder', () {
-    LoggerDioInterceptor(logBodies: true).onRequest(
-      RequestOptions(path: 'http://[::1/x', data: {'q': 'concerts'}),
-      RequestInterceptorHandler(),
+  test('a query that throws while redacting never fails the request', () {
+    final record = logRequest(
+      RequestOptions(
+        path: 'https://api.example.com/search',
+        queryParameters: {
+          'q': Iterable<Object?>.generate(1, (_) => throw StateError('boom')),
+        },
+      ),
     );
 
-    final record = writer.records.single;
+    check(record.data['query']).equals('<unloggable query: StateError>');
+    check('${record.message}').equals('→ GET ***');
+  });
+
+  test('an unparseable request URI logs a placeholder', () {
+    final record = logRequest(
+      RequestOptions(path: 'http://[::1/x', data: {'q': 'concerts'}),
+      LoggerDioInterceptor(logBodies: true),
+    );
     check('${record.message}').equals('→ GET ***');
     check(record.data['body']).equals('*** redacted body ***');
   });
@@ -1088,21 +1001,23 @@ void main() {
     'https://api.example.com/search?name=Jos%E9&access_token=secret-token',
   ]) {
     test('a nested exception for $path still logs', () async {
-      final adapter = _FailingAdapter(
-        DioException(requestOptions: RequestOptions(path: path)),
+      final adapter = _ThrowingAdapter(
+        (o) => DioException(
+          requestOptions: o,
+          error: DioException(requestOptions: RequestOptions(path: path)),
+        ),
       );
       final dio = Dio()..httpClientAdapter = adapter;
       dio.interceptors.add(LoggerDioInterceptor());
 
-      Object? caught;
-      try {
-        await dio.get<Object?>('https://api.example.com/users');
-      } on DioException catch (e) {
-        caught = e;
-      }
-      check(identical(caught, adapter.thrown)).isTrue();
+      await check(dio.get<Object?>('https://api.example.com/users'))
+          .throws<DioException>(
+            (it) => it
+                .has((e) => identical(e, adapter.thrown), 'same exception')
+                .isTrue(),
+          );
 
-      final warning = writer.records.singleWhere((r) => r.level == .warning);
+      final warning = records.singleWhere((r) => r.level == .warning);
       check(warning.error)
           .isA<DioException>()
           .has((it) => it.error, 'error')
@@ -1112,21 +1027,25 @@ void main() {
   }
 
   test('a relative request URI in the inner error is masked', () async {
-    final adapter = _FailingAdapter(
-      const SocketException('cannot GET /users?access_token=secret-token'),
+    final adapter = _ThrowingAdapter(
+      (o) => DioException(
+        requestOptions: o,
+        error: const SocketException(
+          'cannot GET /users?access_token=secret-token',
+        ),
+      ),
     );
     final dio = Dio()..httpClientAdapter = adapter;
     dio.interceptors.add(LoggerDioInterceptor());
 
-    Object? caught;
-    try {
-      await dio.get<Object?>('/users?access_token=secret-token');
-    } on DioException catch (e) {
-      caught = e;
-    }
-    check(identical(caught, adapter.thrown)).isTrue();
+    await check(dio.get<Object?>('/users?access_token=secret-token'))
+        .throws<DioException>(
+          (it) => it
+              .has((e) => identical(e, adapter.thrown), 'same exception')
+              .isTrue(),
+        );
 
-    final warning = writer.records.singleWhere((r) => r.level == .warning);
+    final warning = records.singleWhere((r) => r.level == .warning);
     check('${warning.error}')
       ..not((it) => it.contains('secret-token'))
       ..contains('cannot GET /users?access_token=***');
@@ -1147,36 +1066,12 @@ void main() {
       );
     }
 
-    runZonedGuarded(
-      () => LoggerDioInterceptor().onError(err, ErrorInterceptorHandler()),
-      (_, _) {},
-    );
+    logError(err);
 
-    check('${writer.records.single.error}')
+    check('${records.single.error}')
       ..contains('Error: <DioException>')
       ..not((it) => it.contains('innermost'))
       ..not((it) => it.contains('secret-token'));
-  });
-
-  test('a URL in a kept inner error is masked', () {
-    final err = DioException(
-      requestOptions: RequestOptions(path: 'https://api.example.com/users'),
-      error: const SocketException(
-        'lookup failed at https://api.example.com/x?access_token=secret-token',
-      ),
-    );
-
-    runZonedGuarded(
-      () => LoggerDioInterceptor().onError(err, ErrorInterceptorHandler()),
-      (_, _) {},
-    );
-
-    check('${writer.records.single.error}')
-      ..not((it) => it.contains('secret-token'))
-      ..contains(
-        'Error: SocketException: lookup failed at '
-        'https://api.example.com/x?access_token=***',
-      );
   });
 
   test('a nested DioException is rendered redacted too', () {
@@ -1201,12 +1096,9 @@ void main() {
       error: inner,
     );
 
-    runZonedGuarded(
-      () => LoggerDioInterceptor().onError(err, ErrorInterceptorHandler()),
-      (_, _) {},
-    );
+    logError(err);
 
-    final error = writer.records.single.error;
+    final error = records.single.error;
     check(error)
         .isA<DioException>()
         .has((it) => it.error, 'error')
@@ -1216,22 +1108,6 @@ void main() {
       ..not((it) => it.contains('hdr-secret'))
       ..contains('outer')
       ..contains('inner');
-  });
-
-  test('an inner error whose toString throws logs as its type', () {
-    final err = DioException(
-      requestOptions: RequestOptions(path: 'https://api.example.com/users'),
-      error: _Throwing(),
-    );
-
-    runZonedGuarded(
-      () => LoggerDioInterceptor().onError(err, ErrorInterceptorHandler()),
-      (_, _) {},
-    );
-
-    check('${writer.records.single.error}')
-      ..contains('Error: <_Throwing>')
-      ..not((it) => it.contains('secret-token'));
   });
 
   test('first position logs the raw server error before a later onError '
@@ -1255,7 +1131,7 @@ void main() {
     final response = await dio.get<Object?>('/users');
     check(response.data).equals('recovered');
 
-    final warning = writer.records.singleWhere((r) => r.level == .warning);
+    final warning = records.singleWhere((r) => r.level == .warning);
     check('${warning.message}')
         .equals('✗ 500 GET https://api.example.com/users');
     check('${warning.data['response_body']}').contains('boom');
@@ -1284,12 +1160,9 @@ void main() {
       message: 'unauthorised',
     );
 
-    runZonedGuarded(
-      () => LoggerDioInterceptor().onError(err, ErrorInterceptorHandler()),
-      (_, _) {},
-    );
+    logError(err);
 
-    final logged = writer.records.single.error;
+    final logged = records.single.error;
     check(logged).isA<DioException>()
       ..has((e) => e.requestOptions.headers, 'headers').isEmpty()
       ..has((e) => e.requestOptions.data, 'data').isNull()
@@ -1307,20 +1180,19 @@ void main() {
 
     final res = await dio.post<Object?>('/echo', data: deep);
     check(res.statusCode).equals(200);
-    final reqBody = '${writer.records.first.data['body']}';
+    final reqBody = '${records.first.data['body']}';
     check(reqBody)
       ..contains('<max depth>')
       ..not((it) => it.contains('secret'));
 
-    writer.records.clear();
-    LoggerDioInterceptor(logBodies: true).onRequest(
+    records.clear();
+    logRequest(
       RequestOptions(
         path: 'https://api.example.com/echo',
         data: Iterable<Object?>.generate(1, (_) => throw StateError('boom')),
       ),
-      RequestInterceptorHandler(),
+      LoggerDioInterceptor(logBodies: true),
     );
-    check(writer.records.single.data['body'])
-        .equals('<unloggable body: StateError>');
+    check(records.single.data['body']).equals('<unloggable body: StateError>');
   });
 }

@@ -8,23 +8,6 @@ import 'package:protobuf/well_known_types/google/protobuf/struct.pb.dart';
 import 'package:stratalog_grpc/stratalog_grpc.dart';
 import 'package:test/test.dart';
 
-final class _CapturingWriter extends ChirpWriter {
-  final records = <LogRecord>[];
-
-  @override
-  void write(LogRecord record) => records.add(record);
-}
-
-/// Throws on outcome records only — the ingress `→` log runs synchronously
-/// inside the caller's invocation and would fail the call itself.
-final class _ExplodingWriter extends ChirpWriter {
-  @override
-  void write(LogRecord record) {
-    if ('${record.message}'.startsWith('→')) return;
-    throw StateError('sink down');
-  }
-}
-
 /// Hand-rolled proto — no protoc: a string field plus a repeated field, big
 /// enough to expose any producer-side clipping.
 final class _BigMessage extends GeneratedMessage {
@@ -203,6 +186,158 @@ final class _EchoClient(
       $createUnaryCall(_echoCredentials, request);
 }
 
+final class _StreamService extends Service {
+  new() {
+    $addMethod(
+      ServiceMethod<List<int>, List<int>>(
+        'BoomStream',
+        _boomStream,
+        false,
+        true,
+        (bytes) => bytes,
+        (value) => value,
+      ),
+    );
+    $addMethod(
+      ServiceMethod<List<int>, List<int>>(
+        'FineStream',
+        _fineStream,
+        false,
+        true,
+        (bytes) => bytes,
+        (value) => value,
+      ),
+    );
+    $addMethod(
+      ServiceMethod<List<int>, List<int>>(
+        'TickStream',
+        _tickStream,
+        false,
+        true,
+        (bytes) => bytes,
+        (value) => value,
+      ),
+    );
+    $addMethod(
+      ServiceMethod<List<int>, List<int>>(
+        'Collect',
+        _collect,
+        true,
+        false,
+        (bytes) => bytes,
+        (value) => value,
+      ),
+    );
+    $addMethod(
+      ServiceMethod<List<int>, List<int>>(
+        'CollectBoom',
+        _collectBoom,
+        true,
+        false,
+        (bytes) => bytes,
+        (value) => value,
+      ),
+    );
+  }
+
+  @override
+  String get $name => 'test.Stream';
+
+  Stream<List<int>> _boomStream(
+    ServiceCall call,
+    Future<List<int>> request,
+  ) async* {
+    await request;
+    yield [1];
+    throw const GrpcError.custom(StatusCode.notFound, 'missing', null, null, {
+      'error-code': 'geo.404',
+      'set-cookie': 'sid=secret-session',
+    });
+  }
+
+  Stream<List<int>> _fineStream(
+    ServiceCall call,
+    Future<List<int>> request,
+  ) async* {
+    await request;
+    yield [1];
+    yield [2];
+  }
+
+  Stream<List<int>> _tickStream(
+    ServiceCall call,
+    Future<List<int>> request,
+  ) async* {
+    await request;
+    var tick = 0;
+    while (true) {
+      yield [tick++];
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+    }
+  }
+
+  Future<List<int>> _collect(
+    ServiceCall call,
+    Stream<List<int>> requests,
+  ) async => [await requests.length];
+
+  Future<List<int>> _collectBoom(
+    ServiceCall call,
+    Stream<List<int>> requests,
+  ) async {
+    await requests.drain<void>();
+    throw const GrpcError.custom(
+      StatusCode.resourceExhausted,
+      'overflow',
+      null,
+      null,
+      {'error-code': 'geo.507', 'set-cookie': 'sid=secret-session'},
+    );
+  }
+}
+
+final class _StreamClient(
+  // ignore: matching_super_parameters -- Client's positional is `_channel`
+  ClientChannel super.channel, {
+  super.interceptors,
+}) extends Client {
+  static ClientMethod<List<int>, List<int>> _method(String name) =>
+      ClientMethod('/test.Stream/$name', (value) => value, (bytes) => bytes);
+
+  static final ClientMethod<List<int>, List<int>> _boomStream = _method(
+    'BoomStream',
+  );
+  static final ClientMethod<List<int>, List<int>> _fineStream = _method(
+    'FineStream',
+  );
+  static final ClientMethod<List<int>, List<int>> _tickStream = _method(
+    'TickStream',
+  );
+  static final ClientMethod<List<int>, List<int>> _collect = _method('Collect');
+  static final ClientMethod<List<int>, List<int>> _collectBoom = _method(
+    'CollectBoom',
+  );
+
+  ResponseStream<List<int>> boomStream(List<int> request) =>
+      $createStreamingCall(_boomStream, .value(request));
+
+  ResponseStream<List<int>> fineStream(
+    List<int> request, {
+    CallOptions? options,
+  }) => $createStreamingCall(_fineStream, .value(request), options: options);
+
+  ResponseStream<List<int>> tickStream(List<int> request) =>
+      $createStreamingCall(_tickStream, .value(request));
+
+  // Mirrors the protoc-generated client-streaming stub shape: the streaming
+  // interceptor seam, consumed through `.single`.
+  ResponseFuture<List<int>> collect(Stream<List<int>> requests) =>
+      $createStreamingCall(_collect, requests).single;
+
+  ResponseFuture<List<int>> collectBoom(Stream<List<int>> requests) =>
+      $createStreamingCall(_collectBoom, requests).single;
+}
+
 final class _RejectedCall<Q, R>(
   ClientMethod<Q, R> method,
   CallOptions options,
@@ -223,6 +358,14 @@ final class _RejectingInterceptor(final Object _error)
     CallOptions options,
     ClientUnaryInvoker<Q, R> invoker,
   ) => ResponseFuture(_RejectedCall(method, options, _error));
+
+  @override
+  ResponseStream<R> interceptStreaming<Q, R>(
+    ClientMethod<Q, R> method,
+    Stream<Q> requests,
+    CallOptions options,
+    ClientStreamingInvoker<Q, R> invoker,
+  ) => ResponseStream(_RejectedCall(method, options, _error));
 }
 
 extension on Subject<LogRecord> {
@@ -233,16 +376,16 @@ extension on Subject<LogRecord> {
 }
 
 void main() {
-  late _CapturingWriter writer;
+  late List<LogRecord> records;
   late Server server;
   late ClientChannel channel;
   late _EchoClient client;
 
   setUp(() async {
-    writer = _CapturingWriter();
-    Chirp.root = ChirpLogger().addWriter(writer);
+    records = [];
+    Chirp.root = ChirpLogger().addWriter(DelegatedChirpWriter(records.add));
 
-    server = .create(services: [_EchoService()]);
+    server = .create(services: [_EchoService(), _StreamService()]);
     await server.serve(address: 'localhost', port: 0);
     channel = ClientChannel(
       'localhost',
@@ -265,14 +408,21 @@ void main() {
     await settle();
 
     check(reply).deepEquals([1, 2, 3]);
-    check(writer.records.map((r) => '${r.message}'))
+    check(records.map((r) => '${r.message}'))
         .deepEquals(['→ /test.Echo/Echo', '← OK /test.Echo/Echo']);
-    check(writer.records.last.data['duration_ms']).isA<int>();
+    check(records.last.data['duration_ms']).isA<int>();
   });
 
   test('throwing writer in the unary side listener never reaches the zone — '
       'caller still gets the reply', () async {
-    Chirp.root = ChirpLogger().addWriter(_ExplodingWriter());
+    // Throws on outcome records only — the ingress `→` log runs
+    // synchronously inside the caller's invocation and would fail the call.
+    Chirp.root = ChirpLogger().addWriter(
+      DelegatedChirpWriter((record) {
+        if ('${record.message}'.startsWith('→')) return;
+        throw StateError('sink down');
+      }),
+    );
     final zoneErrors = <Object>[];
 
     // The side-listener future is created inside this guarded zone; under
@@ -291,12 +441,33 @@ void main() {
     await check(client.boom([0])).throws<GrpcError>();
     await settle();
 
-    final record = writer.records.last;
+    final record = records.last;
     check(record.level).equals(.warning);
     check('${record.message}').equals('✗ NOT_FOUND /test.Echo/Boom');
     check(record.error).isA<GrpcError>();
     check(record.data['error_code']).equals('geo.404');
     check(record.data['duration_ms']).isA<int>();
+  });
+
+  test('a custom errorCodeTrailer is logged as error_code, the default key '
+      'ignored', () async {
+    final rejecting = _EchoClient(
+      channel,
+      interceptors: [
+        LoggerGrpcInterceptor(errorCodeTrailer: 'x-app-code'),
+        _RejectingInterceptor(
+          const GrpcError.custom(StatusCode.notFound, 'missing', null, null, {
+            'x-app-code': 'app.404',
+            'error-code': 'geo.404',
+          }),
+        ),
+      ],
+    );
+
+    await check(rejecting.echo([0])).throws<GrpcError>();
+    await settle();
+
+    check(records.last.data['error_code']).equals('app.404');
   });
 
   test('failure attaches a GrpcError stripped to code and message', () async {
@@ -308,7 +479,7 @@ void main() {
     );
     await settle();
 
-    final record = writer.records.last;
+    final record = records.last;
     check('${record.message} ${record.data} ${record.error}')
         .not((it) => it.contains('secret-session'));
     check('${record.error}')
@@ -318,6 +489,19 @@ void main() {
       ..has((e) => e.trailers, 'trailers').isNotNull().isEmpty()
       ..has((e) => e.details, 'details').isNull()
       ..has((e) => e.rawResponse, 'rawResponse').isNull();
+  });
+
+  test('unary cancel logs a cancelled line at trace, never warning', () async {
+    final call = client.echo([0]);
+    await call.cancel();
+    await check(call).throws<GrpcError>(
+      (it) => it.has((e) => e.code, 'code').equals(StatusCode.cancelled),
+    );
+    await settle();
+
+    check(records.map((r) => '${r.message}'))
+        .deepEquals(['→ /test.Echo/Echo', '→ cancelled /test.Echo/Echo']);
+    check(records.last.level).equals(.trace);
   });
 
   test('large message lands in record data verbatim when logBodies is true — '
@@ -341,21 +525,19 @@ void main() {
     await settle();
 
     check(reply.text).length.equals(5000);
-    check(writer.records.first.data['request_body']! as Map<String, Object?>)
+    check(records.first.data['request_body']! as Map<String, Object?>)
         .deepEquals(expectedBody());
-    check(writer.records.last.data['response_body']! as Map<String, Object?>)
+    check(records.last.data['response_body']! as Map<String, Object?>)
         .deepEquals(expectedBody());
   });
 
   test('logBodies defaults to false and pins the release shape — no body keys '
       'ever', () async {
-    check(LoggerGrpcInterceptor().logBodies).isFalse();
-
     await client.echoBig(_BigMessage()..text = 'user-payload');
     await check(client.boom([0])).throws<GrpcError>();
     await settle();
 
-    check(writer.records.map((r) => '${r.message}')).deepEquals([
+    check(records.map((r) => '${r.message}')).deepEquals([
       '→ /test.Echo/EchoBig',
       '← OK /test.Echo/EchoBig',
       '→ /test.Echo/Boom',
@@ -364,11 +546,10 @@ void main() {
     // The release contract: only method path, status, error-code trailer,
     // duration, and metadata — a future tap change reintroducing body dumps
     // must fail here.
-    final keys = writer.records.expand((r) => r.data.keys).toSet();
+    final keys = records.expand((r) => r.data.keys).toSet();
     check(keys.difference({'metadata', 'duration_ms', 'error_code'})).isEmpty();
-    check(
-      writer.records.map((r) => '${r.message} ${r.data} ${r.error}').join('\n'),
-    ).not((it) => it.contains('user-payload'));
+    check(records.map((r) => '${r.message} ${r.data} ${r.error}').join('\n'))
+        .not((it) => it.contains('user-payload'));
   });
 
   test('protoLogShape under name stripping is the tag-keyed map', () {
@@ -384,56 +565,45 @@ void main() {
         });
   });
 
-  test('sensitive metadata masked by default, unlisted dropped, allowlisted '
-      'kept', () async {
-    await client.echo(
-      [0],
-      options: CallOptions(
-        metadata: {
-          'Authorization': 'Bearer secret-token',
-          'x-request-id': 'r1',
-          'x-internal-envelope': 'noise',
-        },
+  for (final (name, tap, metadata, want) in [
+    (
+      'sensitive metadata masked by default, unlisted dropped, allowlisted '
+          'kept',
+      LoggerGrpcInterceptor(),
+      {
+        'Authorization': 'Bearer secret-token',
+        'x-request-id': 'r1',
+        'x-internal-envelope': 'noise',
+      },
+      {'authorization': '***', 'x-request-id': 'r1'},
+    ),
+    (
+      'custom sensitiveMetadata and metadataAllowlist match regardless of '
+          'caller casing',
+      LoggerGrpcInterceptor(
+        sensitiveMetadata: {'X-Firebase-AppCheck'},
+        metadataAllowlist: {'X-Trace-Id'},
       ),
-    );
-    await settle();
+      {'x-firebase-appcheck': 'secret-appcheck', 'x-trace-id': 'tr-42'},
+      {'x-firebase-appcheck': '***', 'x-trace-id': 'tr-42'},
+    ),
+    (
+      'sensitive metadata verbatim when opted out',
+      LoggerGrpcInterceptor(maskSensitiveValues: false),
+      {'authorization': 'Bearer secret-token'},
+      {'authorization': 'Bearer secret-token'},
+    ),
+  ]) {
+    test(name, () async {
+      await _EchoClient(
+        channel,
+        interceptors: [tap],
+      ).echo([0], options: CallOptions(metadata: metadata));
+      await settle();
 
-    final metadata =
-        writer.records.first.data['metadata']! as Map<String, Object?>;
-    check(metadata['authorization']).equals('***');
-    check(metadata['x-request-id']).equals('r1');
-    check(metadata).not((it) => it.containsKey('x-internal-envelope'));
-    check('${writer.records.first.data}')
-        .not((it) => it.contains('secret-token'));
-  });
-
-  test('custom sensitiveMetadata and metadataAllowlist match regardless of '
-      'caller casing', () async {
-    final customClient = _EchoClient(
-      channel,
-      interceptors: [
-        LoggerGrpcInterceptor(
-          sensitiveMetadata: {'X-Firebase-AppCheck'},
-          metadataAllowlist: {'X-Trace-Id'},
-        ),
-      ],
-    );
-    await customClient.echo(
-      [0],
-      options: CallOptions(
-        metadata: {
-          'x-firebase-appcheck': 'secret-appcheck',
-          'x-trace-id': 'tr-42',
-        },
-      ),
-    );
-    await settle();
-
-    final metadata =
-        writer.records.first.data['metadata']! as Map<String, Object?>;
-    check(metadata['x-firebase-appcheck']).equals('***');
-    check(metadata['x-trace-id']).equals('tr-42');
-  });
+      check(records.first.data).deepEquals({'metadata': want});
+    });
+  }
 
   test('non-ASCII sensitive value: the peer resets the stream, the value '
       'stays masked', () async {
@@ -447,12 +617,12 @@ void main() {
     ).throws<GrpcError>();
     await settle();
 
-    check(writer.records.map((r) => '${r.message}'))
+    check(records.map((r) => '${r.message}'))
         .deepEquals(['→ /test.Echo/Echo', '✗ UNKNOWN /test.Echo/Echo']);
-    check(writer.records.first.data['metadata'])
+    check(records.first.data['metadata'])
         .isA<Map<String, Object?>>()
         .deepEquals({'authorization': '***'});
-    for (final record in writer.records) {
+    for (final record in records) {
       check(record).withholds('sécret');
     }
   });
@@ -467,12 +637,12 @@ void main() {
     );
     await settle();
 
-    check(writer.records.map((r) => '${r.message}'))
+    check(records.map((r) => '${r.message}'))
         .deepEquals(['→ /test.Echo/Echo', '← OK /test.Echo/Echo']);
-    check(writer.records.first.data['metadata'])
+    check(records.first.data['metadata'])
         .isA<Map<String, Object?>>()
         .deepEquals({'authorization': '***'});
-    for (final record in writer.records) {
+    for (final record in records) {
       check(record).withholds('secret-token');
     }
   });
@@ -491,7 +661,7 @@ void main() {
         .throws<FormatException>((it) => it.identicalTo(error));
     await settle();
 
-    final record = writer.records.last;
+    final record = records.last;
     check('${record.message}').equals('✗ - /test.Echo/Echo');
     check(record).withholds('secret-token');
     check(record.error).equals('FormatException');
@@ -518,22 +688,71 @@ void main() {
     ).throws<StateError>((it) => it.identicalTo(error));
     await settle();
 
-    final record = writer.records.last;
+    final record = records.last;
     check(record).withholds('secret');
     check(record.error).equals('StateError: Bad state: rejected "***"');
   });
 
-  test('a server status keeps its text when it contains an unlisted metadata '
-      'value', () async {
+  for (final (name, metadata) in [
+    (
+      'a server status keeps its text when it contains an unlisted metadata '
+          'value',
+      {'x-flag': 'ss'},
+    ),
+    ('short sensitive metadata leaves peer status intact', {'x-api-key': 'ss'}),
+  ]) {
+    test(name, () async {
+      await check(client.boom([0], options: CallOptions(metadata: metadata)))
+          .throws<GrpcError>();
+      await settle();
+
+      check(records.last.error)
+          .isA<GrpcError>()
+          .has((e) => e.message, 'message')
+          .equals('missing');
+    });
+  }
+
+  const credentialUrl = 'https://auth.example.com/cb?access_token=secret-token';
+  for (final (kind, error) in <(String, Object)>[
+    ('peer status', const GrpcError.unknown('upstream $credentialUrl')),
+    ('non-GrpcError failure', StateError('upstream $credentialUrl')),
+  ]) {
+    test('$kind masks a redactKeys query value in a URL it carries', () async {
+      final rejecting = _EchoClient(
+        channel,
+        interceptors: [LoggerGrpcInterceptor(), _RejectingInterceptor(error)],
+      );
+
+      await check(rejecting.echo([0]))
+          .throws<Object>((it) => it.identicalTo(error));
+      await settle();
+
+      final record = records.last;
+      check(record).withholds('secret-token');
+      check('${record.error}').contains('access_token=***');
+    });
+  }
+
+  test('a call-setup failure masks a sensitive value of any length — peer '
+      'statuses spare short ones', () async {
     await check(
-      client.boom([0], options: CallOptions(metadata: {'x-flag': 'ss'})),
+      client.echo(
+        [0],
+        options: CallOptions(
+          metadata: {'x-api-key': 'tok'},
+          providers: [
+            (metadata, uri) => throw StateError('refresh failed for "tok"'),
+          ],
+        ),
+      ),
     ).throws<GrpcError>();
     await settle();
 
-    check(writer.records.last.error)
+    check(records.last.error)
         .isA<GrpcError>()
         .has((e) => e.message, 'message')
-        .equals('missing');
+        .equals('Error making call: Bad state: refresh failed for "***"');
   });
 
   test('a call-setup failure keeps its reason, the sensitive value it echoes '
@@ -557,7 +776,7 @@ void main() {
     );
     await settle();
 
-    final record = writer.records.last;
+    final record = records.last;
     check(record).withholds('secret-token');
     check(record.error)
         .isA<GrpcError>()
@@ -565,26 +784,25 @@ void main() {
         .equals('Error making call: Bad state: refresh failed for "***"');
   });
 
-  test('call-setup FormatException or ArgumentError from MetadataProvider '
-      'withholds unseen token and strips multiline source', () async {
-    for (final (throwError, want) in <(Never Function(), String)>[
-      (
-        () => throw ArgumentError.value(
-          'Bearer provider-secret',
-          'value',
-          'Contains invalid characters',
-        ),
-        'Error making call: ArgumentError',
+  for (final (type, throwError) in <(String, Never Function())>[
+    (
+      'ArgumentError',
+      () => throw ArgumentError.value(
+        'Bearer provider-secret',
+        'value',
+        'Contains invalid characters',
       ),
-      (
-        () => throw const FormatException(
-          'Invalid HTTP header field value',
-          'Bearer provider-secret\nextra-line-secret',
-        ),
-        'Error making call: FormatException',
+    ),
+    (
+      'FormatException',
+      () => throw const FormatException(
+        'Invalid HTTP header field value',
+        'Bearer provider-secret\nextra-line-secret',
       ),
-    ]) {
-      writer.records.clear();
+    ),
+  ]) {
+    test('call-setup $type from MetadataProvider withholds unseen token and '
+        'strips multiline source', () async {
       await check(
         client.echo([
           0,
@@ -592,15 +810,15 @@ void main() {
       ).throws<GrpcError>();
       await settle();
 
-      final record = writer.records.last;
+      final record = records.last;
       check(record).withholds('provider-secret');
       check(record).withholds('extra-line-secret');
       check(record.error)
           .isA<GrpcError>()
           .has((e) => e.message, 'message')
-          .equals(want);
-    }
-  });
+          .equals('Error making call: $type');
+    });
+  }
 
   test('peer status masks echoed sensitive metadata token', () async {
     await check(
@@ -618,40 +836,12 @@ void main() {
     );
     await settle();
 
-    final record = writer.records.last;
+    final record = records.last;
     check(record).withholds('echoed-peer-secret');
     check(record.error)
         .isA<GrpcError>()
         .has((e) => e.message, 'message')
         .equals('invalid token ***');
-  });
-
-  test('short sensitive metadata leaves peer status intact', () async {
-    await check(
-      client.boom([0], options: CallOptions(metadata: {'x-api-key': 'ss'})),
-    ).throws<GrpcError>();
-    await settle();
-
-    check(writer.records.last.error)
-        .isA<GrpcError>()
-        .has((e) => e.message, 'message')
-        .equals('missing');
-  });
-
-  test('sensitive metadata verbatim when opted out', () async {
-    final unmaskedClient = _EchoClient(
-      channel,
-      interceptors: [LoggerGrpcInterceptor(maskSensitiveValues: false)],
-    );
-    await unmaskedClient.echo(
-      [0],
-      options: CallOptions(metadata: {'authorization': 'Bearer secret-token'}),
-    );
-    await settle();
-
-    final metadata =
-        writer.records.first.data['metadata']! as Map<String, Object?>;
-    check(metadata['authorization']).equals('Bearer secret-token');
   });
 
   group('logged bodies with logBodies on:', () {
@@ -786,11 +976,230 @@ void main() {
         await send(tapped);
         await settle();
 
-        check(writer.records.map((r) => r.data['request_body']).nonNulls)
+        check(records.map((r) => r.data['request_body']).nonNulls)
             .deepEquals([want]);
-        check(writer.records.map((r) => r.data['response_body']).nonNulls)
+        check(records.map((r) => r.data['response_body']).nonNulls)
             .deepEquals([want]);
       });
     }
+  });
+
+  group('streaming', () {
+    late _StreamClient client;
+
+    setUp(
+      () => client = _StreamClient(
+        channel,
+        interceptors: [LoggerGrpcInterceptor()],
+      ),
+    );
+
+    Future<void> settle() =>
+        Future<void>.delayed(const Duration(milliseconds: 50));
+
+    test('failed stream logs warning with status, not done', () async {
+      final responses = client.boomStream([0]);
+      await check(responses.toList()).throws<GrpcError>(
+        (it) => it
+            .has((e) => e.trailers, 'trailers')
+            .isNotNull()
+            .containsKey('set-cookie'),
+      );
+      await settle();
+
+      check(records.map((r) => '${r.message}')).deepEquals([
+        '⇄ /test.Stream/BoomStream',
+        '✗ NOT_FOUND /test.Stream/BoomStream',
+      ]);
+      final record = records.last;
+      check(record.level).equals(.warning);
+      check(record.data['error_code']).equals('geo.404');
+      check(record).withholds('secret-session');
+      check('${record.error}')
+        ..contains('NOT_FOUND')
+        ..contains('missing');
+      check(record.error)
+          .isA<GrpcError>()
+          .has((e) => e.trailers, 'trailers')
+          .isNotNull()
+          .isEmpty();
+    });
+
+    test('clean stream logs the done line exactly once', () async {
+      final values = await client.fineStream([0]).toList();
+      await settle();
+
+      check(values).deepEquals([
+        [1],
+        [2],
+      ]);
+      check(records.map((r) => '${r.message}')).deepEquals([
+        '⇄ /test.Stream/FineStream',
+        '⇄ done /test.Stream/FineStream',
+      ]);
+      check(records.last.data['duration_ms']).isA<int>();
+    });
+
+    test('subscription cancel logs a cancelled line, never done', () async {
+      await for (final value in client.tickStream([0])) {
+        check(value).deepEquals([0]);
+        break;
+      }
+      await settle();
+
+      check(records.map((r) => '${r.message}')).deepEquals([
+        '⇄ /test.Stream/TickStream',
+        '⇄ cancelled /test.Stream/TickStream',
+      ]);
+      check(records.last.level).equals(.trace);
+    });
+
+    test('call cancel logs a cancelled line once — the CANCELLED error still '
+        'reaches the caller unlogged', () async {
+      final responses = client.tickStream([0]);
+      final errors = <Object>[];
+      final subscription = responses.listen(
+        null,
+        onError: errors.add,
+        cancelOnError: false,
+      );
+      await responses.headers;
+      await responses.cancel();
+      await settle();
+      await subscription.cancel();
+
+      check(errors).length.equals(1);
+      check(errors.single)
+          .isA<GrpcError>()
+          .has((e) => e.code, 'code')
+          .equals(StatusCode.cancelled);
+      check(records.map((r) => '${r.message}')).deepEquals([
+        '⇄ /test.Stream/TickStream',
+        '⇄ cancelled /test.Stream/TickStream',
+      ]);
+    });
+
+    test('client-streaming single logs the done line once', () async {
+      final reply = await client.collect(
+        .fromIterable([
+          [1],
+          [2],
+          [3],
+        ]),
+      );
+      await settle();
+
+      check(reply).deepEquals([3]);
+      check(
+        records.map((r) => '${r.message}'),
+      ).deepEquals(['⇄ /test.Stream/Collect', '⇄ done /test.Stream/Collect']);
+    });
+
+    test('client-streaming single logs the failure once with status', () async {
+      await check(client.collectBoom(.value([0]))).throws<GrpcError>(
+        (it) => it
+            .has((e) => e.trailers, 'trailers')
+            .isNotNull()
+            .containsKey('set-cookie'),
+      );
+      await settle();
+
+      check(records.map((r) => '${r.message}')).deepEquals([
+        '⇄ /test.Stream/CollectBoom',
+        '✗ RESOURCE_EXHAUSTED /test.Stream/CollectBoom',
+      ]);
+      final record = records.last;
+      check(record.level).equals(.warning);
+      check(record.data['error_code']).equals('geo.507');
+      check(record).withholds('secret-session');
+      check('${record.error}')
+        ..contains('RESOURCE_EXHAUSTED')
+        ..contains('overflow');
+      check(record.error)
+          .isA<GrpcError>()
+          .has((e) => e.trailers, 'trailers')
+          .isNotNull()
+          .isEmpty();
+    });
+
+    test('non-ASCII sensitive value: the peer resets the stream, the value '
+        'stays masked', () async {
+      await check(
+        client.fineStream(
+          [0],
+          options: CallOptions(
+            metadata: {'authorization': 'Bearer sécret-token'},
+          ),
+        ).toList(),
+      ).throws<GrpcError>();
+      await settle();
+
+      check(records.map((r) => '${r.message}')).deepEquals([
+        '⇄ /test.Stream/FineStream',
+        '✗ UNKNOWN /test.Stream/FineStream',
+      ]);
+      check(records.first.data['metadata'])
+          .isA<Map<String, Object?>>()
+          .deepEquals({'authorization': '***'});
+      for (final record in records) {
+        check(record).withholds('sécret');
+      }
+    });
+
+    test('control-char sensitive value is trimmed and masked', () async {
+      await client.fineStream(
+        [0],
+        options: CallOptions(
+          metadata: {'authorization': 'Bearer secret-token\n'},
+        ),
+      ).toList();
+      await settle();
+
+      check(records.map((r) => '${r.message}')).deepEquals([
+        '⇄ /test.Stream/FineStream',
+        '⇄ done /test.Stream/FineStream',
+      ]);
+      check(records.first.data['metadata'])
+          .isA<Map<String, Object?>>()
+          .deepEquals({'authorization': '***'});
+      for (final record in records) {
+        check(record).withholds('secret-token');
+      }
+    });
+
+    test('a FormatException stream failure logs as its type alone', () async {
+      const error = FormatException(
+        'Invalid HTTP header field value: "Bearer secret-token"',
+      );
+      final rejecting = _StreamClient(
+        channel,
+        interceptors: [LoggerGrpcInterceptor(), _RejectingInterceptor(error)],
+      );
+
+      await check(rejecting.fineStream([0]).toList())
+          .throws<FormatException>((it) => it.identicalTo(error));
+      await settle();
+
+      final record = records.last;
+      check('${record.message}').equals('✗ - /test.Stream/FineStream');
+      check(record).withholds('secret-token');
+      check(record.error).equals('FormatException');
+    });
+
+    test('cancelling client-streaming single logs cancelled at trace, never '
+        'warning', () async {
+      final controller = StreamController<List<int>>();
+      final call = client.collect(controller.stream);
+      await call.cancel();
+      controller.close().ignore();
+      await check(call).throws<GrpcError>();
+      await settle();
+
+      check(records.map((r) => '${r.message}')).deepEquals([
+        '⇄ /test.Stream/Collect',
+        '⇄ cancelled /test.Stream/Collect',
+      ]);
+      check(records.last.level).equals(.trace);
+    });
   });
 }

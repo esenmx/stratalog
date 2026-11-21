@@ -8,44 +8,16 @@ import 'package:stratalog_firebase_analytics/stratalog_firebase_analytics.dart';
 
 import 'logger_analytics_test.mocks.dart';
 
-final class _CapturingWriter extends ChirpWriter {
-  final records = <LogRecord>[];
-
-  @override
-  void write(LogRecord record) => records.add(record);
-}
-
 @GenerateNiceMocks([MockSpec<FirebaseAnalytics>()])
 void main() {
-  late _CapturingWriter writer;
+  late List<LogRecord> records;
   late MockFirebaseAnalytics firebase;
   late LoggerAnalytics analytics;
 
   setUp(() {
-    writer = _CapturingWriter();
-    Chirp.root = ChirpLogger().addWriter(writer);
+    records = [];
+    Chirp.root = ChirpLogger().addWriter(DelegatedChirpWriter(records.add));
     firebase = MockFirebaseAnalytics();
-    when(
-      firebase.logEvent(
-        name: anyNamed('name'),
-        parameters: anyNamed('parameters'),
-        callOptions: anyNamed('callOptions'),
-      ),
-    ).thenAnswer((_) async {});
-    when(
-      firebase.logScreenView(
-        screenName: anyNamed('screenName'),
-        screenClass: anyNamed('screenClass'),
-        parameters: anyNamed('parameters'),
-        callOptions: anyNamed('callOptions'),
-      ),
-    ).thenAnswer((_) async {});
-    when(
-      firebase.setUserId(
-        id: anyNamed('id'),
-        callOptions: anyNamed('callOptions'),
-      ),
-    ).thenAnswer((_) async {});
     analytics = LoggerAnalytics(firebase);
   });
 
@@ -57,7 +29,7 @@ void main() {
       parameters: {'total': 42},
     );
 
-    final record = writer.records.single;
+    final record = records.single;
     check('${record.message}').equals('event: checkout_started');
     check(record.data['total']).equals(42);
     check(record.loggerName).equals('Analytics');
@@ -68,19 +40,71 @@ void main() {
 
   test('logScreenView mirrors screenName and screenClass', () async {
     await analytics.logScreenView(screenName: 'Home', screenClass: 'HomePage');
-    final record = writer.records.single;
+    final record = records.single;
     check('${record.message}').equals('screen: Home');
     check(record.data['screen_class']).equals('HomePage');
     verify(firebase.logScreenView(screenName: 'Home', screenClass: 'HomePage'))
         .called(1);
   });
 
+  for (final (label, name, screenClass, parameters, message, data) in [
+    (
+      'screenClass alone',
+      null,
+      'HomePage',
+      null,
+      'screen: HomePage',
+      <String, Object>{},
+    ),
+    ('no screen', null, null, null, 'screen: unknown', <String, Object>{}),
+    (
+      'parameters',
+      'Home',
+      'HomePage',
+      {'tab': 'feed'},
+      'screen: Home',
+      {'screen_class': 'HomePage', 'tab': 'feed'},
+    ),
+  ]) {
+    test('logScreenView with $label mirrors $message, then forwards', () async {
+      await analytics.logScreenView(
+        screenName: name,
+        screenClass: screenClass,
+        parameters: parameters,
+      );
+
+      check('${records.single.message}').equals(message);
+      check(records.single.data).deepEquals(data);
+      verify(
+        firebase.logScreenView(
+          screenName: name,
+          screenClass: screenClass,
+          parameters: parameters,
+        ),
+      ).called(1);
+    });
+  }
+
   test('setUserId logs presence only, never the id value', () async {
     await analytics.setUserId('user-secret-42');
 
-    check('${writer.records.single.message}').equals('user id set');
-    check('${writer.records.single.data}')
-        .not((it) => it.contains('user-secret-42'));
+    check('${records.single.message}').equals('user id set');
+    check('${records.single.data}').not((it) => it.contains('user-secret-42'));
     verify(firebase.setUserId(id: 'user-secret-42')).called(1);
+  });
+
+  test('setUserId(null) logs user id cleared, then forwards', () async {
+    await analytics.setUserId(null);
+
+    check('${records.single.message}').equals('user id cleared');
+    verify(firebase.setUserId()).called(1);
+  });
+
+  test('setUserProperty mirrors name and value, then forwards', () async {
+    await analytics.setUserProperty(name: 'plan', value: 'pro');
+
+    check('${records.single.message}').equals('user property: plan');
+    check(records.single.data).deepEquals({'value': 'pro'});
+    verify(firebase.setUserProperty(name: 'plan', value: 'pro')).called(1);
   });
 }

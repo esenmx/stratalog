@@ -5,13 +5,6 @@ import 'package:drift/native.dart';
 import 'package:stratalog_drift/stratalog_drift.dart';
 import 'package:test/test.dart';
 
-final class _CapturingWriter extends ChirpWriter {
-  final records = <LogRecord>[];
-
-  @override
-  void write(LogRecord record) => records.add(record);
-}
-
 /// Minimal schema-less database — raw SQL only, no codegen.
 final class _Db(super.executor) extends GeneratedDatabase {
   @override
@@ -36,12 +29,12 @@ final class _Fails(final Object error) extends QueryInterceptor {
 }
 
 void main() {
-  late _CapturingWriter writer;
+  final records = <LogRecord>[];
   late _Db db;
 
   setUp(() {
-    writer = _CapturingWriter();
-    Chirp.root = ChirpLogger().addWriter(writer);
+    records.clear();
+    Chirp.root = ChirpLogger().addWriter(DelegatedChirpWriter(records.add));
     db = _Db(NativeDatabase.memory().interceptWith(LoggerQueryInterceptor()));
   });
 
@@ -50,7 +43,20 @@ void main() {
     Chirp.root = null;
   });
 
-  Iterable<String> messages() => writer.records.map((r) => '${r.message}');
+  Iterable<String> messages() => records.map((r) => '${r.message}');
+
+  LogRecord record(String prefix) =>
+      records.singleWhere((r) => '${r.message}'.startsWith(prefix));
+
+  Future<void> reopen(LoggerQueryInterceptor interceptor) async {
+    await db.close();
+    db = _Db(NativeDatabase.memory().interceptWith(interceptor));
+  }
+
+  Future<int> insertSecret() => db.customInsert(
+    'INSERT INTO t (secret) VALUES (?)',
+    variables: [.withString('hunter2')],
+  );
 
   test('statements trace with args, duration, and result counts', () async {
     await db.customStatement('CREATE TABLE t (id INTEGER PRIMARY KEY)');
@@ -63,73 +69,83 @@ void main() {
     check(rows).length.equals(1);
     check(messages()).contains('▸ CREATE TABLE t (id INTEGER PRIMARY KEY)');
 
-    final insert = writer.records.firstWhere(
-      (r) => '${r.message}'.startsWith('▸ INSERT'),
-    );
+    final insert = record('▸ INSERT');
     check(insert.data['args']).isA<List<Object?>>().deepEquals([7]);
     check(insert.data['duration_ms']).isA<int>();
 
-    final select = writer.records.firstWhere(
-      (r) => '${r.message}'.startsWith('▸ SELECT'),
-    );
-    check(select.data['rows']).equals(1);
+    check(record('▸ SELECT').data['rows']).equals(1);
+  });
+
+  test('update and delete trace their affected counts', () async {
+    await db.customStatement('CREATE TABLE t (id INT)');
+    await db.customStatement('INSERT INTO t VALUES (1), (2)');
+    await db.customUpdate('UPDATE t SET id = id + 10');
+    await db.executor.runDelete('DELETE FROM t WHERE id = 11', const []);
+
+    check(record('▸ UPDATE').data['affected']).equals(2);
+    check(record('▸ DELETE').data['affected']).equals(1);
+  });
+
+  test('a batch traces its statement count', () async {
+    await db.customStatement('CREATE TABLE t (id INT)');
+    await db.batch((batch) {
+      for (var i = 0; i < 2; i++) {
+        batch.customStatement('INSERT INTO t VALUES (?)', [i]);
+      }
+    });
+
+    check(messages()).contains('▸ BATCH (2 statements)');
+  });
+
+  test('a committed transaction traces BEGIN and COMMIT', () async {
+    await db.transaction(() => db.customStatement('CREATE TABLE t (id INT)'));
+
+    check(messages()).containsEqualInOrder([
+      '▸ BEGIN TRANSACTION',
+      '▸ CREATE TABLE t (id INT)',
+      '▸ COMMIT',
+    ]);
+  });
+
+  test('a failed transaction traces ROLLBACK', () async {
+    final failing = db.transaction<void>(() async {
+      await db.customStatement('CREATE TABLE t (id INT)');
+      throw StateError('abort');
+    });
+
+    await check(failing).throws<StateError>();
+    check(messages())
+        .containsEqualInOrder(['▸ BEGIN TRANSACTION', '▸ ROLLBACK']);
   });
 
   test('failures log the statement at warning and rethrow', () async {
     await check(db.customStatement('SELECT * FROM missing_table'))
         .throws<Object>();
 
-    final failure = writer.records.firstWhere(
-      (r) => '${r.message}'.startsWith('✗'),
-    );
+    final failure = record('✗');
     check(failure.level).equals(.warning);
     check('${failure.message}').contains('missing_table');
   });
 
   test('logArgs false keeps bound values out of every sink', () async {
-    await db.close();
-    db = _Db(
-      NativeDatabase.memory().interceptWith(
-        LoggerQueryInterceptor(logArgs: false),
-      ),
-    );
+    await reopen(LoggerQueryInterceptor(logArgs: false));
     await db.customStatement('CREATE TABLE t (secret TEXT)');
-    await db.customInsert(
-      'INSERT INTO t (secret) VALUES (?)',
-      variables: [.withString('hunter2')],
-    );
+    await insertSecret();
 
-    check('${writer.records.map((r) => r.data).toList()}')
+    check('${records.map((r) => r.data).toList()}')
         .not((it) => it.contains('hunter2'));
   });
 
   group('logArgs false reduces a failure to its type and engine message', () {
-    Future<void> openWithLogArgsOff() async {
-      await db.close();
-      db = _Db(
-        NativeDatabase.memory().interceptWith(
-          LoggerQueryInterceptor(logArgs: false),
-        ),
-      );
-    }
-
-    LogRecord failure() =>
-        writer.records.singleWhere((r) => '${r.message}'.startsWith('✗'));
-
-    Future<void> insertSecret() => db.customInsert(
-      'INSERT INTO t (secret) VALUES (?)',
-      variables: [.withString('hunter2')],
-    );
-
     test('on a failing statement', () async {
-      await openWithLogArgsOff();
+      await reopen(LoggerQueryInterceptor(logArgs: false));
       await db.customStatement('CREATE TABLE t (secret TEXT UNIQUE)');
       await insertSecret();
 
       await check(insertSecret()).throws<SqliteException>(
         (it) => it.has((e) => '$e', 'toString()').contains('hunter2'),
       );
-      check(failure()).withholds(
+      check(record('✗')).withholds(
         'hunter2',
         error:
             'SqliteException(2067): while executing statement, UNIQUE '
@@ -138,7 +154,7 @@ void main() {
     });
 
     test('on a failing batch', () async {
-      await openWithLogArgsOff();
+      await reopen(LoggerQueryInterceptor(logArgs: false));
       await db.customStatement('CREATE TABLE t (secret TEXT UNIQUE)');
 
       await check(
@@ -152,7 +168,7 @@ void main() {
       ).throws<SqliteException>(
         (it) => it.has((e) => '$e', 'toString()').contains('hunter2'),
       );
-      check(failure()).withholds(
+      check(record('✗')).withholds(
         'hunter2',
         error:
             'SqliteException(2067): while executing statement, UNIQUE '
@@ -161,11 +177,11 @@ void main() {
     });
 
     test('keeps the message of a failure without bound values', () async {
-      await openWithLogArgsOff();
+      await reopen(LoggerQueryInterceptor(logArgs: false));
 
       await check(db.customStatement('SELECT * FROM missing_table'))
           .throws<SqliteException>();
-      check(failure())
+      check(record('✗'))
           .has((r) => '${r.error}', 'error')
           .equals(
             'SqliteException(1): while executing, '
@@ -182,23 +198,16 @@ void main() {
 
       await check(executor.runCustom('SELECT 1'))
           .throws<Object>((it) => it.identicalTo(thrown));
-      check(failure().error).equals('_UnprintableError');
+      check(record('✗').error).equals('_UnprintableError');
     });
   });
 
   test('logArgs true attaches the raw exception on failure', () async {
     await db.customStatement('CREATE TABLE t (secret TEXT UNIQUE)');
-    Future<int> insertSecret() => db.customInsert(
-      'INSERT INTO t (secret) VALUES (?)',
-      variables: [.withString('hunter2')],
-    );
     await insertSecret();
     await check(insertSecret()).throws<SqliteException>();
 
-    final failure = writer.records.singleWhere(
-      (r) => '${r.message}'.startsWith('✗'),
-    );
-    check(failure.error)
+    check(record('✗').error)
         .isA<SqliteException>()
         .has((e) => e.parametersToStatement, 'parametersToStatement')
         .isNotNull()
@@ -218,9 +227,7 @@ void main() {
   });
 
   test('long statements are ellipsized in the message', () async {
-    final interceptor = LoggerQueryInterceptor(maxStatementChars: 16);
-    await db.close();
-    db = _Db(NativeDatabase.memory().interceptWith(interceptor));
+    await reopen(LoggerQueryInterceptor(maxStatementChars: 16));
 
     await db.customStatement('CREATE TABLE another_rather_long_name (id INT)');
 

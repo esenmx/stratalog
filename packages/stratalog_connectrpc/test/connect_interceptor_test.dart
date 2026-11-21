@@ -15,13 +15,6 @@ import 'package:protobuf/well_known_types/google/protobuf/struct.pb.dart';
 import 'package:stratalog_connectrpc/stratalog_connectrpc.dart';
 import 'package:test/test.dart';
 
-final class _CapturingWriter extends ChirpWriter {
-  final records = <LogRecord>[];
-
-  @override
-  void write(LogRecord record) => records.add(record);
-}
-
 final class _NeverAborts implements AbortSignal {
   const new();
 
@@ -138,37 +131,88 @@ final class _UnprintableError {
   String toString() => throw StateError('unprintable');
 }
 
-Spec<String, String> _spec(StreamType type) =>
-    Spec('/acme.foo.v1.FooService/Bar', type, () => '', () => '');
+const _bar = '/acme.foo.v1.FooService/Bar';
 
-UnaryRequest<String, String> _request({Headers? headers}) => UnaryRequest(
-  _spec(.unary),
-  'https://api.example.com/acme.foo.v1.FooService/Bar',
+Spec<String, String> _spec(StreamType type, [String path = _bar]) =>
+    Spec(path, type, () => '', () => '');
+
+const _bigSpec = Spec<_BigMessage, _BigMessage>(
+  '/acme.foo.v1.FooService/Big',
+  .unary,
+  _BigMessage.new,
+  _BigMessage.new,
+);
+
+UnaryRequest<I, O> _unary<I extends Object, O extends Object>(
+  Spec<I, O> spec,
+  I message, {
+  Headers? headers,
+}) => UnaryRequest(
+  spec,
+  'https://api.example.com${spec.procedure}',
   headers ?? Headers(),
-  'ping',
+  message,
   const _NeverAborts(),
 );
 
-StreamRequest<String, String> _streamRequest() => StreamRequest(
-  _spec(.bidi),
-  'https://api.example.com/acme.foo.v1.FooService/Bar',
-  Headers(),
-  const .empty(),
-  const _NeverAborts(),
-);
+UnaryRequest<String, String> _request({Headers? headers}) =>
+    _unary(_spec(.unary), 'ping', headers: headers);
+
+StreamRequest<String, String> _streamRequest([String path = _bar]) =>
+    StreamRequest(
+      _spec(.bidi, path),
+      'https://api.example.com$path',
+      Headers(),
+      const .empty(),
+      const _NeverAborts(),
+    );
 
 void main() {
-  late _CapturingWriter writer;
+  late List<LogRecord> records;
 
   setUp(() {
-    writer = _CapturingWriter();
-    Chirp.root = ChirpLogger().addWriter(writer);
+    records = [];
+    Chirp.root = ChirpLogger().addWriter(DelegatedChirpWriter(records.add));
   });
 
   tearDown(() => Chirp.root = null);
 
   Future<Response<String, String>> ok(Request<String, String> request) async =>
       UnaryResponse(request.spec, Headers(), 'pong', Headers());
+
+  /// Runs one call failing with [thrown] — unary, or a stream erroring on its
+  /// first event (after one message when [messageFirst]) — checks the caller
+  /// gets [thrown] itself, and returns the last record.
+  Future<LogRecord> failingCall(
+    Object thrown, {
+    Interceptor? tap,
+    bool stream = false,
+    bool messageFirst = false,
+    String path = _bar,
+  }) async {
+    final wrapped = (tap ?? loggerConnectInterceptor())<String, String>(
+      (request) => stream
+          ? .value(
+              StreamResponse(
+                request.spec,
+                Headers(),
+                .fromFutures([if (messageFirst) .value('a'), .error(thrown)]),
+                Headers(),
+              ),
+            )
+          : .error(thrown),
+    );
+    if (stream) {
+      final response =
+          await wrapped(_streamRequest(path)) as StreamResponse<String, String>;
+      await check(response.message.toList())
+          .throws<Object>((it) => it.identicalTo(thrown));
+    } else {
+      await check(wrapped(_unary(_spec(.unary, path), 'ping')))
+          .throws<Object>((it) => it.identicalTo(thrown));
+    }
+    return records.last;
+  }
 
   test('success logs procedure with duration at trace', () async {
     final interceptor = loggerConnectInterceptor();
@@ -177,11 +221,11 @@ void main() {
     final response = await wrapped(_request());
 
     check(response).isA<UnaryResponse<String, String>>();
-    check(writer.records.map((r) => '${r.message}')).deepEquals([
+    check(records.map((r) => '${r.message}')).deepEquals([
       '→ /acme.foo.v1.FooService/Bar',
       '← OK /acme.foo.v1.FooService/Bar',
     ]);
-    check(writer.records.last.data['duration_ms']).isA<int>();
+    check(records.last.data['duration_ms']).isA<int>();
   });
 
   test('large message lands in record data verbatim when logBodies is true — '
@@ -204,110 +248,124 @@ void main() {
     final wrapped = loggerConnectInterceptor(
       logBodies: true,
     )<_BigMessage, _BigMessage>(okBig);
-    await wrapped(
-      UnaryRequest(
-        const Spec(
-          '/acme.foo.v1.FooService/Big',
-          .unary,
-          _BigMessage.new,
-          _BigMessage.new,
+    await wrapped(_unary(_bigSpec, message));
+
+    check(records.first.data['request_body']! as Map<String, Object?>)
+        .deepEquals(expectedBody());
+    check(records.last.data['response_body']! as Map<String, Object?>)
+        .deepEquals(expectedBody());
+  });
+
+  for (final (name, tap, headers, want)
+      in <(String, Interceptor, Headers, Map<String, Object?>)>[
+        (
+          'sensitive headers masked by default, unlisted dropped, allowlisted '
+              'kept',
+          loggerConnectInterceptor(),
+          Headers()
+            ..add('authorization', 'Bearer secret-token')
+            ..add('x-request-id', 'r1')
+            ..add('x-internal-envelope', 'noise'),
+          {'authorization': '***', 'x-request-id': 'r1'},
         ),
-        'https://api.example.com/acme.foo.v1.FooService/Big',
-        Headers(),
-        message,
-        const _NeverAborts(),
-      ),
-    );
+        (
+          'custom sensitiveHeaders and headerAllowlist match regardless of '
+              'caller casing and combine multi-value headers',
+          loggerConnectInterceptor(
+            sensitiveHeaders: {'X-Firebase-AppCheck'},
+            headerAllowlist: {'X-Trace-Id'},
+          ),
+          Headers()
+            ..add('x-firebase-appcheck', 'secret-appcheck')
+            ..add('x-trace-id', 't1')
+            ..add('x-trace-id', 't2'),
+          {'x-firebase-appcheck': '***', 'x-trace-id': 't1, t2'},
+        ),
+        (
+          'sensitive headers verbatim when opted out',
+          loggerConnectInterceptor(maskSensitiveValues: false),
+          Headers()..add('authorization', 'Bearer secret-token'),
+          {'authorization': 'Bearer secret-token'},
+        ),
+      ]) {
+    test(name, () async {
+      await tap<String, String>(ok)(_request(headers: headers));
 
-    check(writer.records.first.data['request_body']! as Map<String, Object?>)
-        .deepEquals(expectedBody());
-    check(writer.records.last.data['response_body']! as Map<String, Object?>)
-        .deepEquals(expectedBody());
-  });
+      // Whole data: no other key can carry a header value.
+      check(records.first.data).deepEquals({'headers': want});
+    });
+  }
 
-  test('sensitive headers masked by default, unlisted dropped, allowlisted '
-      'kept', () async {
-    final headers = Headers()
-      ..add('authorization', 'Bearer secret-token')
-      ..add('x-request-id', 'r1')
-      ..add('x-internal-envelope', 'noise');
-    final wrapped = loggerConnectInterceptor()<String, String>(ok);
+  for (final (name, stream, thrown, code, errorCode)
+      in <(String, bool, Object, String, String?)>[
+        (
+          'ConnectException logs code, error-code trailer, rethrows',
+          false,
+          ConnectException(
+            .notFound,
+            'missing',
+            metadata: Headers()..add('error-code', 'geo.404'),
+          ),
+          'not_found',
+          'geo.404',
+        ),
+        (
+          'non-Connect unary error logs a failure line and propagates',
+          false,
+          StateError('boom'),
+          '-',
+          null,
+        ),
+        (
+          'stream ConnectException logs failure exactly once with code and '
+              'error-code trailer, rethrows',
+          true,
+          ConnectException(
+            .unavailable,
+            'dropped',
+            metadata: Headers()..add('error-code', 'net.503'),
+          ),
+          'unavailable',
+          'net.503',
+        ),
+        (
+          'non-Connect stream error logs a terminal failure line and '
+              'propagates',
+          true,
+          StateError('boom'),
+          '-',
+          null,
+        ),
+      ]) {
+    test(name, () async {
+      final record = await failingCall(
+        thrown,
+        stream: stream,
+        messageFirst: stream,
+      );
 
-    await wrapped(_request(headers: headers));
+      check(records.map((r) => '${r.message}'))
+          .deepEquals(['${stream ? '⇄' : '→'} $_bar', '✗ $code $_bar']);
+      check(record.level).equals(.warning);
+      check(record.data['error_code']).equals(errorCode);
+      check(record.data.containsKey('error_code')).equals(errorCode != null);
+      check(record.data['duration_ms']).isA<int>();
+    });
+  }
 
-    final logged =
-        writer.records.first.data['headers']! as Map<String, Object?>;
-    check(logged['authorization']).equals('***');
-    check(logged['x-request-id']).equals('r1');
-    check(logged).not((it) => it.containsKey('x-internal-envelope'));
-    check('${writer.records.first.data}')
-        .not((it) => it.contains('secret-token'));
-  });
-
-  test('custom sensitiveHeaders and headerAllowlist match regardless of '
-      'caller casing and combine multi-value headers', () async {
-    final headers = Headers()
-      ..add('x-firebase-appcheck', 'secret-appcheck')
-      ..add('x-trace-id', 't1')
-      ..add('x-trace-id', 't2');
-    final wrapped = loggerConnectInterceptor(
-      sensitiveHeaders: {'X-Firebase-AppCheck'},
-      headerAllowlist: {'X-Trace-Id'},
-    )<String, String>(ok);
-
-    await wrapped(_request(headers: headers));
-
-    final logged =
-        writer.records.first.data['headers']! as Map<String, Object?>;
-    check(logged['x-firebase-appcheck']).equals('***');
-    check(logged['x-trace-id']).equals('t1, t2');
-  });
-
-  test('sensitive headers verbatim when opted out', () async {
-    final headers = Headers()..add('authorization', 'Bearer secret-token');
-    final wrapped = loggerConnectInterceptor(
-      maskSensitiveValues: false,
-    )<String, String>(ok);
-
-    await wrapped(_request(headers: headers));
-
-    final logged =
-        writer.records.first.data['headers']! as Map<String, Object?>;
-    check(logged['authorization']).equals('Bearer secret-token');
-  });
-
-  test('ConnectException logs code, error-code trailer, rethrows', () async {
-    Future<Response<String, String>> fails(Request<String, String> _) async {
-      throw ConnectException(
+  test('a custom errorCodeTrailer is read, the default key ignored', () async {
+    final record = await failingCall(
+      ConnectException(
         .notFound,
         'missing',
-        metadata: Headers()..add('error-code', 'geo.404'),
-      );
-    }
+        metadata: Headers()
+          ..add('error-code', 'geo.404')
+          ..add('x-app-code', 'app.1'),
+      ),
+      tap: loggerConnectInterceptor(errorCodeTrailer: 'x-app-code'),
+    );
 
-    final wrapped = loggerConnectInterceptor()<String, String>(fails);
-
-    await check(wrapped(_request())).throws<ConnectException>();
-    final record = writer.records.last;
-    check(record.level).equals(.warning);
-    check('${record.message}')
-        .equals('✗ not_found /acme.foo.v1.FooService/Bar');
-    check(record.data['error_code']).equals('geo.404');
-    check(record.data['duration_ms']).isA<int>();
-  });
-
-  test('non-Connect unary error logs a failure line and propagates', () async {
-    Future<Response<String, String>> fails(Request<String, String> _) async {
-      throw StateError('boom');
-    }
-
-    final wrapped = loggerConnectInterceptor()<String, String>(fails);
-
-    await check(wrapped(_request())).throws<StateError>();
-    final record = writer.records.last;
-    check(record.level).equals(.warning);
-    check('${record.message}').equals('✗ - /acme.foo.v1.FooService/Bar');
-    check(record.data['duration_ms']).isA<int>();
+    check(record.data['error_code']).equals('app.1');
   });
 
   test('logBodies defaults to false and pins the release shape — no body keys '
@@ -318,31 +376,18 @@ void main() {
     ) async => UnaryResponse(request.spec, Headers(), message, Headers());
 
     final wrapped = loggerConnectInterceptor()<_BigMessage, _BigMessage>(okBig);
-    await wrapped(
-      UnaryRequest(
-        const Spec(
-          '/acme.foo.v1.FooService/Big',
-          .unary,
-          _BigMessage.new,
-          _BigMessage.new,
-        ),
-        'https://api.example.com/acme.foo.v1.FooService/Big',
-        Headers(),
-        message,
-        const _NeverAborts(),
-      ),
-    );
+    await wrapped(_unary(_bigSpec, message));
 
-    check(writer.records.map((r) => '${r.message}')).deepEquals([
+    check(records.map((r) => '${r.message}')).deepEquals([
       '→ /acme.foo.v1.FooService/Big',
       '← OK /acme.foo.v1.FooService/Big',
     ]);
     // The release contract: only procedure, code, error-code trailer,
     // duration, and headers — a future tap change reintroducing body dumps
     // must fail here.
-    final keys = writer.records.expand((r) => r.data.keys).toSet();
+    final keys = records.expand((r) => r.data.keys).toSet();
     check(keys.difference({'headers', 'duration_ms', 'error_code'})).isEmpty();
-    check(writer.records.map((r) => '${r.message} ${r.data}').join('\n'))
+    check(records.map((r) => '${r.message} ${r.data}').join('\n'))
         .not((it) => it.contains('user-payload'));
   });
 
@@ -370,7 +415,7 @@ void main() {
 
     // Protocol.stream completes the future at headers-received — the
     // terminal line belongs to the message stream, never here.
-    check(writer.records.map((r) => '${r.message}'))
+    check(records.map((r) => '${r.message}'))
         .deepEquals(['⇄ /acme.foo.v1.FooService/Bar']);
   });
 
@@ -394,64 +439,34 @@ void main() {
     check(identical(response.headers, headers)).isTrue();
     check(identical(response.trailers, trailers)).isTrue();
     check(await response.message.toList()).deepEquals(['a', 'b']);
-    check(writer.records.map((r) => '${r.message}')).deepEquals([
+    check(records.map((r) => '${r.message}')).deepEquals([
       '⇄ /acme.foo.v1.FooService/Bar',
       '⇄ done /acme.foo.v1.FooService/Bar',
     ]);
-    check(writer.records.last.data['duration_ms']).isA<int>();
+    check(records.last.data['duration_ms']).isA<int>();
   });
 
-  test('stream ConnectException logs failure exactly once with code and '
-      'error-code trailer, rethrows', () async {
-    Stream<String> failing() async* {
-      yield 'a';
-      throw ConnectException(
-        .unavailable,
-        'dropped',
-        metadata: Headers()..add('error-code', 'net.503'),
-      );
-    }
-
+  test('stream calls log no bodies even with logBodies on', () async {
     Future<Response<String, String>> okStream(
       Request<String, String> request,
-    ) async => StreamResponse(request.spec, Headers(), failing(), Headers());
+    ) async => StreamResponse(
+      request.spec,
+      Headers(),
+      .fromIterable(['a']),
+      Headers(),
+    );
 
-    final wrapped = loggerConnectInterceptor()<String, String>(okStream);
+    final wrapped = loggerConnectInterceptor(logBodies: true)<String, String>(
+      okStream,
+    );
     final response =
         await wrapped(_streamRequest()) as StreamResponse<String, String>;
+    await response.message.drain<void>();
 
-    await check(response.message.toList()).throws<ConnectException>();
-    check(writer.records.map((r) => '${r.message}')).deepEquals([
-      '⇄ /acme.foo.v1.FooService/Bar',
-      '✗ unavailable /acme.foo.v1.FooService/Bar',
-    ]);
-    final record = writer.records.last;
-    check(record.level).equals(.warning);
-    check(record.data['error_code']).equals('net.503');
-    check(record.data['duration_ms']).isA<int>();
-  });
-
-  test('non-Connect stream error logs a terminal failure line and '
-      'propagates', () async {
-    Stream<String> failing() async* {
-      yield 'a';
-      throw StateError('boom');
-    }
-
-    Future<Response<String, String>> okStream(
-      Request<String, String> request,
-    ) async => StreamResponse(request.spec, Headers(), failing(), Headers());
-
-    final wrapped = loggerConnectInterceptor()<String, String>(okStream);
-    final response =
-        await wrapped(_streamRequest()) as StreamResponse<String, String>;
-
-    await check(response.message.toList()).throws<StateError>();
-    check(writer.records.map((r) => '${r.message}')).deepEquals([
-      '⇄ /acme.foo.v1.FooService/Bar',
-      '✗ - /acme.foo.v1.FooService/Bar',
-    ]);
-    check(writer.records.last.level).equals(.warning);
+    check(records.map((r) => '${r.message}'))
+        .deepEquals(['⇄ $_bar', '⇄ done $_bar']);
+    final keys = records.expand((r) => r.data.keys).toSet();
+    check(keys.difference({'headers', 'duration_ms'})).isEmpty();
   });
 
   group('failure record error withholds what the record withholds', () {
@@ -487,6 +502,14 @@ void main() {
         'HttpException: Connection closed, uri = https://api.example.com/a.B/C',
       ),
       (
+        'ConnectException message carrying a GET URL',
+        ConnectException(
+          .unknown,
+          'upstream https://api.example.com/a.B/C?message=secret-body',
+        ),
+        '[unknown] upstream https://api.example.com/a.B/C',
+      ),
+      (
         'multi-line ConnectException message',
         ConnectException(.unknown, 'first\nsecret-second-line'),
         '[unknown] first',
@@ -512,14 +535,7 @@ void main() {
       ),
     ]) {
       test('unary: $name', () async {
-        Future<Response<String, String>> fails(Request<String, String> _) =>
-            .error(thrown);
-
-        final wrapped = loggerConnectInterceptor()<String, String>(fails);
-
-        await check(wrapped(_request()))
-            .throws<Object>((it) => it.identicalTo(thrown));
-        final record = writer.records.last;
+        final record = await failingCall(thrown);
         check(recordText(record)).not((it) => it.contains('secret'));
         check('${record.error}').equals(want);
         check(record.error).not((it) => it.identicalTo(thrown));
@@ -534,22 +550,13 @@ void main() {
     }
 
     test('stream: ConnectException wrapping a body', () async {
-      final thrown = ConnectException.from(
-        const FormatException('Bad JSON', '{"token": "secret-body"}'),
-        .internal,
+      final record = await failingCall(
+        ConnectException.from(
+          const FormatException('Bad JSON', '{"token": "secret-body"}'),
+          .internal,
+        ),
+        stream: true,
       );
-      Future<Response<String, String>> okStream(
-        Request<String, String> request,
-      ) async =>
-          StreamResponse(request.spec, Headers(), .error(thrown), Headers());
-
-      final wrapped = loggerConnectInterceptor()<String, String>(okStream);
-      final response =
-          await wrapped(_streamRequest()) as StreamResponse<String, String>;
-
-      await check(response.message.toList())
-          .throws<Object>((it) => it.identicalTo(thrown));
-      final record = writer.records.last;
       check(recordText(record)).not((it) => it.contains('secret'));
       check('${record.error}').equals('[internal] FormatException');
     });
@@ -572,18 +579,9 @@ void main() {
           interceptors: [loggerConnectInterceptor()],
         );
 
-        await check(
-          transport.unary(
-            const Spec(
-              '/acme.foo.v1.FooService/Big',
-              .unary,
-              _BigMessage.new,
-              _BigMessage.new,
-            ),
-            _BigMessage(),
-          ),
-        ).throws<ConnectException>();
-        final record = writer.records.last;
+        await check(transport.unary(_bigSpec, _BigMessage()))
+            .throws<ConnectException>();
+        final record = records.last;
         check(recordText(record)).not((it) => it.contains('secret'));
         check('${record.error}').equals('[internal] FormatException');
       });
@@ -601,29 +599,19 @@ void main() {
         httpClient: createHttpClient(client),
         interceptors: [loggerConnectInterceptor()],
       );
-      Object? thrown;
 
-      try {
-        await transport.unary(
-          const Spec(
-            '/acme.foo.v1.FooService/Big',
-            .unary,
-            _BigMessage.new,
-            _BigMessage.new,
-          ),
+      await check(
+        transport.unary(
+          _bigSpec,
           _BigMessage(),
           CallOptions(
             headers: Headers()..add('authorization', 'Bearer secret-token\n'),
           ),
-        );
-      } on Object catch (error) {
-        thrown = error;
-      }
-
-      check(thrown).isA<FormatException>();
-      check('$thrown').contains('secret-token');
-      final record = writer.records.last;
-      check(record.error).not((it) => it.identicalTo(thrown));
+        ),
+      ).throws<FormatException>(
+        (it) => it.has((e) => '$e', 'text').contains('secret-token'),
+      );
+      final record = records.last;
       check(recordText(record)).not((it) => it.contains('secret-token'));
       check('${record.error}').equals('FormatException');
     });
@@ -633,28 +621,17 @@ void main() {
       ('scheme separators', '://' * 10000),
     ]) {
       test('scrubs a long $name message in bounded time', () async {
-        final thrown = ConnectException(.unknown, message);
-        Future<Response<String, String>> fails(Request<String, String> _) =>
-            .error(thrown);
-        final wrapped = loggerConnectInterceptor()<String, String>(fails);
         final watch = Stopwatch()..start();
+        final record = await failingCall(ConnectException(.unknown, message));
 
-        await check(wrapped(_request()))
-            .throws<Object>((it) => it.identicalTo(thrown));
         check(watch.elapsedMilliseconds).isLessThan(1000);
-        check('${writer.records.last.error}'.length).isLessThan(300);
+        check('${record.error}'.length).isLessThan(300);
       });
     }
 
     test('an error whose toString throws logs its type', () async {
-      final thrown = _UnprintableError();
-      Future<Response<String, String>> fails(Request<String, String> _) =>
-          .error(thrown);
-      final wrapped = loggerConnectInterceptor()<String, String>(fails);
-
-      await check(wrapped(_request()))
-          .throws<Object>((it) => it.identicalTo(thrown));
-      check(writer.records.last.error).equals('_UnprintableError');
+      final record = await failingCall(_UnprintableError());
+      check(record.error).equals('_UnprintableError');
     });
 
     test('logBodies still sanitises errors and metadata', () async {
@@ -664,21 +641,16 @@ void main() {
         cause: const FormatException('Bad JSON', '{"password": "secret-body"}'),
         metadata: Headers()..add('set-cookie', 'sid=secret-cookie'),
       );
-      Future<Response<String, String>> fails(Request<String, String> _) =>
-          .error(thrown);
-
-      final wrapped = loggerConnectInterceptor(logBodies: true)<String, String>(
-        fails,
+      final record = await failingCall(
+        thrown,
+        tap: loggerConnectInterceptor(logBodies: true),
       );
 
-      await check(wrapped(_request()))
-          .throws<Object>((it) => it.identicalTo(thrown));
-      final logged = writer.records.last.error;
-      check(logged)
+      check(record.error)
           .isA<ConnectException>()
           .has((e) => e.metadata.entries.isEmpty, 'metadata empty')
           .isTrue();
-      check(recordText(writer.records.last))
+      check(recordText(record))
         ..not((it) => it.contains('secret-body'))
         ..not((it) => it.contains('secret-cookie'));
     });
@@ -737,16 +709,8 @@ void main() {
         Request<_Login, _Login> request,
       ) async => UnaryResponse(spec, Headers(), build(), Headers());
 
-      await interceptor<_Login, _Login>(echo)(
-        UnaryRequest(
-          spec,
-          'https://api.example.com$path',
-          Headers(),
-          build(),
-          const _NeverAborts(),
-        ),
-      );
-      return writer.records;
+      await interceptor<_Login, _Login>(echo)(_unary(spec, build()));
+      return records;
     }
 
     Condition<Object?> isBody(Map<String, Object?> body) =>
@@ -897,25 +861,16 @@ void main() {
           return .value(response);
         }
 
-        final got =
-            await loggerConnectInterceptor(logBodies: true)<Object, Object>(
-              reply,
-            )(
-              UnaryRequest(
-                spec,
-                procedure,
-                Headers(),
-                sent,
-                const _NeverAborts(),
-              ),
-            );
+        final got = await loggerConnectInterceptor(
+          logBodies: true,
+        )<Object, Object>(reply)(_unary(spec, sent));
 
         check(got).identicalTo(response);
         check(calls).equals(1);
-        check(writer.records.map((r) => '${r.message}'))
+        check(records.map((r) => '${r.message}'))
             .deepEquals(['→ $procedure', '← OK $procedure']);
-        check(writer.records.first.data['request_body']).which(wantRequest);
-        check(writer.records.last.data['response_body']).which(wantResponse);
+        check(records.first.data['request_body']).which(wantRequest);
+        check(records.last.data['response_body']).which(wantResponse);
       });
     }
 
@@ -932,9 +887,6 @@ void main() {
       const FormatException('Bad JSON', '{"password": "secret-body"}'),
       .internal,
     );
-    Condition<Object?> isCopy() =>
-        (it) =>
-            it.has((e) => '$e', 'text').equals('[internal] FormatException');
     for (final (name, interceptor, path) in <(String, Interceptor, String)>[
       (
         'matched procedure attaches the sanitised copy',
@@ -952,41 +904,17 @@ void main() {
         procedure,
       ),
     ]) {
-      test('unary failure: $name', () async {
-        Future<Response<String, String>> fails(Request<String, String> _) =>
-            .error(thrown);
-        final spec = Spec<String, String>(path, .unary, () => '', () => '');
-
-        await check(
-          interceptor<String, String>(fails)(
-            UnaryRequest(spec, path, Headers(), 'ping', const _NeverAborts()),
-          ),
-        ).throws<Object>((it) => it.identicalTo(thrown));
-
-        check(writer.records.last.error).which(isCopy());
-      });
-
-      test('stream failure: $name', () async {
-        Future<Response<String, String>> okStream(
-          Request<String, String> request,
-        ) async =>
-            StreamResponse(request.spec, Headers(), .error(thrown), Headers());
-        final spec = Spec<String, String>(path, .bidi, () => '', () => '');
-
-        final response = await interceptor<String, String>(okStream)(
-          StreamRequest(
-            spec,
-            path,
-            Headers(),
-            const .empty(),
-            const _NeverAborts(),
-          ),
-        ) as StreamResponse<String, String>;
-
-        await check(response.message.toList())
-            .throws<Object>((it) => it.identicalTo(thrown));
-        check(writer.records.last.error).which(isCopy());
-      });
+      for (final (label, stream) in [('unary', false), ('stream', true)]) {
+        test('$label failure: $name', () async {
+          final record = await failingCall(
+            thrown,
+            tap: interceptor,
+            stream: stream,
+            path: path,
+          );
+          check('${record.error}').equals('[internal] FormatException');
+        });
+      }
     }
   });
 }
