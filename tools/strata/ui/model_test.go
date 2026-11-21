@@ -3,8 +3,10 @@ package ui
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -13,6 +15,7 @@ import (
 	"charm.land/bubbles/v2/cursor"
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/samber/lo"
 	"pgregory.net/rapid"
 
 	"github.com/esenmx/stratalog/tools/strata/record"
@@ -49,15 +52,32 @@ func stateTrace() record.Record {
 	}
 }
 
-// newModel is a sized model holding recs, following as on startup.
+// newModel is a 120x20 model holding recs, following as on startup.
 func newModel(t *testing.T, recs ...record.Record) *Model {
 	t.Helper()
-	m := New("./.flutter.vmservice")
-	send(m, tea.WindowSizeMsg{Width: 120, Height: 20})
+	return sizedModel(t, 120, 20, recs...)
+}
+
+// sizedModel is a w x h model holding recs, following as on startup.
+func sizedModel(t *testing.T, w, h int, recs ...record.Record) *Model {
+	t.Helper()
+	m := NewWithOptions(Options{Target: "./.flutter.vmservice"})
+	send(m, tea.WindowSizeMsg{Width: w, Height: h})
 	for _, r := range recs {
 		send(m, RecordMsg(vmservice.Item{Rec: r}, 0))
 	}
 	return m
+}
+
+// numbered is n appBoot copies with seqs from+1 on and messages
+// fmt.Sprintf(format, from+i).
+func numbered(format string, from, n int) []record.Record {
+	return lo.Times(n, func(i int) record.Record {
+		r := appBoot()
+		r.Seq = int64(from + i + 1)
+		r.Message = fmt.Sprintf(format, from+i)
+		return r
+	})
 }
 
 func send(m *Model, msgs ...tea.Msg) tea.Cmd {
@@ -165,9 +185,7 @@ func TestWrapAndYankUnelidedValues(t *testing.T) {
 	long := "https://api.example.com/v1/organizations/org_999/projects/proj_888/deployments/dep_777/logs?cursor=abcdef1234567890"
 	r := network()
 	r.Data = json.RawMessage(fmt.Sprintf(`{"url":%q}`, long))
-	m := newModel(t)
-	send(m, tea.WindowSizeMsg{Width: 60, Height: 20})
-	send(m, RecordMsg(vmservice.Item{Rec: r}, 0))
+	m := sizedModel(t, 60, 20, r)
 	send(m, key("e"))
 
 	if strings.Contains(screen(m), "cursor=abcdef1234567890") {
@@ -187,6 +205,102 @@ func TestWrapAndYankUnelidedValues(t *testing.T) {
 	}
 	if s := screen(m); !strings.Contains(s, "copied") {
 		t.Errorf("status bar missing copied notice:\n%s", s)
+	}
+}
+
+func TestYankCopiesTheFocusedRowsText(t *testing.T) {
+	r := network()
+	r.Error = "boom\nsecond"
+	r.Stack = "#0 main\n#1 run"
+	for name, tc := range map[string]struct {
+		key  string
+		kind rowKind
+		node string   // the row's node key, when it has one
+		want string   // exact clipboard text; "" = nothing copied
+		has  []string // substrings instead, for text with a local time
+	}{
+		"caller":                  {key: "y", kind: rowCaller, want: "api_client:87 fetchUser"},
+		"string node copies raw":  {key: "y", kind: rowNode, node: "name", want: "Jane"},
+		"array node copies JSON":  {key: "y", kind: rowNode, node: "tags", want: "[\n  \"a\",\n  \"b\"\n]"},
+		"error label":             {key: "y", kind: rowErrorLabel, want: r.Error},
+		"error line":              {key: "y", kind: rowErrorText, want: r.Error},
+		"stack label":             {key: "y", kind: rowStackLabel, want: r.Stack},
+		"stack line":              {key: "y", kind: rowStackLine, want: r.Stack},
+		"header describes it all": {key: "y", kind: rowHeader, has: []string{"[Network] info: ← 200 GET", "\ndata: {\n  \"status\": 200,", "\nerror: boom\nsecond\n#0 main\n#1 run"}},
+		"Y copies record JSON":    {key: "Y", kind: rowCaller, want: string(r.JSON())},
+		"divider copies nothing":  {key: "y", kind: rowDivider},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := newModel(t, r)
+			send(m, RecordMsg(vmservice.Item{Rec: appBoot(), Restarted: true}, 0))
+			send(m, keys("g", "e")...)
+			at := func() bool {
+				cur := m.rows[m.cursor]
+				return cur.kind == tc.kind && (tc.node == "" || cur.node.Key == tc.node)
+			}
+			for range len(m.rows) {
+				if at() {
+					break
+				}
+				send(m, key("down"))
+			}
+			if !at() {
+				t.Fatalf("no %v row %q", tc.kind, tc.node)
+			}
+			got := ""
+			if cmd := send(m, key(tc.key)); cmd != nil {
+				got = fmt.Sprint(cmd())
+			}
+			for _, sub := range tc.has {
+				if !strings.Contains(got, sub) {
+					t.Errorf("copied %q, want it to contain %q", got, sub)
+				}
+			}
+			if tc.has == nil && got != tc.want {
+				t.Errorf("copied %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestOptionsSeedFiltersAndReplayMode(t *testing.T) {
+	for name, tc := range map[string]struct {
+		opts         Options
+		msgs         []tea.Msg
+		rows         int
+		follow       bool
+		shows, hides []string
+	}{
+		"layer names match any case":    {opts: Options{Layers: map[string]bool{"Network": true, "State": false}}, rows: 1, follow: true, shows: []string{"layers:network"}},
+		"query is trimmed, any case":    {opts: Options{Query: " JANE "}, rows: 1, follow: true, shows: []string{"/jane"}},
+		"level clamps to the last":      {opts: Options{Level: 99}, rows: 0, follow: true, shows: []string{"≥wtf"}},
+		"replay starts unfollowed":      {opts: Options{Replay: true}, rows: 3, shows: []string{"replay: cap.jsonl"}, hides: []string{"following"}},
+		"clear keeps replay unfollowed": {opts: Options{Replay: true}, msgs: keys("c"), shows: []string{"no records in cap.jsonl"}},
+		"connected, cleared":            {msgs: []tea.Msg{ConnMsg(Connected, "ws://a/ws", 0), key("c")}, follow: true, shows: []string{"connected, no records yet"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tc.opts.Target = "cap.jsonl"
+			m := NewWithOptions(tc.opts)
+			send(m, tea.WindowSizeMsg{Width: 120, Height: 20})
+			for _, r := range []record.Record{appBoot(), network(), stateTrace()} {
+				send(m, RecordMsg(vmservice.Item{Rec: r}, 0))
+			}
+			send(m, tc.msgs...)
+			if len(m.rows) != tc.rows || m.follow != tc.follow {
+				t.Errorf("rows = %d, follow = %v; want %d, %v", len(m.rows), m.follow, tc.rows, tc.follow)
+			}
+			s := screen(m)
+			for _, want := range tc.shows {
+				if !strings.Contains(s, want) {
+					t.Errorf("screen lacks %q:\n%s", want, s)
+				}
+			}
+			for _, hide := range tc.hides {
+				if strings.Contains(s, hide) {
+					t.Errorf("screen shows %q:\n%s", hide, s)
+				}
+			}
+		})
 	}
 }
 
@@ -253,6 +367,58 @@ func TestLayerFilterTogglesLayers(t *testing.T) {
 	}
 }
 
+func TestLayerBarKeys(t *testing.T) {
+	for name, tc := range map[string]struct {
+		keys     []string
+		cursor   int
+		layers   []string
+		layering bool
+	}{
+		"left wraps to the last layer":   {keys: []string{"left", "space"}, cursor: 2, layers: []string{"state"}, layering: true},
+		"right wraps to the first":       {keys: []string{"3", "right", "space"}, cursor: 0, layers: []string{"app", "state"}, layering: true},
+		"a clears every selection":       {keys: []string{"1", "2", "a"}, cursor: 1, layering: true},
+		"digit past the list is a no-op": {keys: []string{"9"}, layering: true},
+		"esc closes the bar":             {keys: []string{"esc"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := newModel(t, appBoot(), network(), stateTrace())
+			send(m, keys(append([]string{"f"}, tc.keys...)...)...)
+			if got := slices.Sorted(maps.Keys(m.layers)); m.layerCursor != tc.cursor || !slices.Equal(got, tc.layers) || m.layering != tc.layering {
+				t.Errorf("cursor %d, layers %v, bar open %v; want %d, %v, %v", m.layerCursor, got, m.layering, tc.cursor, tc.layers, tc.layering)
+			}
+		})
+	}
+}
+
+func TestHiddenCursorRecordMovesToTheNextLaterRecord(t *testing.T) {
+	recs := numbered("a%d", 0, 3)
+	m := newModel(t, recs[0], network(), recs[1], stateTrace(), recs[2])
+	send(m, keys("g", "down", "f", "1", "enter")...) // cursor on Network, keep only App
+	if r, ok := m.current(); !ok || r.entry.Rec.Message != "a1" {
+		t.Errorf("cursor on %+v (ok %v) after its record was filtered out, want the next App record a1", r.entry, ok)
+	}
+}
+
+func TestMatchJumpVisitsMatchingHeadersOnlyAndWraps(t *testing.T) {
+	hit1, hit2, miss := appBoot(), appBoot(), appBoot()
+	hit1.Message, hit1.Data = "hit one", json.RawMessage(`{"k":1}`)
+	hit2.Message, miss.Message = "hit two", "miss"
+	m := newModel(t, hit1, miss, hit2)
+	send(m, key("/"))
+	send(m, typed("hit")...)
+	send(m, keys("enter", "g", "enter")...) // hit one opens: its caller and k rows match too
+	for i, step := range [][2]string{{"n", "hit two"}, {"n", "hit one"}, {"N", "hit two"}, {"N", "hit one"}} {
+		send(m, key(step[0]))
+		if r, _ := m.current(); r.kind != rowHeader || r.entry.Rec.Message != step[1] {
+			t.Fatalf("step %d (%s): cursor on a %v row of %q, want the %q header", i, step[0], r.kind, r.entry.Rec.Message, step[1])
+		}
+	}
+	send(m, key("esc"))
+	before := m.cursor
+	if send(m, key("n")); m.cursor != before {
+		t.Errorf("n with no query moved the cursor from %d to %d", before, m.cursor)
+	}
+}
 func TestFilterInputSwallowsCommandKeys(t *testing.T) {
 	m := newModel(t, appBoot(), network())
 
@@ -335,9 +501,7 @@ func TestLevelCycleCoversChirpLevelsIncludingCritical(t *testing.T) {
 	}
 
 	// Cycle up to ≥critical (index 7: trace=0, debug=1, info=2, notice=3, success=4, warning=5, error=6, critical=7).
-	for range 6 {
-		send(m, key("L"))
-	}
+	send(m, slices.Repeat(keys("L"), 6)...)
 	s := screen(m)
 	if !strings.Contains(s, "≥critical") || !strings.Contains(s, "zone crash") || strings.Contains(s, "non-fatal err") {
 		t.Errorf("≥critical did not isolate critical record:\n%s", s)
@@ -365,6 +529,38 @@ func TestLeftClosesThenJumpsToParent(t *testing.T) {
 	}
 }
 
+func TestFoldKeysToggleOpenAndStepIn(t *testing.T) {
+	m := newModel(t, network())
+	for i, step := range []struct {
+		key, at string // at: the cursor row's node key, or its kind
+		rows    int
+	}{
+		{"right", "header", 4}, // opens: caller, status, body
+		{"right", "caller", 4}, // steps in
+		{"left", "header", 4},  // jumps to the parent
+		{"enter", "header", 1},
+		{"space", "header", 4},
+		{"down", "caller", 4},
+		{"down", "status", 4},
+		{"down", "body", 4},
+		{"right", "body", 7}, // opens: id, name, tags
+		{"right", "id", 7},
+		{"left", "body", 7},
+		{"enter", "body", 4},
+		{"space", "body", 7},
+	} {
+		send(m, key(step.key))
+		r, _ := m.current()
+		at := map[rowKind]string{rowHeader: "header", rowCaller: "caller"}[r.kind]
+		if r.node != nil {
+			at = r.node.Key
+		}
+		if at != step.at || len(m.rows) != step.rows {
+			t.Fatalf("step %d (%s): cursor on %s with %d rows, want %s with %d", i, step.key, at, len(m.rows), step.at, step.rows)
+		}
+	}
+}
+
 func TestExpandAllThenCollapse(t *testing.T) {
 	m := newModel(t, network())
 
@@ -388,10 +584,8 @@ func TestControlCharactersNeverLeakFromDataKeysOrErrors(t *testing.T) {
 	send(m, ConnMsg(Disconnected, "bad\nline\x1b[2J", 0))
 
 	raw := ansi.Strip(m.View().Content)
-	for _, c := range raw {
-		if c != '\n' && (c < 0x20 || c == 0x7f || (c >= 0x80 && c < 0xa0)) {
-			t.Fatalf("control rune %U leaked into stripped view:\n%q", c, raw)
-		}
+	if strings.ContainsFunc(strings.ReplaceAll(raw, "\n", ""), controlRune) {
+		t.Fatalf("control rune leaked into stripped view:\n%q", raw)
 	}
 	if strings.Contains(m.View().Content, "\x1b]52;") {
 		t.Fatalf("OSC 52 sequence from JSON key leaked into raw terminal output:\n%q", m.View().Content)
@@ -409,7 +603,13 @@ func TestStylesMeetWCAGContrastOnLightAndDark(t *testing.T) {
 		"soft-gray-light": "#f2f0eb",
 		"soft-gray-dark":  "#1e1e1e",
 	}
-	for colorName, fg := range PaletteHex() {
+	for colorName, fg := range map[string]string{
+		"key":     hexKey,
+		"string":  hexString,
+		"literal": hexLiteral,
+		"error":   hexError,
+		"cursor":  hexCursor,
+	} {
 		for bgName, bg := range backgrounds {
 			if ratio := contrastRatio(fg, bg); ratio < 3.0 {
 				t.Errorf("%s (%s) on %s (%s) contrast = %.2f, want >= 3.0",
@@ -442,22 +642,6 @@ func relLum(hex string) float64 {
 	return 0.2126*ch(r) + 0.7152*ch(g) + 0.0722*ch(b)
 }
 
-func TestRestartInsertsDivider(t *testing.T) {
-	m := newModel(t, appBoot())
-	r := appBoot()
-	r.Message = "after restart"
-
-	send(m, RecordMsg(vmservice.Item{Rec: r, Restarted: true}, 0))
-
-	s := screen(m)
-	if !strings.Contains(s, "── session restarted") {
-		t.Errorf("no divider:\n%s", s)
-	}
-	if !strings.Contains(s, "after restart") || m.records != 2 {
-		t.Errorf("restarted record missing (records = %d):\n%s", m.records, s)
-	}
-}
-
 func TestReconnectKeepsRecordsAndDividesOnlyOnRestart(t *testing.T) {
 	m := newModel(t)
 	send(m, ConnMsg(Connected, "ws://a/ws", 0), RecordMsg(vmservice.Item{Rec: appBoot()}, 0))
@@ -480,23 +664,11 @@ func TestReconnectKeepsRecordsAndDividesOnlyOnRestart(t *testing.T) {
 }
 
 func TestCapDropsOldestAndKeepsCursorOnItsRecord(t *testing.T) {
-	m := newModel(t)
-	add := func(i int) {
-		r := appBoot()
-		r.Seq = int64(i + 1)
-		r.Message = fmt.Sprintf("r%d", i)
-		send(m, RecordMsg(vmservice.Item{Rec: r}, 0))
-	}
-	for i := range MaxEntries {
-		add(i)
-	}
-	send(m, key("g"))
-	for range 100 {
-		send(m, key("down"))
-	}
+	m := newModel(t, numbered("r%d", 0, MaxEntries)...)
+	send(m, append(keys("g"), slices.Repeat(keys("down"), 100)...)...)
 
-	for i := range 5 {
-		add(MaxEntries + i)
+	for _, r := range numbered("r%d", MaxEntries, 5) {
+		send(m, RecordMsg(vmservice.Item{Rec: r}, 0))
 	}
 
 	if len(m.entries) != MaxEntries || m.dropped != 5 {
@@ -507,6 +679,24 @@ func TestCapDropsOldestAndKeepsCursorOnItsRecord(t *testing.T) {
 	}
 	if s := screen(m); !strings.Contains(s, "dropped 5") {
 		t.Errorf("status lacks the dropped count:\n%s", s)
+	}
+}
+
+func TestCapDropNeverLeavesALeadingDivider(t *testing.T) {
+	m := newModel(t, appBoot())
+	send(m, RecordMsg(vmservice.Item{Rec: appBoot(), Restarted: true}, 0))
+	recs := numbered("r%d", 0, MaxEntries-2)
+	for _, r := range recs[:len(recs)-1] {
+		send(m, RecordMsg(vmservice.Item{Rec: r}, 0))
+	}
+	send(m, keys("g", "down", "down", "down", "down", "down")...) // onto r2
+	send(m, RecordMsg(vmservice.Item{Rec: recs[len(recs)-1]}, 0)) // drops the first record
+
+	if m.rows[0].kind == rowDivider {
+		t.Error("dropping the oldest record left the divider as the first row")
+	}
+	if r, _ := m.current(); r.entry.Rec.Message != "r2" {
+		t.Errorf("cursor moved off r2 to %q", r.entry.Rec.Message)
 	}
 }
 
@@ -548,10 +738,11 @@ func TestWaitingStateBeforeAnyRecord(t *testing.T) {
 func FuzzViewSafetyAndGeometry(f *testing.F) {
 	f.Add("hello\x1b]52;c;pwn\x07", "App\x9b2J", `{"k\x1b[31m":"v\nline2"}`, "err\r\nbad", 60, 12, true)
 	f.Add("plain", "Network", `[1,2,3]`, "", 25, 4, false)
+	f.Add("tree", "App", `{"k\u001b]52;c;x\u0007":"v\u009b2J","a":[1,{"b\u2028":"x\ny"}]}`, "", 40, 10, true)
 	f.Fuzz(func(t *testing.T, msg, layer, rawData, errStr string, w, h int, wrap bool) {
 		w = 10 + ((w%200)+200)%200
 		h = 3 + ((h%60)+60)%60
-		m := New("target\x1b[2J")
+		m := NewWithOptions(Options{Target: "target\x1b[2J"})
 		send(m, tea.WindowSizeMsg{Width: w, Height: h})
 		r := appBoot()
 		r.Message = msg
@@ -575,25 +766,16 @@ func FuzzViewSafetyAndGeometry(f *testing.F) {
 			if cw := ansi.StringWidth(line); cw > w {
 				t.Fatalf("line %d width = %d, want ≤ %d: %q", i, cw, w, line)
 			}
-			for _, ch := range line {
-				if ch < 0x20 || ch == 0x7f || (ch >= 0x80 && ch <= 0x9f) || ch == '\u2028' || ch == '\u2029' {
-					t.Fatalf("line %d leaked control rune %U in %q", i, ch, line)
-				}
+			if strings.ContainsFunc(line, controlRune) {
+				t.Fatalf("line %d leaked a control rune in %q", i, line)
 			}
 		}
 	})
 }
 
 func TestWrapJumpToEndScrollsInBoundedTime(t *testing.T) {
-	m := New("./.flutter.vmservice")
-	send(m, tea.WindowSizeMsg{Width: 40, Height: 20})
 	const n = 3000
-	for i := range n {
-		r := appBoot()
-		r.Seq = int64(i)
-		r.Message = fmt.Sprintf("record %d with a message long enough to wrap twice at forty", i)
-		send(m, RecordMsg(vmservice.Item{Rec: r}, 0))
-	}
+	m := sizedModel(t, 40, 20, numbered("record %d with a message long enough to wrap twice at forty", 0, n)...)
 	send(m, keys("w", "g")...)
 
 	start := time.Now()
@@ -645,53 +827,44 @@ func TestReopenedFilterKeepsFollowUntilQueryChanges(t *testing.T) {
 }
 
 func TestWheelScrollsWrappedRows(t *testing.T) {
-	m := New("./.flutter.vmservice")
-	send(m, tea.WindowSizeMsg{Width: 40, Height: 21})
 	const n = 200
-	for i := range n {
-		r := appBoot()
-		r.Seq = int64(i)
-		r.Message = fmt.Sprintf("record %d with a message long enough to wrap twice at forty", i)
-		send(m, RecordMsg(vmservice.Item{Rec: r}, 0))
-	}
+	m := sizedModel(t, 40, 21, numbered("record %d with a message long enough to wrap twice at forty", 0, n)...)
 	send(m, key("w"))
-	wheel := func(b tea.MouseButton) tea.Msg { return tea.MouseWheelMsg{Button: b} }
 
 	top := m.offset
-	for range 5 {
-		send(m, wheel(tea.MouseWheelUp))
-	}
+	send(m, slices.Repeat([]tea.Msg{wheelUp}, 5)...)
 	if m.offset >= top {
 		t.Errorf("5 wheel-ups under wrap left offset at %d, want above %d", m.offset, top)
 	}
 
-	send(m, key("g"))
-	for range n {
-		send(m, wheel(tea.MouseWheelDown))
-	}
+	send(m, append(keys("g"), slices.Repeat([]tea.Msg{wheelDown}, n)...)...)
 	if s := screen(m); !strings.Contains(s, fmt.Sprintf("record %d", n-1)) {
 		t.Errorf("wheel-down under wrap never reached the last record:\n%s", s)
+	}
+}
+
+func TestWheelUpKeepsTheCursorOnTheLowestWholeRow(t *testing.T) {
+	// Every row wraps to 3 lines, so 7 rows fill the 21-line body exactly.
+	m := sizedModel(t, 40, 22, numbered("record %d with a message long enough to wrap twice at forty", 0, 200)...)
+	send(m, key("w"), wheelUp)
+	span := 0
+	for i := m.offset; i <= m.cursor; i++ {
+		span += len(m.wrappedLines(i))
+	}
+	if m.cursor == m.offset || span > m.bodyHeight() || span+len(m.wrappedLines(m.cursor+1)) <= m.bodyHeight() {
+		t.Errorf("cursor on row %d of rows %d.. spanning %d lines; want the lowest row whole in the %d-line body:\n%s", m.cursor, m.offset, span, m.bodyHeight(), screen(m))
 	}
 }
 
 func TestCursorSurvivesRebuildThroughZeroRows(t *testing.T) {
 	setup := func(t *testing.T) *Model {
 		t.Helper()
-		m := newModel(t)
-		for i := range 50 {
-			r := appBoot()
-			r.Seq = int64(i + 1)
-			r.Message = fmt.Sprintf("r%d", i)
-			send(m, RecordMsg(vmservice.Item{Rec: r}, 0))
-		}
-		send(m, key("g"))
-		for range 30 {
-			send(m, key("down"))
-		}
+		m := newModel(t, numbered("r%d", 0, 50)...)
+		send(m, append(keys("g"), slices.Repeat(keys("down"), 30)...)...)
 		return m
 	}
 	for name, steps := range map[string][]tea.Msg{
-		"level cycle": keys("L", "L", "L", "L", "L", "L", "L", "L", "L"),
+		"level cycle": slices.Repeat(keys("L"), 9),
 		"filter typo": append(append([]tea.Msg{key("/")}, typed("r3zz")...),
 			tea.KeyPressMsg{Code: tea.KeyBackspace}, tea.KeyPressMsg{Code: tea.KeyBackspace}, key("esc")),
 	} {
@@ -751,8 +924,8 @@ func TestRestartDividerSurvivesFilteredFirstRecord(t *testing.T) {
 	send(m, RecordMsg(vmservice.Item{Rec: after}, 0))
 
 	s := screen(m)
-	if strings.Count(s, restartedLabel) != 1 || strings.Index(s, restartedLabel) > strings.Index(s, "after restart") {
-		t.Errorf("want one divider above the first shown record after the restart:\n%s", s)
+	if strings.Count(s, "── "+restartedLabel) != 1 || strings.Index(s, restartedLabel) > strings.Index(s, "after restart") || m.records != 3 {
+		t.Errorf("want one divider above the first shown record after the restart, 3 records (got %d):\n%s", m.records, s)
 	}
 }
 
@@ -792,11 +965,7 @@ func tallModelThen(t *testing.T, after ...record.Record) *Model {
 	blob := "THE-START" + strings.Repeat("x", 4000-len("THE-START")-len("THE-END")) + "THE-END"
 	r := appBoot()
 	r.Data = json.RawMessage(fmt.Sprintf(`{"blob":%q}`, blob))
-	m := New("./.flutter.vmservice")
-	send(m, tea.WindowSizeMsg{Width: tallW, Height: tallH})
-	for _, rec := range append([]record.Record{r}, after...) {
-		send(m, RecordMsg(vmservice.Item{Rec: rec}, 0))
-	}
+	m := sizedModel(t, tallW, tallH, append([]record.Record{r}, after...)...)
 	send(m, keys("g", "e", "w")...)
 	return m
 }
@@ -854,17 +1023,26 @@ func TestWrapScrollsThroughRowTallerThanBody(t *testing.T) {
 	}
 }
 
-func TestWrapEnteringTallRowFromBelowShowsItsLastScreenful(t *testing.T) {
-	for name, up := range map[string]tea.Msg{
-		"key":   key("up"),
-		"wheel": wheelUp,
+func TestWrapTallRowShowsTheRightScreenful(t *testing.T) {
+	long := appBoot()
+	long.Message = "MSG-START " + strings.Repeat("word ", 800) + "MSG-END"
+	for name, tc := range map[string]struct {
+		after      []record.Record
+		msgs       []tea.Msg
+		onBlob     bool
+		want, hide string
+	}{
+		"from below by key":       {[]record.Record{stateTrace()}, keys("G", "up"), true, "THE-END", "THE-START"},
+		"from below by wheel":     {[]record.Record{stateTrace()}, []tea.Msg{key("G"), wheelUp}, true, "THE-END", "THE-START"},
+		"from above after an up":  {[]record.Record{stateTrace()}, keys("G", "up", "g", "down", "down"), true, "THE-START", ""},
+		"following, jump to end":  {nil, keys("G"), false, "THE-END", "THE-START"},
+		"following, record lands": {[]record.Record{stateTrace()}, []tea.Msg{key("G"), RecordMsg(vmservice.Item{Rec: long}, 0)}, false, "MSG-END", "MSG-START"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			m := tallModel(t)
-			send(m, key("G"))
-			send(m, up)
-			if !onBlob(m) || !shows(m, "THE-END") || shows(m, "THE-START") {
-				t.Errorf("entering the blob from below did not show its last screenful:\n%s", screen(m))
+			m := tallModelThen(t, tc.after...)
+			send(m, tc.msgs...)
+			if (tc.onBlob && !onBlob(m)) || !shows(m, tc.want) || (tc.hide != "" && shows(m, tc.hide)) {
+				t.Errorf("want %q shown and %q hidden (cursor on blob: %v):\n%s", tc.want, tc.hide, tc.onBlob, screen(m))
 			}
 		})
 	}
@@ -876,22 +1054,24 @@ func TestWrapStatusShowsLinePositionInsideTallRow(t *testing.T) {
 	for name, tc := range map[string]struct {
 		width, downs, first int
 		end                 bool
+		then                []tea.Msg
 	}{
-		"caller row":    {width: tallW, downs: 1},
-		"blob top":      {width: tallW, downs: 2, first: 1},
-		"one line down": {width: tallW, downs: 3, first: 2},
-		"blob end":      {width: tallW, end: true},
-		"narrow":        {width: 30, downs: 2, first: 1},
+		"caller row":         {width: tallW, downs: 1},
+		"blob top":           {width: tallW, downs: 2, first: 1},
+		"one line down":      {width: tallW, downs: 3, first: 2},
+		"blob end":           {width: tallW, end: true},
+		"narrow":             {width: 30, downs: 2, first: 1},
+		"wheel down":         {width: tallW, downs: 2, then: []tea.Msg{wheelDown}, first: 1 + wheelStep},
+		"wheel down then up": {width: tallW, downs: 2, then: []tea.Msg{wheelDown, wheelDown, wheelUp}, first: 1 + wheelStep},
 	} {
 		t.Run(name, func(t *testing.T) {
 			m := tallModel(t)
 			send(m, tea.WindowSizeMsg{Width: tc.width, Height: tallH})
-			for range tc.downs {
-				send(m, key("down"))
-			}
+			send(m, slices.Repeat(keys("down"), tc.downs)...)
 			if tc.end {
 				pressUntil(m, key("down"), "THE-END")
 			}
+			send(m, tc.then...)
 			lines := strings.Split(screen(m), "\n")
 			status := lines[len(lines)-1]
 			got := linePos.FindStringSubmatch(status)
@@ -979,11 +1159,7 @@ func TestWrapEveryLineReachableByDownAloneAndUpAlone(t *testing.T) {
 	tallData.Data = json.RawMessage(fmt.Sprintf(`{"blob":%q,"n":1}`, tokens("d", 150)))
 	last := stateTrace()
 	last.Message = "last " + tokens("z", 100)
-	m := New("./.flutter.vmservice")
-	send(m, tea.WindowSizeMsg{Width: 40, Height: 12})
-	for _, r := range []record.Record{short, tallHead, tallData, short, last} {
-		send(m, RecordMsg(vmservice.Item{Rec: r}, 0))
-	}
+	m := sizedModel(t, 40, 12, short, tallHead, tallData, short, last)
 	send(m, keys("g", "]", "]", "e", "w", "g")...)
 	want := token.FindAllString(tokens("h", 120)+" "+tokens("d", 150)+" "+tokens("z", 100), -1)
 
@@ -1025,8 +1201,7 @@ func TestWrapSingleTallRowScrollsByPageAndHalfPage(t *testing.T) {
 		{"ctrl+d", "ctrl+u"},
 	} {
 		t.Run(pair[0]+"_"+pair[1], func(t *testing.T) {
-			m := New("./.flutter.vmservice")
-			send(m, tea.WindowSizeMsg{Width: tallW, Height: tallH}, RecordMsg(vmservice.Item{Rec: rec}, 0))
+			m := sizedModel(t, tallW, tallH, rec)
 			send(m, keys("w", "g")...)
 			if !shows(m, "SOLO-START") || shows(m, "SOLO-END") {
 				t.Fatalf("initial screen did not start at top of solo tall row:\n%s", screen(m))
@@ -1044,13 +1219,9 @@ func TestWrapSingleTallRowScrollsByPageAndHalfPage(t *testing.T) {
 func TestWrapLineOffSurvivesSiblingFoldAboveCursor(t *testing.T) {
 	rec := appBoot()
 	rec.Data = json.RawMessage(fmt.Sprintf(`{"a":{"nested":1,"extra":2},"z":%q}`, "THE-START "+strings.Repeat("word ", 600)+"THE-END"))
-	m := New("./.flutter.vmservice")
-	send(m, tea.WindowSizeMsg{Width: tallW, Height: tallH}, RecordMsg(vmservice.Item{Rec: rec}, 0))
+	m := sizedModel(t, tallW, tallH, rec)
 	// Open only the record header (leaving "a" folded), move onto tall "z", and scroll inside it.
-	send(m, keys("g", "enter", "w", "down", "down")...)
-	for range 5 {
-		send(m, key("down"))
-	}
+	send(m, append(keys("g", "enter", "w"), slices.Repeat(keys("down"), 7)...)...)
 	wantLineOff := m.lineOff
 	if wantLineOff == 0 {
 		t.Fatalf("setup did not advance lineOff inside z:\n%s", screen(m))
@@ -1095,7 +1266,7 @@ func walkRecord(t *rapid.T, seq int64) tea.Msg {
 
 func TestWrapWalkKeepsBodyAndLineOffsetInBounds(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
-		m := New("./.flutter.vmservice")
+		m := NewWithOptions(Options{Target: "./.flutter.vmservice"})
 		send(m, tea.WindowSizeMsg{Width: tallW, Height: tallH}, key("w"), key("e"))
 		var seq int64
 		do := func(msgs ...tea.Msg) {
@@ -1170,8 +1341,7 @@ func checkWalkStep(t *rapid.T, m *Model, before rowID, msg tea.Msg) {
 func TestWrapTallCursorDoesNotStallIncomingRecords(t *testing.T) {
 	huge := appBoot()
 	huge.Message = strings.Repeat("segment-with-delimiters/a?b=1&c=2 ", 3000) // ~102 KB
-	m := New("./.flutter.vmservice")
-	send(m, tea.WindowSizeMsg{Width: tallW, Height: tallH}, RecordMsg(vmservice.Item{Rec: huge}, 0))
+	m := sizedModel(t, tallW, tallH, huge)
 	send(m, keys("w", "g", "down")...)
 	_ = m.View()
 
@@ -1187,39 +1357,9 @@ func TestWrapTallCursorDoesNotStallIncomingRecords(t *testing.T) {
 	}
 }
 
-func TestWrapFollowShowsTallLastRowsLastScreenful(t *testing.T) {
-	long := appBoot()
-	long.Message = "MSG-START " + strings.Repeat("word ", 800) + "MSG-END"
-	for name, tc := range map[string]struct {
-		after      []record.Record
-		then       []tea.Msg
-		end, start string
-	}{
-		"jump to end": {nil, keys("G"), "THE-END", "THE-START"},
-		"record arriving while following": {
-			[]record.Record{stateTrace()},
-			[]tea.Msg{key("G"), RecordMsg(vmservice.Item{Rec: long}, 0)},
-			"MSG-END", "MSG-START",
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			m := tallModelThen(t, tc.after...)
-			send(m, tc.then...)
-			if !shows(m, tc.end) || shows(m, tc.start) {
-				t.Errorf("following did not show the last row's last screenful:\n%s", screen(m))
-			}
-		})
-	}
-}
-
 func TestWrapWheelNeverSkipsRowsBesideTallRow(t *testing.T) {
 	const after = 30
-	recs := make([]record.Record, after)
-	for i := range recs {
-		recs[i] = appBoot()
-		recs[i].Message = fmt.Sprintf("after %02d", i+1)
-	}
-	m := tallModelThen(t, recs...)
+	m := tallModelThen(t, numbered("after %02d", 1, after)...)
 
 	if !pressUntil(m, wheelDown, "THE-END") {
 		t.Fatalf("wheel never reached THE-END:\n%s", screen(m))
@@ -1310,8 +1450,7 @@ func TestWrapScrolledTallRowKeepsItsColours(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			want := cells(tc.style)[0][0].fg
-			m := New("./.flutter.vmservice")
-			send(m, tea.WindowSizeMsg{Width: tallW, Height: tallH}, RecordMsg(vmservice.Item{Rec: tc.rec}, 0))
+			m := sizedModel(t, tallW, tallH, tc.rec)
 			send(m, keys("g", "e", "w")...)
 			for range 10 {
 				if linePos.MatchString(screen(m)) {
@@ -1347,40 +1486,18 @@ func TestWrapScrolledTallRowKeepsItsColours(t *testing.T) {
 	}
 }
 
-func TestWrapWheelInsideTallRowScrollsByItsStep(t *testing.T) {
-	for name, wheels := range map[string][]tea.Msg{
-		"down":         {wheelDown},
-		"down then up": {wheelDown, wheelDown, wheelUp},
-	} {
-		t.Run(name, func(t *testing.T) {
-			m := tallModel(t)
-			send(m, keys("down", "down")...)
-			send(m, wheels...)
-			if got, want := linePos.FindString(screen(m)), fmt.Sprintf("line %d-", 1+wheelStep); !strings.HasPrefix(got, want) {
-				t.Errorf("status shows %q, want %q…: one wheel step into the row", got, want)
-			}
-		})
-	}
-}
-
 func TestWrapJumpOntoAnotherTallRowOpensAtItsFirstLine(t *testing.T) {
 	second := appBoot()
 	second.Message = "SECOND-HEAD " + strings.Repeat("y", 4000)
 	m := tallModelThen(t, second)
-	send(m, keys("down", "down")...)
-	for range 10 {
-		send(m, key("down"))
-	}
-	send(m, key("]"))
+	send(m, append(slices.Repeat(keys("down"), 12), key("]"))...)
 	if r, _ := m.current(); r.kind != rowHeader || !shows(m, "SECOND-HEAD") {
 		t.Errorf("] from inside the blob landed on %+v without its first line:\n%s", r, screen(m))
 	}
 }
 
-func TestWrapEnteringTallRowFromAboveAfterAnUpShowsItsFirstScreenful(t *testing.T) {
-	m := tallModel(t)
-	send(m, keys("G", "up", "g", "down", "down")...)
-	if !onBlob(m) || !shows(m, "THE-START") {
-		t.Errorf("entering the blob from above after an earlier up did not show its first screenful:\n%s", screen(m))
-	}
+// controlRune is the test's own oracle for terminal-unsafe runes, independent
+// of termsafe.IsControl: C0, DEL, C1 and the U+2028/U+2029 line breaks.
+func controlRune(r rune) bool {
+	return r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) || r == '\u2028' || r == '\u2029'
 }

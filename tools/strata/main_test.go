@@ -2,10 +2,12 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,53 +22,51 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/esenmx/stratalog/tools/strata/record"
 	"github.com/esenmx/stratalog/tools/strata/vmservice"
 )
 
 func TestParseCLIPermutationAndModes(t *testing.T) {
-	cfg, err := parseCLI([]string{"session.jsonl", "--once", "-l", "warning", "-L", "Network,Storage", "-g", "timeout"}, true, io.Discard)
-	if err != nil {
-		t.Fatalf("parseCLI: %v", err)
-	}
-	if cfg.target != "session.jsonl" || !cfg.explicit || !cfg.once || cfg.mode != modePlain {
-		t.Fatalf("unexpected cfg: %+v", cfg)
-	}
-	if !cfg.layers["network"] || !cfg.layers["storage"] {
-		t.Fatalf("layers = %v, want network+storage", cfg.layers)
-	}
-
-	// Non-TTY stdout auto-selects plain mode even without --plain.
-	nonTTY, err := parseCLI(nil, false, io.Discard)
-	if err != nil {
-		t.Fatalf("parseCLI non-TTY: %v", err)
-	}
-	if nonTTY.mode != modePlain {
-		t.Errorf("non-TTY mode = %v, want modePlain", nonTTY.mode)
-	}
-
-	// TTY stdout with no CLI output flags selects TUI mode.
-	ttyCfg, err := parseCLI(nil, true, io.Discard)
-	if err != nil {
-		t.Fatalf("parseCLI TTY: %v", err)
-	}
-	if ttyCfg.mode != modeTUI {
-		t.Errorf("TTY mode = %v, want modeTUI", ttyCfg.mode)
-	}
-
-	// Stdin "-" after or before flags remains positional.
-	stdinCfg, err := parseCLI([]string{"-", "--json"}, true, io.Discard)
-	if err != nil {
-		t.Fatalf("parseCLI stdin: %v", err)
-	}
-	if stdinCfg.target != "-" || stdinCfg.mode != modeJSON {
-		t.Errorf("stdin cfg = %+v", stdinCfg)
-	}
-
-	if _, err := parseCLI([]string{"--plain", "--json"}, false, io.Discard); err == nil {
-		t.Error("expected error combining --plain and --json")
-	}
-	if _, err := parseCLI([]string{"-l", "bogus"}, false, io.Discard); err == nil {
-		t.Error("expected error on unknown level")
+	for name, tc := range map[string]struct {
+		args    []string
+		tty     bool
+		target  string // "" = the default, not explicit
+		mode    outputMode
+		once    bool
+		level   int
+		layers  []string
+		wantErr string
+	}{
+		"flags after the target": {
+			args: []string{"session.jsonl", "--once", "-l", "warning", "-L", "Network,Storage", "-g", "timeout"}, tty: true,
+			target: "session.jsonl", mode: modePlain, once: true, level: 5, layers: []string{"network", "storage"},
+		},
+		"non-TTY stdout picks plain":  {mode: modePlain},
+		"TTY stdout picks the TUI":    {tty: true, mode: modeTUI},
+		"stdin dash stays positional": {args: []string{"-", "--json"}, tty: true, target: "-", mode: modeJSON},
+		"-- ends the flags":           {args: []string{"--json", "--", "capture.jsonl"}, target: "capture.jsonl", mode: modeJSON},
+		"--plain and --json conflict": {args: []string{"--plain", "--json"}, wantErr: "cannot combine"},
+		"unknown level":               {args: []string{"-l", "bogus"}, wantErr: "unknown level"},
+		"two targets":                 {args: []string{"a.jsonl", "b.jsonl"}, wantErr: "at most one target"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg, err := parseCLI(tc.args, tc.tty, io.Discard)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("parseCLI(%q) = %v, want an error containing %q", tc.args, err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseCLI(%q): %v", tc.args, err)
+			}
+			if cfg.target != cmp.Or(tc.target, defaultTarget) || cfg.explicit != (tc.target != "") || cfg.mode != tc.mode || cfg.once != tc.once || cfg.levelIdx != tc.level {
+				t.Errorf("parseCLI(%q) = %+v", tc.args, cfg)
+			}
+			if got := slices.Sorted(maps.Keys(cfg.layers)); !slices.Equal(got, tc.layers) {
+				t.Errorf("layers = %v, want %v", got, tc.layers)
+			}
+		})
 	}
 }
 
@@ -206,6 +206,58 @@ func fakeVMServer(t *testing.T, history []map[string]any, keepOpen bool) string 
 func fakeVMServerHidingHistory(t *testing.T, history []map[string]any, keepOpen bool, hiddenFor int32) string {
 	t.Helper()
 	var inspected atomic.Int32
+	return serveVM(t, func(req vmReq) (map[string]any, vmEnd) {
+		switch req.method {
+		case "streamListen":
+			return result(map[string]any{"type": "Success"}), vmKeep
+		case "getVM":
+			return result(mainVM), vmKeep
+		case "getIsolate":
+			rpcs := []string{}
+			if n := inspected.Add(1); hiddenFor >= 0 && n > hiddenFor {
+				rpcs = append(rpcs, vmservice.HistoryExtension)
+			}
+			return result(map[string]any{"extensionRPCs": rpcs}), vmKeep
+		case vmservice.HistoryExtension:
+			end := vmClose
+			if keepOpen {
+				end = vmKeep
+			}
+			return result(map[string]any{"records": history}), end
+		}
+		return nil, vmKeep
+	})
+}
+
+// vmEnd is how a fake VM service carries on after answering a request.
+type vmEnd int
+
+const (
+	vmKeep  vmEnd = iota
+	vmClose       // close with a normal WebSocket closure
+	vmDrop        // reset the connection with no close frame
+)
+
+// vmReq is one JSON-RPC request a fake VM service received.
+type vmReq struct{ method, isolate string }
+
+var mainVM = map[string]any{"startTime": 1000, "pid": 42, "isolates": []map[string]any{{"id": "isolates/1", "name": "main"}}}
+
+func result(v any) map[string]any { return map[string]any{"result": v} }
+
+// twoIsolates is a getVM reply listing main and a second isolate named name.
+func twoIsolates(name string) map[string]any {
+	return result(map[string]any{"startTime": 1000, "isolates": []map[string]any{
+		{"id": "isolates/1", "name": "main"},
+		{"id": "isolates/2", "name": name},
+	}})
+}
+
+// serveVM serves a fake VM service over WebSocket JSON-RPC: handle answers
+// each request with a message holding "result" or "error" (nil sends
+// nothing), then says whether the connection stays, closes or drops.
+func serveVM(t *testing.T, handle func(vmReq) (map[string]any, vmEnd)) string {
+	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, nil)
 		if err != nil {
@@ -221,35 +273,25 @@ func fakeVMServerHidingHistory(t *testing.T, history []map[string]any, keepOpen 
 			var req struct {
 				ID     string `json:"id"`
 				Method string `json:"method"`
+				Params struct {
+					IsolateID string `json:"isolateId"`
+				} `json:"params"`
 			}
 			if json.Unmarshal(raw, &req) != nil {
 				continue
 			}
-			reply := func(res any) {
-				b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": res})
+			msg, end := handle(vmReq{req.Method, req.Params.IsolateID})
+			if msg != nil {
+				msg["jsonrpc"], msg["id"] = "2.0", req.ID
+				b, _ := json.Marshal(msg)
 				_ = conn.Write(ctx, websocket.MessageText, b)
 			}
-			switch req.Method {
-			case "streamListen":
-				reply(map[string]any{"type": "Success"})
-			case "getVM":
-				reply(map[string]any{
-					"startTime": 1000,
-					"pid":       42,
-					"isolates":  []map[string]any{{"id": "isolates/1", "name": "main"}},
-				})
-			case "getIsolate":
-				rpcs := []string{}
-				if n := inspected.Add(1); hiddenFor >= 0 && n > hiddenFor {
-					rpcs = append(rpcs, vmservice.HistoryExtension)
-				}
-				reply(map[string]any{"extensionRPCs": rpcs})
-			case vmservice.HistoryExtension:
-				reply(map[string]any{"records": history})
-				if !keepOpen {
-					_ = conn.Close(websocket.StatusNormalClosure, "done")
-					return
-				}
+			switch end {
+			case vmClose:
+				_ = conn.Close(websocket.StatusNormalClosure, "done")
+				return
+			case vmDrop:
+				return
 			}
 		}
 	}))
@@ -284,54 +326,25 @@ func TestOnceInterruptedMidSnapshotOrHistoryPollFails(t *testing.T) {
 
 	t.Run("mid multi-isolate snapshot", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			conn, err := websocket.Accept(w, r, nil)
-			if err != nil {
-				return
+		srv := serveVM(t, func(req vmReq) (map[string]any, vmEnd) {
+			switch {
+			case req.method == "getVM":
+				return twoIsolates("worker"), vmKeep
+			case req.method == "getIsolate":
+				return result(map[string]any{"extensionRPCs": []string{vmservice.HistoryExtension}}), vmKeep
+			case req.isolate == "isolates/1":
+				return result(map[string]any{"records": []map[string]any{{
+					"v": 1, "seq": 1, "time": "2026-04-14T06:04:05Z",
+					"level": "info", "severity": 200, "layer": "App", "message": "partial-ok",
+				}}}), vmKeep
 			}
-			defer func() { _ = conn.CloseNow() }()
-			for {
-				_, raw, err := conn.Read(r.Context())
-				if err != nil {
-					return
-				}
-				var req struct {
-					ID     string `json:"id"`
-					Method string `json:"method"`
-					Params struct {
-						IsolateID string `json:"isolateId"`
-					} `json:"params"`
-				}
-				if json.Unmarshal(raw, &req) != nil {
-					continue
-				}
-				msg := map[string]any{"jsonrpc": "2.0", "id": req.ID}
-				switch {
-				case req.Method == "getVM":
-					msg["result"] = map[string]any{"startTime": 1000, "isolates": []map[string]any{
-						{"id": "isolates/1", "name": "main"},
-						{"id": "isolates/2", "name": "worker"},
-					}}
-				case req.Method == "getIsolate":
-					msg["result"] = map[string]any{"extensionRPCs": []string{vmservice.HistoryExtension}}
-				case req.Params.IsolateID == "isolates/1":
-					msg["result"] = map[string]any{"records": []map[string]any{{
-						"v": 1, "seq": 1, "time": "2026-04-14T06:04:05Z",
-						"level": "info", "severity": 200, "layer": "App", "message": "partial-ok",
-					}}}
-				default:
-					cancel()
-					return
-				}
-				b, _ := json.Marshal(msg)
-				_ = conn.Write(r.Context(), websocket.MessageText, b)
-			}
-		}))
-		t.Cleanup(srv.Close)
+			cancel()
+			return nil, vmDrop
+		})
 
 		var out bytes.Buffer
 		env := runEnv{stdout: &out, stderr: io.Discard}
-		err := env.run(ctx, []string{"--once", "--plain", srv.URL})
+		err := env.run(ctx, []string{"--once", "--plain", srv})
 		if !errors.Is(err, context.Canceled) || err.Error() != "interrupted" {
 			t.Fatalf("--once interrupted mid-snapshot = %v (stdout = %q), want interrupted wrapping context.Canceled", err, out.String())
 		}
@@ -403,54 +416,24 @@ func TestReportErrorEscapesEveryLine(t *testing.T) {
 }
 
 func TestOncePrintsReachableIsolatesThenFailsNamingTheMissedOne(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := websocket.Accept(w, r, nil)
-		if err != nil {
-			return
+	srv := serveVM(t, func(req vmReq) (map[string]any, vmEnd) {
+		switch {
+		case req.method == "getVM":
+			return twoIsolates("drift"), vmKeep
+		case req.method == "getIsolate":
+			return result(map[string]any{"extensionRPCs": []string{vmservice.HistoryExtension}}), vmKeep
+		case req.isolate == "isolates/1":
+			return result(map[string]any{"records": []map[string]any{{
+				"v": 1, "seq": 1, "time": "2026-04-14T06:04:05Z",
+				"level": "info", "severity": 200, "layer": "App", "message": "reachable",
+			}}}), vmKeep
 		}
-		defer func() { _ = conn.CloseNow() }()
-		ctx := r.Context()
-		for {
-			_, raw, err := conn.Read(ctx)
-			if err != nil {
-				return
-			}
-			var req struct {
-				ID     string `json:"id"`
-				Method string `json:"method"`
-				Params struct {
-					IsolateID string `json:"isolateId"`
-				} `json:"params"`
-			}
-			if json.Unmarshal(raw, &req) != nil {
-				continue
-			}
-			msg := map[string]any{"jsonrpc": "2.0", "id": req.ID}
-			switch {
-			case req.Method == "getVM":
-				msg["result"] = map[string]any{"startTime": 1000, "isolates": []map[string]any{
-					{"id": "isolates/1", "name": "main"},
-					{"id": "isolates/2", "name": "drift"},
-				}}
-			case req.Method == "getIsolate":
-				msg["result"] = map[string]any{"extensionRPCs": []string{vmservice.HistoryExtension}}
-			case req.Params.IsolateID == "isolates/1":
-				msg["result"] = map[string]any{"records": []map[string]any{{
-					"v": 1, "seq": 1, "time": "2026-04-14T06:04:05Z",
-					"level": "info", "severity": 200, "layer": "App", "message": "reachable",
-				}}}
-			default:
-				msg["error"] = map[string]any{"code": 113, "message": "isolate is paused"}
-			}
-			b, _ := json.Marshal(msg)
-			_ = conn.Write(ctx, websocket.MessageText, b)
-		}
-	}))
-	t.Cleanup(srv.Close)
+		return map[string]any{"error": map[string]any{"code": 113, "message": "isolate is paused"}}, vmKeep
+	})
 
 	var out bytes.Buffer
 	env := runEnv{stdout: &out, stderr: io.Discard}
-	err := env.run(t.Context(), []string{"--once", "--plain", srv.URL})
+	err := env.run(t.Context(), []string{"--once", "--plain", srv})
 	if !strings.Contains(out.String(), "reachable") {
 		t.Errorf("stdout = %q, want the reachable isolate's record", out.String())
 	}
@@ -467,6 +450,7 @@ func TestOnceWithoutHistoryExtensionFailsUnlessItAppearsWithinGrace(t *testing.T
 	for name, tc := range map[string]struct {
 		history   []map[string]any
 		hiddenFor int32
+		grace     time.Duration // zero: the default
 		args      []string
 		wantOut   string
 		wantErr   bool
@@ -477,11 +461,16 @@ func TestOnceWithoutHistoryExtensionFailsUnlessItAppearsWithinGrace(t *testing.T
 			wantErr: true,
 		},
 		"--wait gives up after the grace period": {
-			history: booted, hiddenFor: -1,
+			history: booted, hiddenFor: -1, grace: 200 * time.Millisecond,
 			args:    []string{"--once", "--json", "--wait"},
 			wantErr: true,
 		},
 		"--wait snapshots once the extension registers": {
+			history: booted, hiddenFor: 3, grace: 200 * time.Millisecond,
+			args:    []string{"--once", "--plain", "--wait"},
+			wantOut: "booted",
+		},
+		"--wait without a grace set waits the default": {
 			history: booted, hiddenFor: 3,
 			args:    []string{"--once", "--plain", "--wait"},
 			wantOut: "booted",
@@ -497,7 +486,7 @@ func TestOnceWithoutHistoryExtensionFailsUnlessItAppearsWithinGrace(t *testing.T
 			defer cancel()
 
 			var out bytes.Buffer
-			env := runEnv{stdout: &out, stderr: io.Discard, poll: 5 * time.Millisecond, historyGrace: 200 * time.Millisecond}
+			env := runEnv{stdout: &out, stderr: io.Discard, poll: 5 * time.Millisecond, historyGrace: tc.grace}
 			err := env.run(ctx, append(tc.args, srv))
 			if ctx.Err() != nil {
 				t.Fatal("run outlived its context instead of a bounded grace period")
@@ -515,12 +504,70 @@ func TestOnceWithoutHistoryExtensionFailsUnlessItAppearsWithinGrace(t *testing.T
 	}
 }
 
+// restartHistory is an old session's record, then a new session whose first
+// record is trace.
+var restartHistory = []map[string]any{
+	{"v": 1, "seq": 5, "time": "2026-04-14T06:04:05Z", "level": "error", "severity": 500, "layer": "App", "message": "old session"},
+	{"v": 1, "seq": 1, "time": "2026-04-14T06:05:00Z", "level": "trace", "severity": 0, "layer": "App", "message": "boot trace"},
+	{"v": 1, "seq": 2, "time": "2026-04-14T06:05:01Z", "level": "error", "severity": 500, "layer": "App", "message": "new session error"},
+}
+
+func TestJSONStreamPrintsNoRestartDivider(t *testing.T) {
+	srv := fakeVMServer(t, restartHistory, false)
+	var out bytes.Buffer
+	if err := (runEnv{stdout: &out, stderr: io.Discard}).run(t.Context(), []string{"--json", "-l", "info", srv}); err != nil {
+		t.Fatalf("run --json -l info: %v", err)
+	}
+	lines := slices.Collect(strings.Lines(out.String()))
+	for _, line := range lines {
+		if _, err := record.Decode([]byte(line)); err != nil {
+			t.Errorf("stdout line %q is not a record: %v", line, err)
+		}
+	}
+	if len(lines) != 2 {
+		t.Errorf("stdout has %d lines, want the 2 records:\n%s", len(lines), out.String())
+	}
+}
+
+func TestReplayKeepsAnUnterminatedLastLineAndLongLines(t *testing.T) {
+	line := func(msg string) string {
+		return `{"v":1,"seq":1,"time":"2026-04-14T06:04:05Z","level":"info","severity":200,"layer":"App","message":"` + msg + `"}`
+	}
+	long := strings.Repeat("x", 70*1024)
+	for name, tc := range map[string]struct{ in, want string }{
+		"last line without a newline": {in: line("first") + "\n" + line("last"), want: "last"},
+		"line over 64 KiB":            {in: line(long) + "\n", want: long},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var out bytes.Buffer
+			env := runEnv{stdin: strings.NewReader(tc.in), stdout: &out, stderr: io.Discard}
+			if err := env.run(t.Context(), []string{"--plain", "-"}); err != nil {
+				t.Fatalf("replay: %v", err)
+			}
+			if !strings.Contains(out.String(), tc.want) {
+				t.Errorf("stdout lacks the record (%d bytes):\n%.200s", out.Len(), out.String())
+			}
+		})
+	}
+}
+
+func TestStdinReplayWithoutStdinIsEmpty(t *testing.T) {
+	var out bytes.Buffer
+	if err := (runEnv{stdout: &out}).run(t.Context(), []string{"--plain", "-"}); err != nil || out.Len() > 0 {
+		t.Errorf("replay of an unset stdin = %v, %q; want nil, nothing", err, out.String())
+	}
+}
+
+func TestMissingTargetWithoutWaitSuggestsWait(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.vmservice")
+	err := (runEnv{stdout: io.Discard, stderr: io.Discard}).run(t.Context(), []string{"--plain", missing})
+	if err == nil || !strings.Contains(err.Error(), "pass --wait") {
+		t.Errorf("run on a missing target = %v, want the --wait hint", err)
+	}
+}
+
 func TestPlainStreamMarksRestartWhoseFirstRecordIsFiltered(t *testing.T) {
-	srv := fakeVMServer(t, []map[string]any{
-		{"v": 1, "seq": 5, "time": "2026-04-14T06:04:05Z", "level": "error", "severity": 500, "layer": "App", "message": "old session"},
-		{"v": 1, "seq": 1, "time": "2026-04-14T06:05:00Z", "level": "trace", "severity": 0, "layer": "App", "message": "boot trace"},
-		{"v": 1, "seq": 2, "time": "2026-04-14T06:05:01Z", "level": "error", "severity": 500, "layer": "App", "message": "new session error"},
-	}, false)
+	srv := fakeVMServer(t, restartHistory, false)
 
 	var out bytes.Buffer
 	env := runEnv{stdout: &out, stderr: io.Discard}
@@ -550,98 +597,61 @@ func TestPlainStreamMarksRestartWhoseFirstRecordIsFiltered(t *testing.T) {
 // before answering it, on the history extension right after answering it.
 func fakeVMServerDroppingAt(t *testing.T, dropAt string) string {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := websocket.Accept(w, r, nil)
-		if err != nil {
-			return
+	return serveVM(t, func(req vmReq) (map[string]any, vmEnd) {
+		switch req.method {
+		case "streamListen":
+			return result(map[string]any{"type": "Success"}), vmKeep
+		case "getVM":
+			return result(mainVM), vmKeep
+		case "getIsolate":
+			if dropAt == req.method {
+				return nil, vmDrop
+			}
+			return result(map[string]any{"extensionRPCs": []string{vmservice.HistoryExtension}}), vmKeep
+		case vmservice.HistoryExtension:
+			end := vmKeep
+			if dropAt == req.method {
+				end = vmDrop
+			}
+			return result(map[string]any{"records": []map[string]any{
+				{"v": 1, "seq": 1, "time": "2026-04-14T06:04:05Z", "level": "info", "severity": 200, "layer": "App", "message": "one"},
+			}}), end
 		}
-		defer func() { _ = conn.CloseNow() }()
-		ctx := r.Context()
-		for {
-			_, raw, err := conn.Read(ctx)
-			if err != nil {
-				return
-			}
-			var req struct {
-				ID     string `json:"id"`
-				Method string `json:"method"`
-			}
-			if json.Unmarshal(raw, &req) != nil {
-				continue
-			}
-			reply := func(res any) {
-				b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": res})
-				_ = conn.Write(ctx, websocket.MessageText, b)
-			}
-			switch req.Method {
-			case "streamListen":
-				reply(map[string]any{"type": "Success"})
-			case "getVM":
-				reply(map[string]any{
-					"startTime": 1000,
-					"pid":       42,
-					"isolates":  []map[string]any{{"id": "isolates/1", "name": "main"}},
-				})
-			case "getIsolate":
-				if dropAt == req.Method {
-					return
-				}
-				reply(map[string]any{"extensionRPCs": []string{vmservice.HistoryExtension}})
-			case vmservice.HistoryExtension:
-				reply(map[string]any{"records": []map[string]any{
-					{"v": 1, "seq": 1, "time": "2026-04-14T06:04:05Z", "level": "info", "severity": 200, "layer": "App", "message": "one"},
-				}})
-				if dropAt == req.Method {
-					return
-				}
-			}
-		}
-	}))
-	t.Cleanup(srv.Close)
-	return srv.URL
+		return nil, vmKeep
+	})
 }
 
-func TestPlainStreamTreatsTargetDisconnectAsCleanExitWithNote(t *testing.T) {
-	srv := fakeVMServerDroppingAt(t, vmservice.HistoryExtension)
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
+func TestPlainStreamOnDisconnect(t *testing.T) {
+	for name, tc := range map[string]struct {
+		dropAt     string
+		noStderr   bool
+		wantErr    error
+		wantOut    string
+		wantStderr string
+	}{
+		"target disconnect is a clean exit with a note":                 {dropAt: vmservice.HistoryExtension, wantOut: "one", wantStderr: "strata: target disconnected\n"},
+		"drop before subscribing fails, run's error carries the report": {dropAt: "getIsolate", wantErr: vmservice.ErrClosed},
+		"disconnect without stderr does not panic":                      {dropAt: vmservice.HistoryExtension, noStderr: true, wantOut: "one"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := fakeVMServerDroppingAt(t, tc.dropAt)
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
 
-	var out, errOut bytes.Buffer
-	env := runEnv{stdout: &out, stderr: &errOut}
-	if err := env.run(ctx, []string{"--plain", srv}); err != nil {
-		t.Fatalf("run --plain after the target dropped the connection: %v, want nil", err)
-	}
-	if !strings.Contains(out.String(), "one") {
-		t.Errorf("stdout = %q, want the record delivered before the drop", out.String())
-	}
-	if got, want := errOut.String(), "strata: target disconnected\n"; got != want {
-		t.Errorf("stderr = %q, want %q", got, want)
-	}
-}
-
-func TestPlainStreamFailsWhenConnectionDropsBeforeSubscribing(t *testing.T) {
-	srv := fakeVMServerDroppingAt(t, "getIsolate")
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-
-	var errOut bytes.Buffer
-	env := runEnv{stdout: io.Discard, stderr: &errOut}
-	err := env.run(ctx, []string{"--plain", srv})
-	if !errors.Is(err, vmservice.ErrClosed) {
-		t.Fatalf("run --plain with a drop during getIsolate: %v, want vmservice.ErrClosed", err)
-	}
-	if errOut.Len() != 0 {
-		t.Errorf("stderr = %q, want nothing: run's error carries the report", errOut.String())
-	}
-}
-
-func TestPlainStreamDisconnectWithoutStderrDoesNotPanic(t *testing.T) {
-	srv := fakeVMServerDroppingAt(t, vmservice.HistoryExtension)
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-
-	var out bytes.Buffer
-	if err := (runEnv{stdout: &out}).run(ctx, []string{"--plain", srv}); err != nil {
-		t.Fatalf("run --plain with no stderr set: %v, want nil", err)
+			var out, errOut bytes.Buffer
+			env := runEnv{stdout: &out, stderr: &errOut}
+			if tc.noStderr {
+				env.stderr = nil
+			}
+			if err := env.run(ctx, []string{"--plain", srv}); !errors.Is(err, tc.wantErr) {
+				t.Fatalf("run --plain dropped at %s = %v, want %v", tc.dropAt, err, tc.wantErr)
+			}
+			if !strings.Contains(out.String(), tc.wantOut) {
+				t.Errorf("stdout = %q, want the record delivered before the drop", out.String())
+			}
+			if got := errOut.String(); got != tc.wantStderr {
+				t.Errorf("stderr = %q, want %q", got, tc.wantStderr)
+			}
+		})
 	}
 }

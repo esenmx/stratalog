@@ -67,11 +67,7 @@ func Resolve(arg string) (Target, error) {
 		return Target{Kind: TargetStdin, Value: "-"}, nil
 	}
 	if hasScheme(arg) {
-		u, err := wsURL(arg)
-		if err != nil {
-			return Target{}, err
-		}
-		return Target{Kind: TargetVMService, Value: u}, nil
+		return vmTarget(arg)
 	}
 
 	ext := strings.ToLower(filepath.Ext(arg))
@@ -106,26 +102,13 @@ func Resolve(arg string) (Target, error) {
 		if info.URI == "" {
 			return Target{}, fmt.Errorf("%s: no \"uri\" field", arg)
 		}
-		u, err := wsURL(info.URI)
-		if err != nil {
-			return Target{}, err
-		}
-		return Target{Kind: TargetVMService, Value: u}, nil
+		return vmTarget(info.URI)
 	}
 	if hasScheme(content) && !strings.ContainsAny(content, " \t\r\n") {
-		u, err := wsURL(content)
-		if err != nil {
-			return Target{}, err
-		}
-		return Target{Kind: TargetVMService, Value: u}, nil
+		return vmTarget(content)
 	}
 	if matches := vmServiceLogURI.FindAllStringSubmatch(content, -1); len(matches) > 0 {
-		last := matches[len(matches)-1][1]
-		u, err := wsURL(last)
-		if err != nil {
-			return Target{}, err
-		}
-		return Target{Kind: TargetVMService, Value: u}, nil
+		return vmTarget(matches[len(matches)-1][1])
 	}
 	return Target{}, fmt.Errorf("%s: not a VM service URI: %q", arg, content)
 }
@@ -139,25 +122,22 @@ func hasScheme(s string) bool {
 	return false
 }
 
-// wsURL rewrites an http(s) VM service URI to its ws(s)://…/ws endpoint;
-// ws(s) URIs pass through.
-func wsURL(raw string) (string, error) {
+// vmTarget is the VM service at raw: an http(s) URI rewritten to its
+// ws(s)://…/ws endpoint, or a ws(s) URI as is.
+func vmTarget(raw string) (Target, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
-		return "", err
+		return Target{}, err
 	}
 	switch u.Scheme {
 	case "ws", "wss":
-		return u.String(), nil
-	case "http":
-		u.Scheme = "ws"
-	case "https":
-		u.Scheme = "wss"
+	case "http", "https":
+		u.Scheme = strings.Replace(u.Scheme, "http", "ws", 1)
+		if !strings.HasSuffix(u.Path, "/ws") {
+			u.Path = strings.TrimSuffix(u.Path, "/") + "/ws"
+		}
 	default:
-		return "", fmt.Errorf("unsupported scheme %q", u.Scheme)
+		return Target{}, fmt.Errorf("unsupported scheme %q", u.Scheme)
 	}
-	if !strings.HasSuffix(u.Path, "/ws") {
-		u.Path = strings.TrimSuffix(u.Path, "/") + "/ws"
-	}
-	return u.String(), nil
+	return Target{Kind: TargetVMService, Value: u.String()}, nil
 }

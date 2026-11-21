@@ -14,6 +14,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/samber/lo"
 
 	"github.com/esenmx/stratalog/tools/strata/record"
 	"github.com/esenmx/stratalog/tools/strata/termsafe"
@@ -35,18 +36,6 @@ const (
 	hexError   = "#d75f5f" // Ansi256.indianRed_167
 	hexCursor  = "#d75f00" // Ansi256.darkOrange3_166
 )
-
-// PaletteHex exposes the foreground hex colors used by the TUI so tests can
-// enforce WCAG >= 3.0 contrast across light and dark reference backgrounds.
-func PaletteHex() map[string]string {
-	return map[string]string{
-		"key":     hexKey,
-		"string":  hexString,
-		"literal": hexLiteral,
-		"error":   hexError,
-		"cursor":  hexCursor,
-	}
-}
 
 var (
 	dimStyle     = lipgloss.NewStyle().Faint(true)
@@ -163,10 +152,6 @@ type wrapMemo struct {
 	out   []string
 }
 
-func (r row) sameSlot(o row) bool {
-	return r.entry == o.entry && r.node == o.node && r.kind == o.kind
-}
-
 func (r row) matchesSlot(id rowID) bool {
 	return r.entry == id.entry && r.node == id.node && r.kind == id.kind
 }
@@ -223,11 +208,6 @@ type Model struct {
 	warning     string
 
 	width, height int
-}
-
-// New returns a model waiting for target with default filters.
-func New(target string) *Model {
-	return NewWithOptions(Options{Target: target})
 }
 
 // NewWithOptions returns a model pre-seeded with opts.
@@ -642,8 +622,8 @@ func (m *Model) wheel(b tea.MouseButton) {
 		}
 	}
 	from := m.cursor
-	m.offset = clamp(m.offset, 0, m.firstFitting(0, len(m.rows)-1))
-	m.cursor = clamp(m.cursor, m.offset, m.lastFitting(m.offset))
+	m.offset = clamp(m.offset, 0, m.fitting(len(m.rows)-1, -1, 0))
+	m.cursor = clamp(m.cursor, m.offset, m.fitting(m.offset, 1, len(m.rows)-1))
 	m.fromBelow = m.cursor < from
 }
 
@@ -654,49 +634,45 @@ func (m *Model) current() (row, bool) {
 	return m.rows[m.cursor], true
 }
 
-// toggle opens or closes the record or node under the cursor.
-func (m *Model) toggle() {
-	r, ok := m.current()
-	if !ok {
-		return
-	}
+// fold is the open flag r folds: its record's on an openable header, its
+// node's on a foldable node or stack label; nil on any other row.
+func (r row) fold() *bool {
 	switch {
 	case r.kind == rowHeader && r.entry.openable():
-		r.entry.Open = !r.entry.Open
+		return &r.entry.Open
 	case (r.kind == rowNode || r.kind == rowStackLabel) && r.node.Foldable():
-		r.node.Open = !r.node.Open
-	default:
-		return
+		return &r.node.Open
 	}
-	m.follow = false
-	m.dirty = true
+	return nil
+}
+
+// currentFold is the cursor row's [row.fold], or nil.
+func (m *Model) currentFold() *bool {
+	if r, ok := m.current(); ok {
+		return r.fold()
+	}
+	return nil
+}
+
+// toggle opens or closes the record or node under the cursor.
+func (m *Model) toggle() {
+	if open := m.currentFold(); open != nil {
+		*open = !*open
+		m.follow, m.dirty = false, true
+	}
 }
 
 // open opens the row under the cursor, or steps into it when already open.
 func (m *Model) open() {
-	r, ok := m.current()
-	if !ok {
-		return
-	}
-	switch {
-	case r.kind == rowHeader && r.entry.openable():
+	switch open := m.currentFold(); {
+	case open == nil:
+	case *open:
 		m.follow = false
-		if r.entry.Open {
-			m.cursor++
-			return
-		}
-		r.entry.Open = true
-	case (r.kind == rowNode || r.kind == rowStackLabel) && r.node.Foldable():
-		m.follow = false
-		if r.node.Open {
-			m.cursor++
-			return
-		}
-		r.node.Open = true
+		m.cursor++
 	default:
-		return
+		*open = true
+		m.follow, m.dirty = false, true
 	}
-	m.dirty = true
 }
 
 // closeOrParent closes the open row under the cursor, else jumps to its
@@ -706,16 +682,10 @@ func (m *Model) closeOrParent() {
 	if !ok {
 		return
 	}
-	switch {
-	case r.kind == rowHeader && r.entry.Open:
-		m.follow = false
-		r.entry.Open = false
-		m.dirty = true
-	case (r.kind == rowNode || r.kind == rowStackLabel) && r.node.Foldable() && r.node.Open:
-		m.follow = false
-		r.node.Open = false
-		m.dirty = true
-	case r.parent > 0:
+	if open := r.fold(); open != nil && *open {
+		*open = false
+		m.follow, m.dirty = false, true
+	} else if r.parent > 0 {
 		m.follow = false
 		m.cursor -= r.parent
 	}
@@ -853,13 +823,13 @@ func (m *Model) cursorID() (rowID, bool) {
 	if !ok {
 		return rowID{}, false
 	}
-	nth := 0
+	id := rowID{entry: cur.entry, node: cur.node, kind: cur.kind}
 	for i := m.cursor - 1; i >= 0 && m.rows[i].entry == cur.entry; i-- {
-		if m.rows[i].sameSlot(cur) {
-			nth++
+		if m.rows[i].matchesSlot(id) {
+			id.nth++
 		}
 	}
-	return rowID{entry: cur.entry, node: cur.node, kind: cur.kind, nth: nth}, true
+	return id, true
 }
 
 func (m *Model) rebuild() {
@@ -962,7 +932,7 @@ func (m *Model) settle() {
 	if m.offset >= m.cursor {
 		return
 	}
-	m.offset = m.firstFitting(m.offset, m.cursor)
+	m.offset = m.fitting(m.cursor, -1, m.offset)
 }
 
 // settleLine keeps lineOff on the logical cursor row (identified by rowID so
@@ -1000,36 +970,21 @@ func (m *Model) maxLineOff() int {
 	return max(len(m.wrappedLines(m.cursor))-m.bodyHeight(), 0)
 }
 
-// firstFitting is the earliest row in [floor, last] from which the wrapped
-// lines through row last fit in the body; last alone always fits.
-func (m *Model) firstFitting(floor, last int) int {
+// fitting walks from row from by step (-1 up, +1 down) to at most row bound
+// and returns the farthest row whose wrapped lines, counted from row from,
+// fit in the body; from alone always fits.
+func (m *Model) fitting(from, step, bound int) int {
 	h := m.bodyHeight()
-	top, lines := last, len(m.wrappedLines(last))
-	for top > floor {
-		above := len(m.wrappedLines(top - 1))
-		if lines+above > h {
+	at, lines := from, len(m.wrappedLines(from))
+	for (bound-at)*step > 0 {
+		next := len(m.wrappedLines(at + step))
+		if lines+next > h {
 			break
 		}
-		lines += above
-		top--
+		lines += next
+		at += step
 	}
-	return top
-}
-
-// lastFitting is the last row whose wrapped lines, counted from row first,
-// fit in the body; first alone always fits.
-func (m *Model) lastFitting(first int) int {
-	h := m.bodyHeight()
-	end, lines := first, len(m.wrappedLines(first))
-	for end+1 < len(m.rows) {
-		below := len(m.wrappedLines(end + 1))
-		if lines+below > h {
-			break
-		}
-		lines += below
-		end++
-	}
-	return end
+	return at
 }
 
 func (m *Model) bodyHeight() int {
@@ -1272,12 +1227,7 @@ func (m *Model) wrappedLines(i int) []string {
 }
 
 func (m *Model) sortedLayers() []layerBadge {
-	keys := slices.Sorted(maps.Keys(m.knownLayers))
-	out := make([]layerBadge, 0, len(keys))
-	for _, k := range keys {
-		out = append(out, m.knownLayers[k])
-	}
-	return out
+	return lo.Map(slices.Sorted(maps.Keys(m.knownLayers)), func(k string, _ int) layerBadge { return m.knownLayers[k] })
 }
 
 func (m *Model) layerBarView() string {

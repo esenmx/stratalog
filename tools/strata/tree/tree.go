@@ -8,9 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/esenmx/stratalog/tools/strata/termsafe"
 )
@@ -25,20 +25,25 @@ const (
 	Scalar
 )
 
+// container is the syntax of a JSON object or array.
+type container struct{ open, close, one, many string }
+
+var containers = [...]container{
+	Object: {"{", "}", "key", "keys"},
+	Array:  {"[", "]", "item", "items"},
+}
+
+// count is "1 key", "3 items" and so on.
+func (c container) count(n int) string {
+	if n == 1 {
+		return "1 " + c.one
+	}
+	return strconv.Itoa(n) + " " + c.many
+}
+
 // defaultKeepKeys mirrors stratalog's ElisionConfig.keepKeys:
 // vital identifier/status keys surfaced on collapsed rows.
-var defaultKeepKeys = map[string]bool{
-	"id":     true,
-	"uuid":   true,
-	"guid":   true,
-	"name":   true,
-	"slug":   true,
-	"status": true,
-	"state":  true,
-	"code":   true,
-	"type":   true,
-	"kind":   true,
-}
+var defaultKeepKeys = []string{"id", "uuid", "guid", "name", "slug", "status", "state", "code", "type", "kind"}
 
 // Node is one JSON value. Key is its terminal-safe object key (RawKey holds
 // the original decoded key); array elements and the root have none.
@@ -86,9 +91,9 @@ func parseValue(dec *json.Decoder, rawKey string) (*Node, error) {
 	case json.Delim:
 		switch t {
 		case '{':
-			return parseObject(dec, safeKey, rawKey)
+			return parseContainer(dec, Object, safeKey, rawKey)
 		case '[':
-			return parseArray(dec, safeKey, rawKey)
+			return parseContainer(dec, Array, safeKey, rawKey)
 		default:
 			return nil, fmt.Errorf("unexpected %q", t)
 		}
@@ -126,16 +131,19 @@ func parseValue(dec *json.Decoder, rawKey string) (*Node, error) {
 	}
 }
 
-func parseObject(dec *json.Decoder, safeKey, rawKey string) (*Node, error) {
-	n := &Node{Key: safeKey, RawKey: rawKey, Kind: Object}
+func parseContainer(dec *json.Decoder, kind Kind, safeKey, rawKey string) (*Node, error) {
+	n := &Node{Key: safeKey, RawKey: rawKey, Kind: kind}
 	for dec.More() {
-		tok, err := dec.Token()
-		if err != nil {
-			return nil, err
-		}
-		k, ok := tok.(string)
-		if !ok {
-			return nil, fmt.Errorf("object key %v is not a string", tok)
+		var k string
+		if kind == Object {
+			tok, err := dec.Token()
+			if err != nil {
+				return nil, err
+			}
+			var ok bool
+			if k, ok = tok.(string); !ok {
+				return nil, fmt.Errorf("object key %v is not a string", tok)
+			}
 		}
 		child, err := parseValue(dec, k)
 		if err != nil {
@@ -143,22 +151,7 @@ func parseObject(dec *json.Decoder, safeKey, rawKey string) (*Node, error) {
 		}
 		n.Children = append(n.Children, child)
 	}
-	if _, err := dec.Token(); err != nil { // '}'
-		return nil, err
-	}
-	return n, nil
-}
-
-func parseArray(dec *json.Decoder, safeKey, rawKey string) (*Node, error) {
-	n := &Node{Key: safeKey, RawKey: rawKey, Kind: Array}
-	for dec.More() {
-		child, err := parseValue(dec, "")
-		if err != nil {
-			return nil, err
-		}
-		n.Children = append(n.Children, child)
-	}
-	if _, err := dec.Token(); err != nil { // ']'
+	if _, err := dec.Token(); err != nil { // '}' or ']'
 		return nil, err
 	}
 	return n, nil
@@ -217,20 +210,14 @@ func (n *Node) Foldable() bool {
 // Summary is n's value as one closed line: `{…} N keys`, `[…] N items`,
 // `{}`/`[]` when empty, or a scalar's literal.
 func (n *Node) Summary() string {
-	switch n.Kind {
-	case Object:
-		if len(n.Children) == 0 {
-			return "{}"
-		}
-		return "{…} " + count(len(n.Children), "key", "keys")
-	case Array:
-		if len(n.Children) == 0 {
-			return "[]"
-		}
-		return "[…] " + count(len(n.Children), "item", "items")
-	default:
+	if n.Kind == Scalar {
 		return n.Literal
 	}
+	c := containers[n.Kind]
+	if len(n.Children) == 0 {
+		return c.open + c.close
+	}
+	return c.open + "…" + c.close + " " + c.count(len(n.Children))
 }
 
 // SetOpenAll opens or closes n and every node below it.
@@ -250,52 +237,35 @@ func (n *Node) PrettyJSON() string {
 }
 
 func (n *Node) writeJSON(b *strings.Builder, depth int) {
-	switch n.Kind {
-	case Object:
-		if len(n.Children) == 0 {
-			b.WriteString("{}")
-			return
-		}
-		b.WriteString("{\n")
-		indent := strings.Repeat("  ", depth+1)
-		for i, c := range n.Children {
-			b.WriteString(indent)
-			k, _ := quote(c.RawKey)
-			b.WriteString(k)
-			b.WriteString(": ")
-			c.writeJSON(b, depth+1)
-			if i+1 < len(n.Children) {
-				b.WriteByte(',')
-			}
-			b.WriteByte('\n')
-		}
-		b.WriteString(strings.Repeat("  ", depth))
-		b.WriteByte('}')
-	case Array:
-		if len(n.Children) == 0 {
-			b.WriteString("[]")
-			return
-		}
-		b.WriteString("[\n")
-		indent := strings.Repeat("  ", depth+1)
-		for i, c := range n.Children {
-			b.WriteString(indent)
-			c.writeJSON(b, depth+1)
-			if i+1 < len(n.Children) {
-				b.WriteByte(',')
-			}
-			b.WriteByte('\n')
-		}
-		b.WriteString(strings.Repeat("  ", depth))
-		b.WriteByte(']')
-	default:
-		if n.IsString {
-			s, _ := quote(n.Raw)
-			b.WriteString(s)
-		} else {
-			b.WriteString(n.Literal)
-		}
+	switch {
+	case n.IsString:
+		s, _ := quote(n.Raw)
+		b.WriteString(s)
+		return
+	case n.Kind == Scalar:
+		b.WriteString(n.Literal)
+		return
 	}
+	c := containers[n.Kind]
+	if len(n.Children) == 0 {
+		b.WriteString(c.open + c.close)
+		return
+	}
+	b.WriteString(c.open + "\n")
+	indent := strings.Repeat("  ", depth+1)
+	for i, child := range n.Children {
+		b.WriteString(indent)
+		if n.Kind == Object {
+			k, _ := quote(child.RawKey)
+			b.WriteString(k + ": ")
+		}
+		child.writeJSON(b, depth+1)
+		if i+1 < len(n.Children) {
+			b.WriteByte(',')
+		}
+		b.WriteByte('\n')
+	}
+	b.WriteString(strings.Repeat("  ", depth) + c.close)
 }
 
 // CopyText returns the clipboard payload for n: unquoted raw text for string
@@ -323,7 +293,7 @@ func (n *Node) VitalPreview() string {
 		const maxChars = 32
 		var parts []string
 		addHit := func(c *Node) {
-			if len(parts) >= maxHits || !defaultKeepKeys[c.RawKey] {
+			if len(parts) >= maxHits || !slices.Contains(defaultKeepKeys, c.RawKey) {
 				return
 			}
 			var val string
@@ -348,38 +318,21 @@ func (n *Node) VitalPreview() string {
 				break
 			}
 		}
-		parts = append(parts, count(len(n.Children), "key", "keys"))
+		parts = append(parts, containers[Object].count(len(n.Children)))
 		return strings.Join(parts, " · ")
 	case Array:
 		if len(n.Children) == 0 {
 			return ""
 		}
-		return count(len(n.Children), "item", "items")
+		return containers[Array].count(len(n.Children))
 	default:
 		return clipRunes(n.Literal, 32)
 	}
 }
 
 func clipRunes(s string, limit int) string {
-	if utf8.RuneCountInString(s) <= limit {
-		return s
+	if r := []rune(s); len(r) > limit {
+		return string(r[:limit]) + "…"
 	}
-	var b strings.Builder
-	i := 0
-	for _, r := range s {
-		if i >= limit {
-			break
-		}
-		b.WriteRune(r)
-		i++
-	}
-	b.WriteRune('…')
-	return b.String()
-}
-
-func count(n int, one, many string) string {
-	if n == 1 {
-		return "1 " + one
-	}
-	return strconv.Itoa(n) + " " + many
+	return s
 }

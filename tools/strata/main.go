@@ -10,6 +10,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"flag"
@@ -53,12 +54,14 @@ type cliConfig struct {
 	filter   record.Filter
 }
 
+// runEnv is one run's I/O and timing; [runEnv.run] gives each zero field
+// its default.
 type runEnv struct {
-	stdin  io.Reader
+	stdin  io.Reader // nil: empty
 	stdout io.Writer
-	stderr io.Writer
+	stderr io.Writer // nil: discarded
 	isTTY  bool
-	poll   time.Duration
+	poll   time.Duration // zero: [pollInterval]
 	// historyGrace bounds how long --wait --once polls for an isolate to
 	// register the history extension; zero means [vmservice.HistoryTimeout].
 	historyGrace time.Duration
@@ -71,7 +74,6 @@ func main() {
 		stdout: os.Stdout,
 		stderr: os.Stderr,
 		isTTY:  term.IsTerminal(os.Stdout.Fd()),
-		poll:   pollInterval,
 	}
 	err := env.run(ctx, os.Args[1:])
 	stop()
@@ -90,36 +92,12 @@ func reportError(w io.Writer, err error) {
 	}
 }
 
-func (e runEnv) pollEvery() time.Duration {
-	if e.poll > 0 {
-		return e.poll
-	}
-	return pollInterval
-}
-
-func (e runEnv) historyGraceOrDefault() time.Duration {
-	if e.historyGrace > 0 {
-		return e.historyGrace
-	}
-	return vmservice.HistoryTimeout
-}
-
-func (e runEnv) errOut() io.Writer {
-	if e.stderr != nil {
-		return e.stderr
-	}
-	return io.Discard
-}
-
-func (e runEnv) inReader() io.Reader {
-	if e.stdin != nil {
-		return e.stdin
-	}
-	return bytes.NewReader(nil)
-}
-
 func (e runEnv) run(ctx context.Context, args []string) error {
-	cfg, err := parseCLI(args, e.isTTY, e.errOut())
+	e.stdin = cmp.Or[io.Reader](e.stdin, bytes.NewReader(nil))
+	e.stderr = cmp.Or(e.stderr, io.Discard)
+	e.poll = cmp.Or(max(e.poll, 0), pollInterval)
+	e.historyGrace = cmp.Or(max(e.historyGrace, 0), vmservice.HistoryTimeout)
+	cfg, err := parseCLI(args, e.isTTY, e.stderr)
 	if err != nil {
 		return err
 	}
@@ -296,7 +274,7 @@ func (e runEnv) runCLI(ctx context.Context, cfg cliConfig) error {
 
 	switch resolved.Kind {
 	case vmservice.TargetStdin:
-		return e.replayReader(ctx, e.inReader(), cfg)
+		return e.replayReader(ctx, e.stdin, cfg)
 	case vmservice.TargetJSONL:
 		f, err := os.Open(resolved.Value)
 		if err != nil {
@@ -334,14 +312,14 @@ func (e runEnv) acquireCLITarget(ctx context.Context, cfg cliConfig) (vmservice.
 		select {
 		case <-ctx.Done():
 			return vmservice.Target{}, nil, ctx.Err()
-		case <-time.After(e.pollEvery()):
+		case <-time.After(e.poll):
 		}
 	}
 }
 
 func (e runEnv) reportMalformed(n int64) {
 	if n > 0 {
-		_, _ = fmt.Fprintf(e.errOut(), "strata: skipped %d malformed records\n", n)
+		_, _ = fmt.Fprintf(e.stderr, "strata: skipped %d malformed records\n", n)
 	}
 }
 
@@ -351,14 +329,14 @@ func (e runEnv) runSnapshot(ctx context.Context, c *vmservice.Client, cfg cliCon
 	items, err := vmservice.Snapshot(ctx, c)
 	if cfg.wait {
 		// The service-info file appears before main() reaches configureLogging.
-		expired := time.After(e.historyGraceOrDefault())
+		expired := time.After(e.historyGrace)
 		for errors.Is(err, vmservice.ErrNoHistory) {
 			select {
 			case <-ctx.Done():
 				return interruptedErr{ctx.Err()}
 			case <-expired:
 				return noHistoryErr(err)
-			case <-time.After(e.pollEvery()):
+			case <-time.After(e.poll):
 			}
 			items, err = vmservice.Snapshot(ctx, c)
 		}
@@ -422,7 +400,7 @@ func (e runEnv) runStream(ctx context.Context, c *vmservice.Client, cfg cliConfi
 	case errors.Is(err, vmservice.ErrDisconnected):
 		// Every record received was written; whether the target exited or
 		// crashed is not observable, so the drop is a note, not a failure.
-		_, _ = fmt.Fprintln(e.errOut(), "strata: target disconnected")
+		_, _ = fmt.Fprintln(e.stderr, "strata: target disconnected")
 		return nil
 	default:
 		return err

@@ -1,6 +1,10 @@
 package termsafe
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"unicode/utf8"
+)
 
 func TestLineAndInline(t *testing.T) {
 	t.Parallel()
@@ -35,19 +39,10 @@ func FuzzEscapedTextHasNoControls(f *testing.F) {
 	f.Fuzz(func(t *testing.T, s string) {
 		for _, out := range []string{Line(s), Inline(s)} {
 			for _, c := range out {
-				if IsControl(c) || c == '�' && !containsFFFD(s) {
+				if IsControl(c) || c == utf8.RuneError && !strings.ContainsRune(s, utf8.RuneError) {
 					t.Fatalf("escape(%q) leaked %U in %q", s, c, out)
 				}
 			}
 		}
 	})
-}
-
-func containsFFFD(s string) bool {
-	for _, c := range s {
-		if c == '�' {
-			return true
-		}
-	}
-	return false
 }

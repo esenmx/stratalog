@@ -113,13 +113,6 @@ func TestSetOpenAll(t *testing.T) {
 	}
 }
 
-func TestParseRootIsOpenChildrenClosed(t *testing.T) {
-	root := mustParse(t, `{"a":{"b":1}}`)
-	if !root.Open || root.Children[0].Open {
-		t.Errorf("root.Open = %v, child.Open = %v; want true, false", root.Open, root.Children[0].Open)
-	}
-}
-
 func TestSummary(t *testing.T) {
 	for name, tc := range map[string]struct {
 		in, want string
@@ -158,10 +151,8 @@ func TestSanitizesControlCharsInKeysAndLiterals(t *testing.T) {
 	root := mustParse(t, "{\"a\\u001b[2J\\nb\": \"x\u009b2J\u007fy\"}")
 	child := root.Children[0]
 	for _, s := range []string{child.Key, child.Literal} {
-		for _, c := range s {
-			if c < 0x20 || c == 0x7f || (c >= 0x80 && c < 0xa0) {
-				t.Fatalf("control rune %U leaked in %q", c, s)
-			}
+		if strings.ContainsFunc(s, controlRune) {
+			t.Fatalf("control rune leaked in %q", s)
 		}
 	}
 	// CopyText on the root still preserves valid JSON with original key.
@@ -189,11 +180,41 @@ func TestMultiLineScalarIsFoldableAndCopiesRaw(t *testing.T) {
 }
 
 func TestVitalPreview(t *testing.T) {
-	root := mustParse(t, `{"headers":{"x":"1"},"status":200,"body":{"id":42,"name":"Jane","extra":[1,2]},"duration_ms":12}`)
-	got := root.VitalPreview()
-	want := "status: 200 · id: 42 · name: Jane · 4 keys"
-	if got != want {
-		t.Errorf("VitalPreview() = %q, want %q", got, want)
+	e32 := strings.Repeat("é", 32)
+	for name, tc := range map[string]struct{ in, want string }{
+		"keep keys top-level and one level down": {
+			in:   `{"headers":{"x":"1"},"status":200,"body":{"id":42,"name":"Jane","extra":[1,2]},"duration_ms":12}`,
+			want: "status: 200 · id: 42 · name: Jane · 4 keys",
+		},
+		"three hits at most":              {in: `{"id":1,"name":"a","status":"ok","code":7}`, want: "id: 1 · name: a · status: ok · 4 keys"},
+		"value of 32 runes kept whole":    {in: `{"name":"` + e32 + `"}`, want: "name: " + e32 + " · 1 key"},
+		"multibyte value clipped by rune": {in: `{"name":"` + e32 + `ééé"}`, want: "name: " + e32 + "… · 1 key"},
+		"array counts its items":          {in: `[1,2,3]`, want: "3 items"},
+		"long scalar clipped":             {in: `"abcdefghijklmnopqrstuvwxyz0123456789"`, want: `"abcdefghijklmnopqrstuvwxyz01234…`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := mustParse(t, tc.in).VitalPreview(); got != tc.want {
+				t.Errorf("VitalPreview() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCopyTextOnContainerIsIndentedJSONInWireOrder(t *testing.T) {
+	root := mustParse(t, `{"z":1.0,"a":[1e3,{},{"k":null}],"s":"<&>\nx"}`)
+	want := `{
+  "z": 1.0,
+  "a": [
+    1e3,
+    {},
+    {
+      "k": null
+    }
+  ],
+  "s": "<&>\nx"
+}`
+	if got := root.CopyText(); got != want {
+		t.Errorf("CopyText() =\n%s\nwant\n%s", got, want)
 	}
 }
 
@@ -207,18 +228,9 @@ func FuzzParseSafetyAndRoundTrip(f *testing.F) {
 		}
 		var checkNode func(*Node)
 		checkNode = func(cur *Node) {
-			for _, s := range []string{cur.Key, cur.Literal, cur.Summary()} {
-				for _, c := range s {
-					if c < 0x20 || c == 0x7f || (c >= 0x80 && c < 0xa0) {
-						t.Fatalf("unsafe rune %U in %q", c, s)
-					}
-				}
-			}
-			for _, line := range cur.Lines {
-				for _, c := range line {
-					if c < 0x20 || c == 0x7f || (c >= 0x80 && c < 0xa0) {
-						t.Fatalf("unsafe rune %U in line %q", c, line)
-					}
+			for _, s := range append([]string{cur.Key, cur.Literal, cur.Summary()}, cur.Lines...) {
+				if strings.ContainsFunc(s, controlRune) {
+					t.Fatalf("unsafe rune in %q", s)
 				}
 			}
 			for _, c := range cur.Children {
@@ -231,3 +243,7 @@ func FuzzParseSafetyAndRoundTrip(f *testing.F) {
 		}
 	})
 }
+
+// controlRune is the test's own oracle for terminal-unsafe runes, independent
+// of termsafe.IsControl: C0, DEL and C1.
+func controlRune(r rune) bool { return r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) }

@@ -72,15 +72,23 @@ func TestResolveTarget(t *testing.T) {
 }
 
 func TestResolveEnvFallbackWhenDefaultMissing(t *testing.T) {
-	missing := filepath.Join(t.TempDir(), ".flutter.vmservice")
-	t.Setenv("VM_SERVICE_URI", "http://127.0.0.1:59999/tok=/")
+	for name, tc := range map[string]struct{ strata, want string }{
+		"VM_SERVICE_URI":                    {want: "ws://127.0.0.1:59999/tok=/ws"},
+		"STRATA_TARGET over VM_SERVICE_URI": {strata: "ws://127.0.0.1:58888/s=/ws", want: "ws://127.0.0.1:58888/s=/ws"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			missing := filepath.Join(t.TempDir(), ".flutter.vmservice")
+			t.Setenv("STRATA_TARGET", tc.strata)
+			t.Setenv("VM_SERVICE_URI", "http://127.0.0.1:59999/tok=/")
 
-	got, err := ResolveDefault(missing)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Kind != TargetVMService || got.Value != "ws://127.0.0.1:59999/tok=/ws" {
-		t.Errorf("ResolveDefault = %+v", got)
+			got, err := ResolveDefault(missing)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Kind != TargetVMService || got.Value != tc.want {
+				t.Errorf("ResolveDefault = %+v, want %s", got, tc.want)
+			}
+		})
 	}
 }
 

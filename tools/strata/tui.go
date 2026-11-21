@@ -47,11 +47,11 @@ func (e runEnv) runTUI(parentCtx context.Context, cfg cliConfig) error {
 		defer close(done)
 		switch {
 		case initErr == nil && initial.Kind == vmservice.TargetStdin:
-			replayIntoTUI(ctx, e.inReader(), cfg.target, p.Send)
+			replayIntoTUI(ctx, e.stdin, cfg.target, p.Send)
 		case initErr == nil && initial.Kind == vmservice.TargetJSONL:
 			replayFileIntoTUI(ctx, initial.Value, p.Send)
 		default:
-			connectLoop(ctx, cfg.target, cfg.explicit, e.pollEvery(), p.Send)
+			connectLoop(ctx, cfg.target, cfg.explicit, e.poll, p.Send)
 		}
 	}()
 
